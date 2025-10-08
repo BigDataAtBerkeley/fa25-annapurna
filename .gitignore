@@ -1,0 +1,66 @@
+# --- Environment & dependencies ---
+.env/
+aws_env/
+*.egg-info/
+*.dist-info/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- Dependency files ---
+# Keep requirements.txt tracked, so remove it from ignore
+# requirements.txt
+
+# --- Lambda build artifacts ---
+scraper_lambda/__pycache__/
+scraper_lambda/**/*.pyc
+scraper_lambda/**/*.pyo
+scraper_lambda/**/*.so
+scraper_lambda/*dist-info*/
+scraper_lambda/*egg-info*/
+scraper_lambda/boto*/
+scraper_lambda/requests*/
+scraper_lambda/bs4*/
+scraper_lambda/certifi*/
+scraper_lambda/python_dotenv*/
+
+judge_lambda/__pycache__/
+judge_lambda/**/*.pyc
+judge_lambda/**/*.pyo
+judge_lambda/*dist-info*/
+judge_lambda/*egg-info*/
+judge_lambda/boto*/
+judge_lambda/opensearch_py*/
+
+# --- Deployment artifacts ---
+deploy/*.zip
+*.zip
+*.tar.gz
+*.whl
+
+# --- Logs & temp files ---
+*.log
+logs/
+tmp/
+temp/
+scratch/
+*.csv
+*.parquet
+test_*.json
+
+# --- AWS / config secrets ---
+.aws/
+*.pem
+*.key
+*.crt
+aws_credentials.json
+secrets.json
+config.json
+
+# --- IDE / system files ---
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
