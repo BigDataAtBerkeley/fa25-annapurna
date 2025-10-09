@@ -1,8 +1,9 @@
 import os
 import logging
 from sources.iclr_scraper import extract_papers_iclr
+from sources.icml_scraper import extract_papers_icml
 from sources.arxiv_scraper import extract_papers_arxiv
-from sources.huggingface_scraper import extract_papers_hf
+from sources.neurips_scraper import extract_papers_neurips
 from sources.openreview_scraper import extract_papers_openreview
 from utils.logging_utils import setup_logger
 
@@ -17,10 +18,12 @@ def lambda_handler(event, context):
 
     if source == "iclr":
         result = extract_papers_iclr(year, limit=max_papers)
+    elif source == "icml":
+        result = extract_papers_icml(year, limit=max_papers)
     elif source == "arxiv":
         result = extract_papers_arxiv(limit=max_papers)
-    elif source == "huggingface":
-        result = extract_papers_hf(limit=max_papers)
+    elif source == "neurips":
+        result = extract_papers_neurips(limit=max_papers)
     elif source == "openreview":
         result = extract_papers_openreview(limit=max_papers)
     else:
@@ -28,4 +31,3 @@ def lambda_handler(event, context):
 
     logger.info(f"Lambda for {source} completed: {result}")
     return result
-
