@@ -50,15 +50,17 @@ def _safe_filename(title: str) -> str:
     """Create a safe filename for S3 upload."""
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in title) + ".pdf"
 
+
+## Whatever paper we scrape, we send its metadata to SQS 
 def _send_message(title, authors, date, abstract, s3_bucket, s3_key):
     """Send paper metadata to SQS."""
     msg = {
-        "title": title,
+        "title": title, 
         "authors": authors,
         "date": date,
-        "abstract": abstract,
-        "s3_bucket": s3_bucket,
-        "s3_key": s3_key,
+        "abstract": abstract, # the entire abstract section
+        "s3_bucket": s3_bucket, # reference back to the S3 bucket because thats where the ENTIRE paper will be stored 
+        "s3_key": s3_key, # cheaper to store entire paper in S3 than SQS
     }
     resp = sqs.send_message(
         QueueUrl=QUEUE_URL,
@@ -89,6 +91,8 @@ def _fetch_openreview_details(openreview_url: str):
 
     return authors, abstract, date, pdf_link
 
+
+## Sending the PDF url to S3
 def _fetch_pdf_and_upload(pdf_url: str, key: str):
     """Download paper PDF and upload to S3."""
     logger.info(f"⬇️ Downloading PDF: {pdf_url}")
@@ -163,6 +167,6 @@ def lambda_handler(event, context):
         raise RuntimeError("BUCKET_NAME and QUEUE_URL env vars are required")
 
     start = datetime.utcnow()
-    result = extract_papers_iclr(year, limit=max_papers)
+    result = extract_papers_iclr(year, limit=max_papers) ## call main scraper function
     logger.info(f"Lambda execution completed in {datetime.utcnow() - start}. Summary: {result}")
     return result
