@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 import boto3
 from datetime import datetime
+from sources.icml_scraper import extract_papers_icml, fetch_icml_details
 
 # --- Logging Setup ---
 LOG_DIR = "/tmp/logs"  # /tmp is writable in AWS Lambda
@@ -92,6 +93,8 @@ def _fetch_openreview_details(openreview_url: str):
     return authors, abstract, date, pdf_link
 
 
+
+
 ## Sending the PDF url to S3
 def _fetch_pdf_and_upload(pdf_url: str, key: str):
     """Download paper PDF and upload to S3."""
@@ -101,7 +104,41 @@ def _fetch_pdf_and_upload(pdf_url: str, key: str):
         s3.upload_fileobj(r.raw, BUCKET, key)
     logger.info(f"Uploaded PDF to s3://{BUCKET}/{key}")
 
-# --- Main Scraper ---
+# --- Main Scrapers ---
+def extract_papers_icml_with_pipeline(year: int, limit: int = 10, custom_url: str = None, topic_filter: str = None):
+    """Scrape ICML papers and push to S3 + SQS using the pipeline."""
+    # Use the ICML scraper module to get papers
+    result = extract_papers_icml(year, limit, custom_url, topic_filter)
+    
+    if not result.get("papers"):
+        return {"uploaded": 0, "found": result.get("found", 0)}
+    
+    processed = 0
+    for paper_data in result["papers"]:
+        try:
+            title = paper_data["title"]
+            authors = paper_data["authors"]
+            abstract = paper_data["abstract"]
+            date = paper_data["date"]
+            pdf_link = paper_data["pdf_link"]
+            
+            if not pdf_link:
+                logger.warning(f"⚠️ No PDF link for {title}. Skipping.")
+                continue
+
+            key = _safe_filename(title)
+            _fetch_pdf_and_upload(pdf_link, key)
+            _send_message(title, authors, date, abstract, BUCKET, key)
+            processed += 1
+
+        except Exception as e:
+            logger.exception(f"❌ Error processing {title}: {e}")
+            continue
+    
+    logger.info(f"Done. Uploaded and enqueued {processed} papers.")
+    return {"uploaded": processed, "found": result.get("found", 0)}
+
+
 def extract_papers_iclr(year: int, limit: int = 10):
     """Scrape ICLR website for papers and push to S3 + SQS."""
     base = f"https://iclr.cc/virtual/{year}/papers.html"
@@ -161,12 +198,43 @@ def extract_papers_iclr(year: int, limit: int = 10):
 
 # --- Lambda Handler ---
 def lambda_handler(event, context):
-    year = int(os.getenv("ICLR_YEAR", "2025"))
+    year = int(os.getenv("CONFERENCE_YEAR", "2025"))
     max_papers = int(os.getenv("MAX_PAPERS", "3"))  # Limiting max papers to 3 for now  (can change this in .env)
+    conference = os.getenv("CONFERENCE", "ICLR").upper()  # Default to ICLR, can be set to ICML
+    
+    # Extract parameters from event payload
+    custom_url = event.get("custom_url") if isinstance(event, dict) else None
+    topic_filter = event.get("topic_filter") if isinstance(event, dict) else None
+    
     if not BUCKET or not QUEUE_URL:
         raise RuntimeError("BUCKET_NAME and QUEUE_URL env vars are required")
 
     start = datetime.utcnow()
-    result = extract_papers_iclr(year, limit=max_papers) ## call main scraper function
+    
+    # Choose scraper based on conference type
+    if conference == "ICML":
+        logger.info(f"🎯 Scraping ICML {year}")
+        if custom_url:
+            logger.info(f"📍 Using custom URL: {custom_url}")
+            result = extract_papers_icml_with_pipeline(year, limit=max_papers, custom_url=custom_url)
+        elif topic_filter:
+            logger.info(f"🔍 Filtering by topic: {topic_filter}")
+            result = extract_papers_icml_with_pipeline(year, limit=max_papers, topic_filter=topic_filter)
+        else:
+            result = extract_papers_icml_with_pipeline(year, limit=max_papers)
+    elif conference == "ICLR":
+        logger.info(f"🎯 Scraping ICLR {year}")
+        result = extract_papers_iclr(year, limit=max_papers)
+    else:
+        logger.info(f"🎯 Scraping both ICLR and ICML {year}")
+        iclr_result = extract_papers_iclr(year, limit=max_papers)
+        icml_result = extract_papers_icml_with_pipeline(year, limit=max_papers)
+        result = {
+            "iclr": iclr_result,
+            "icml": icml_result,
+            "total_uploaded": iclr_result["uploaded"] + icml_result["uploaded"],
+            "total_found": iclr_result["found"] + icml_result["found"]
+        }
+    
     logger.info(f"Lambda execution completed in {datetime.utcnow() - start}. Summary: {result}")
     return result
