@@ -27,7 +27,8 @@ def extract_papers_iclr(year: int, limit: int = 10):
             if not openreview_link:
                 continue
             url = openreview_link["href"]
-            if url.startswith("/"): url = "https://iclr.cc" + url
+            if url.startswith("/"): 
+                url = "https://iclr.cc" + url
 
             authors, abstract, date, pdf_link = _fetch_openreview_details(url)
             if not pdf_link:
