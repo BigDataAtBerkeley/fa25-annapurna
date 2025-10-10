@@ -26,9 +26,6 @@ creds = session.get_credentials().get_frozen_credentials()
 auth = AWSV4SignerAuth(creds, AWS_REGION, "es")
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 
-#Transformer model for embeddings
-transformer = SentenceTransformer("all-MiniLM-L6-v2")
-
 os_client = OpenSearch(
     hosts=[{"host": OPENSEARCH_ENDPOINT.replace("https://","").replace("http://",""), "port": 443}],
     http_auth=auth,
@@ -37,6 +34,9 @@ os_client = OpenSearch(
     connection_class=RequestsHttpConnection,
     timeout=60
 )
+
+#Transformer model for embeddings
+transformer = SentenceTransformer("all-MiniLM-L6-v2")
 
 def normalize_title(t: str) -> str:
     return "".join(ch.lower() for ch in t if ch.isalnum() or ch.isspace()).strip().replace(" ", "_")
@@ -73,7 +73,7 @@ def ensure_index():
         
 
 # Redundancy check - filters out duplicates and papers that are very similar to existing ones.
-def is_duplicate(title_norm: str, abstract: str, transformer, os_client, OPENSEARCH_INDEX: str) -> bool:
+def is_duplicate(title_norm: str, abstract: str, embedding) -> bool:
     try:
         exact_query = {"query": {"bool": {"should": [
                     {"term": {"title_normalized": title_norm}},
@@ -83,8 +83,6 @@ def is_duplicate(title_norm: str, abstract: str, transformer, os_client, OPENSEA
         res = os_client.search(index=OPENSEARCH_INDEX, body=exact_query)
         if res["hits"]["total"]["value"] > 0:
             return True  
-
-        embedding = get_embedding(transformer, f"{title_norm} {abstract}")
 
         knn_query = {"size": 3, "query": {"knn": {"embedding": {"vector": embedding,"k": 3}}}}
 
@@ -129,7 +127,7 @@ Keep it short.
         logger.warning(f"Claude via Bedrock failed: {e}")
         return {"relevance": "unknown", "novelty": "unknown", "reason": "Claude evaluation failed"}
 
-# ===== Lambda handler =====
+# Lambda Handler
 def lambda_handler(event, context):
     ensure_index()
     failures = []
@@ -148,7 +146,9 @@ def lambda_handler(event, context):
 
             title_norm = normalize_title(title)
             sha_abs = sha256_text(abstract)
-            if is_duplicate(title_norm, sha_abs):
+            embedding = get_embedding(transformer, abstract)
+            
+            if is_duplicate(title_norm, sha_abs, embedding):
                 logger.info(f"Duplicate skipped | {title}")
                 continue
 
@@ -169,6 +169,7 @@ def lambda_handler(event, context):
                     "s3_bucket": s3_bucket,
                     "s3_key": s3_key,
                     "sha_abstract": sha_abs,
+                    "embedding" : embedding,
                     "decision": "accept",
                     "reason": reason,
                     "relevance": relevance,

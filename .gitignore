@@ -59,6 +59,7 @@ secrets.json
 config.json
 
 # --- IDE / system files ---
+.venv
 .vscode/
 .idea/
 .DS_Store
