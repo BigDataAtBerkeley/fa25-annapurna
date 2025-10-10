@@ -35,14 +35,9 @@ os_client = OpenSearch(
     timeout=60
 )
 
-#Transformer model for embeddings
-transformer = SentenceTransformer("all-MiniLM-L6-v2")
 
 def normalize_title(t: str) -> str:
     return "".join(ch.lower() for ch in t if ch.isalnum() or ch.isspace()).strip().replace(" ", "_")
-
-def get_embedding(model, text: str):
-    return model.encode(text, normalize_embeddings=True).tolist()
 
 def sha256_text(t: str) -> str:
     return hashlib.sha256(t.encode("utf-8")).hexdigest()
@@ -60,7 +55,6 @@ def ensure_index():
                 "s3_bucket": {"type": "keyword"},
                 "s3_key": {"type": "keyword"},
                 "sha_abstract": {"type": "keyword"},
-                "embedding" : {"type": "knn_vector", "dimension": 384},
                 "decision": {"type": "keyword"},
                 "reason": {"type": "text"},
                 "relevance": {"type": "keyword"},
@@ -73,25 +67,15 @@ def ensure_index():
         
 
 # Redundancy check - filters out duplicates and papers that are very similar to existing ones.
-def is_duplicate(title_norm: str, abstract: str, embedding) -> bool:
+def is_duplicate(title_norm: str, sha_abs: str) -> bool:
     try:
         exact_query = {"query": {"bool": {"should": [
                     {"term": {"title_normalized": title_norm}},
-                    {"term": {"sha_abstract": sha256_text(abstract)}}],
+                    {"term": {"sha_abstract": sha_abs}}],
                     "minimum_should_match": 1}}}
 
         res = os_client.search(index=OPENSEARCH_INDEX, body=exact_query)
-        if res["hits"]["total"]["value"] > 0:
-            return True  
-
-        knn_query = {"size": 3, "query": {"knn": {"embedding": {"vector": embedding,"k": 3}}}}
-
-        res = os_client.search(index=OPENSEARCH_INDEX, body=knn_query)
-        hits = res["hits"]["hits"]
-
-        similarity_threshold = 0.9 
-        return any(hit["_score"] >= similarity_threshold for hit in hits)
-
+        return res["hits"]["total"]["value"] > 0
     except Exception as e:
         return False
 
@@ -146,9 +130,8 @@ def lambda_handler(event, context):
 
             title_norm = normalize_title(title)
             sha_abs = sha256_text(abstract)
-            embedding = get_embedding(transformer, abstract)
             
-            if is_duplicate(title_norm, sha_abs, embedding):
+            if is_duplicate(title_norm, sha_abs):
                 logger.info(f"Duplicate skipped | {title}")
                 continue
 
@@ -169,7 +152,6 @@ def lambda_handler(event, context):
                     "s3_bucket": s3_bucket,
                     "s3_key": s3_key,
                     "sha_abstract": sha_abs,
-                    "embedding" : embedding,
                     "decision": "accept",
                     "reason": reason,
                     "relevance": relevance,
