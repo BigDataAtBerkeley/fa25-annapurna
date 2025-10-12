@@ -3,23 +3,19 @@ from utils.request_utils import get_soup, safe_filename, _fetch_openreview_detai
 from utils.aws_utils import upload_pdf_to_s3, send_to_sqs
 import requests
 
-logger = setup_logger("iclr_scraper")
-extract_papers_iclr = extract_papers_function("iclr", logger)
+logger = setup_logger("mylsys_scraper")
+extract_papers_iclr = extract_papers_function("mylsys", logger)
 
 """
-def extract_papers_iclr(year: int, limit: int = 10):
-    base = f"https://iclr.cc/virtual/{year}/papers.html"
-    logger.info(f"Scraping ICLR papers from {base}")
-    soup = get_soup(base)
-
-    cards = soup.find_all("li", class_=False) 
-    article_links = {
-        a.text.strip(): "https://iclr.cc" + a["href"]
-        for c in cards if (a := c.find("a")) and a.get("href")
-    }
-
+def extract_papers_mlsys(year: int, limit: int = 10):
+    base = f"https://mlsys.org/virtual/{year}/papers.html"
+    logger.info(f"Scraping MLSYS papers from {base}")
+    mlsys = get_soup(base)
+    cards = mlsys.find_all('li', class_=False)
+    paper_cards = {card.find('a').text.strip(): "https://mlsys.org" + card.find('a')['href'] for card in cards if card.find('a') and card.find('a').text and card.find('a')['href']}
+    
     count = 0
-    for i, (title, link) in enumerate(article_links.items(), start=1):
+    for i, (title, link) in enumerate(paper_cards.items(), start=1):
         if count >= limit:
             break
         logger.info(f"[{i}] {title}")
@@ -42,11 +38,9 @@ def extract_papers_iclr(year: int, limit: int = 10):
                 upload_pdf_to_s3(r.raw, key)
             send_to_sqs(title, authors, date, abstract, key)
             count += 1
-
         except Exception as e:
             logger.exception(f"Error processing {title}: {e}")
             continue
-
     logger.info(f"Done. Uploaded and queued {count} papers.")
-    return {"uploaded": count, "found": len(article_links)}
+    return {"uploaded": count, "found": len(paper_cards)}
 """
