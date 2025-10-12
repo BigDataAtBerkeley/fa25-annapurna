@@ -4,7 +4,6 @@ import os
 import time
 import hashlib
 import logging
-from sentence_transformers import SentenceTransformer
 from typing import List, Dict
 from datetime import datetime
 from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
