@@ -4,7 +4,7 @@ from utils.aws_utils import upload_pdf_to_s3, send_to_sqs
 import requests
 
 logger = setup_logger("mylsys_scraper")
-extract_papers_iclr = extract_papers_function("mylsys", logger)
+extract_papers_mysls = extract_papers_function("mylsys", logger)
 
 """
 def extract_papers_mlsys(year: int, limit: int = 10):
