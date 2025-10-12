@@ -1,1 +1,0 @@
-{"errorMessage": "Unable to import module 'lambda_handler': cannot import name 'extract_papers_neurips' from 'sources.neurips_scraper' (/var/task/sources/neurips_scraper.py)", "errorType": "Runtime.ImportModuleError", "requestId": "", "stackTrace": []}

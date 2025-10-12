@@ -4,7 +4,6 @@ import os
 import time
 import hashlib
 import logging
-from sentence_transformers import SentenceTransformer
 from typing import List, Dict
 from datetime import datetime
 from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
@@ -99,12 +98,15 @@ Keep it short.
 """
     try:
         body = json.dumps({
-            "modelId": "anthropic.claude-3-haiku-20240307",
             "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-            "maxTokens": 200,
+            "max_tokens": 200,
             "temperature": 0.3
         })
-        response = bedrock.invoke_model(body=body)
+        response = bedrock.invoke_model(
+            modelId="anthropic.claude-3-haiku-20240307-v1:0",
+            # modelId="arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0",
+            body=body
+        )
         text = json.loads(response["body"].read())["content"][0]["text"].strip()
         return json.loads(text)
     except Exception as e:
@@ -136,10 +138,12 @@ def lambda_handler(event, context):
                 continue
 
             # Evaluate with Claude (Bedrock)
-            evaluation = evaluate_paper_with_claude(title, abstract)
-            relevance = evaluation.get("relevance", "unknown").lower()
-            novelty = evaluation.get("novelty", "unknown").lower()
-            reason = evaluation.get("reason", "No reason provided.")
+            # evaluation = evaluate_paper_with_claude(title, abstract)
+            # relevance = evaluation.get("relevance", "unknown").lower()
+            # novelty = evaluation.get("novelty", "unknown").lower()
+            # reason = evaluation.get("reason", "No reason provided.")
+            relevance = 'yes'
+            novelty = 'yes'
 
             # Only store relevant + novel papers
             if relevance == "yes" and novelty == "yes":
@@ -153,7 +157,7 @@ def lambda_handler(event, context):
                     "s3_key": s3_key,
                     "sha_abstract": sha_abs,
                     "decision": "accept",
-                    "reason": reason,
+                    "reason": "testing purposes", ## changing to "reason": reason later
                     "relevance": relevance,
                     "novelty": novelty,
                     "ingested_at": int(time.time() * 1000)

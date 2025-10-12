@@ -1,19 +1,10 @@
 Even though it's scheduled weekly, you can trigger it manually:
 
 ```bash
-# Scrape ICLR papers (default)
-aws lambda invoke \
-  --function-name PapersScraper \
-  --payload '{}' \
-  --cli-binary-format raw-in-base64-out \
-  scraper_output.json && cat scraper_output.json
 
-# Scrape ICML papers
-aws lambda invoke \
-  --function-name PapersScraper \
-  --payload '{"CONFERENCE": "ICML"}' \
-  --cli-binary-format raw-in-base64-out \
-  scraper_output.json && cat scraper_output.json
+# Scrape ICLR papers
+aws lambda invoke --function-name PaperScraper_ICLR --payload '{"MAX_PAPERS": "5"}' --cli-binary-format raw-in-base64-out scraper_output.json
+
 
 # Scrape ICML papers filtered by topic (Large Language Models)
 aws lambda invoke \
@@ -38,26 +29,34 @@ aws lambda invoke \
 
 
 
-CHECK LOGS
+## CHECK LOGS
 
-1. Scraper logs:
-aws logs tail /aws/lambda/PapersScraper --since 15m --follow
+1. ICLR Scraper logs:
+aws logs tail /aws/lambda/PaperScraper_ICLR --since 5m --follow
+
+**TO CHECK OTHER SCRAPER LOGS JUST REPLACE "ICLR" WITH "ICML", "ARXIV", etc**
 
 2. Judge logs
 aws logs tail /aws/lambda/PapersJudge --since 15m --follow
 
 
+## REBUILDING JUDGE LAMBDA
+bash build_judge.sh
 
-Check SQS Queue
+
+
+## Check SQS Queue (if not empty, the judge lambda didn't process the documents in the queue)
 aws sqs get-queue-attributes \
   --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/researchQueue.fifo \
   --attribute-names ApproximateNumberOfMessages
 
 
-Check OpenSearch
+## Check OpenSearch documents and health
 To verify indexed papers:
 python check_opensearch.py
 
+## Clear OpenSearch (DO NOT DO THIS BEFORE SPECIFICALLY ASKING DAN)
+python clear_opensearch.py
 
 AWS_REGION=us-east-1
 OPENSEARCH_ENDPOINT=your-opensearch-endpoint
