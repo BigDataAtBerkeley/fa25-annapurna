@@ -1,5 +1,5 @@
 # --- Environment & dependencies ---
-.env/
+.env
 aws_env/
 *.egg-info/
 *.dist-info/

@@ -74,6 +74,6 @@ CLAUDE_API_KEY=your-claude-key
 
 ### Judge Lambda  
 - `OPENSEARCH_ENDPOINT`: OpenSearch cluster endpoint
-- `OPENSEARCH_INDEX`: Index name for storing papers - default: "research-papers"
+- `OPENSEARCH_INDEX`: Index name for storing papers - default: "research-papers-v2"
 
 
