@@ -40,8 +40,16 @@ aws logs tail /aws/lambda/PaperScraper_ICLR --since 5m --follow
 aws logs tail /aws/lambda/PapersJudge --since 15m --follow
 
 
-## REBUILDING JUDGE LAMBDA
-bash build_judge.sh
+## DEPLOY JUST THE JUDGE
+./build_judge.sh
+
+
+# DEPLOY ALL FUNCTIONS AT ONCE
+chmod +x deploy_all.sh
+./deploy_all.sh
+
+## DEPLOY JUST ICML
+./build_scraper.sh PaperScraper_ICML
 
 
 
@@ -74,6 +82,6 @@ CLAUDE_API_KEY=your-claude-key
 
 ### Judge Lambda  
 - `OPENSEARCH_ENDPOINT`: OpenSearch cluster endpoint
-- `OPENSEARCH_INDEX`: Index name for storing papers - default: "research-papers"
+- `OPENSEARCH_INDEX`: Index name for storing papers - default: "research-papers-v2"
 
 

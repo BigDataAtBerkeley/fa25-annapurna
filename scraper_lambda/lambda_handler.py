@@ -1,10 +1,10 @@
 import os
 import logging
 from sources.iclr_scraper import extract_papers_iclr
-from sources.icml_scraper import extract_papers_icml
 from sources.arxiv_scraper import extract_papers_arxiv
+from sources.icml_scraper import extract_papers_icml
+from sources.mlsys_scraper import extract_papers_mlsys
 from sources.neurips_scraper import extract_papers_neurips
-from sources.openreview_scraper import extract_papers_openreview
 from utils.logging_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -18,16 +18,16 @@ def lambda_handler(event, context):
 
     if source == "iclr":
         result = extract_papers_iclr(year, limit=max_papers)
-    elif source == "icml":
-        result = extract_papers_icml(year, limit=max_papers)
+    elif source == "mlsys":
+        result = extract_papers_mlsys(year, limit=max_papers)
+    elif source == "neurips":
+        result = extract_papers_neurips(year, limit=max_papers)
     elif source == "arxiv":
         result = extract_papers_arxiv(limit=max_papers)
-    elif source == "neurips":
-        result = extract_papers_neurips(limit=max_papers)
-    elif source == "openreview":
-        result = extract_papers_openreview(limit=max_papers)
+    elif source == 'icml':
+        result = extract_papers_icml(limit=max_papers, year=2025, topic_filter="llm")
     else:
-        raise ValueError(f"Unknown source: {source}")
+        raise ValueError(f"Unknown source: {source}. Supported: iclr, arxiv")
 
     logger.info(f"Lambda for {source} completed: {result}")
     return result
