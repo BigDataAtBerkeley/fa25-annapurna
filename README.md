@@ -29,6 +29,20 @@ aws lambda invoke \
   --cli-binary-format raw-in-base64-out \
   scraper_output.json && cat scraper_output.json
 
+# Scrape ACL 2025 papers (focused on LLMs)
+aws lambda invoke \
+  --function-name PapersScraper \
+  --payload '{"CONFERENCE": "ACL", "keyword_filter": "LLM"}' \
+  --cli-binary-format raw-in-base64-out \
+  scraper_output.json && cat scraper_output.json
+
+# Scrape ACL papers with custom keyword filter
+aws lambda invoke \
+  --function-name PapersScraper \
+  --payload '{"CONFERENCE": "ACL", "keyword_filter": "transformer"}' \
+  --cli-binary-format raw-in-base64-out \
+  scraper_output.json && cat scraper_output.json
+
 # Scrape both ICLR and ICML papers
 aws lambda invoke \
   --function-name PapersScraper \
@@ -67,7 +81,7 @@ CLAUDE_API_KEY=your-claude-key
 ## Environment Variables
 
 ### Scraper Lambda
-- `CONFERENCE`: Conference to scrape ("ICLR", "ICML", or "BOTH") - default: "ICLR"
+- `CONFERENCE`: Conference to scrape ("ICLR", "ICML", "ACL", or "BOTH") - default: "ICLR"
 - `CONFERENCE_YEAR`: Year to scrape (e.g., "2025") - default: "2025"
 - `MAX_PAPERS`: Maximum papers to process - default: "3"
 - `BUCKET_NAME`: S3 bucket for PDF storage
