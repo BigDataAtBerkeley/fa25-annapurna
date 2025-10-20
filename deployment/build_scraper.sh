@@ -2,20 +2,29 @@
 
 # Build and deploy scraper Lambda functions
 FUNCTION_NAME=${1:-PaperScraper_ICLR}
-
-echo "Building scraper Lambda for: $FUNCTION_NAME"
-
-# Clean up old zip
 rm -f scraper_lambda.zip
+ZIP_FILE="scraper_lambda.zip"
 
-# Create zip from scraper_lambda directory
-cd scraper_lambda
-zip -r ../scraper_lambda.zip . -x "*.log" "logs/*" "__pycache__/*" "*.pyc" "*.zip"
-cd ..
+echo "📦 Packaging $FUNCTION_NAME..."
 
-# Update Lambda function
+# Move into scraper directory
+cd ../scraper_lambda
+
+# Install dependencies into a local folder
+pip install -r ../deploy/requirements_scraper.txt -t .
+
+# Zip everything
+zip -r9 ../deploy/$ZIP_FILE .
+
+# Clean up installed deps
+find . -type d -name "__pycache__" -exec rm -rf {} +
+rm -rf boto3* requests* selenium* bs4* dotenv*
+
+cd ../deploy
+
+echo "🚀 Updating $FUNCTION_NAME in AWS..."
 aws lambda update-function-code \
   --function-name $FUNCTION_NAME \
-  --zip-file fileb://scraper_lambda.zip
+  --zip-file fileb://$ZIP_FILE
 
-echo "Scraper Lambda $FUNCTION_NAME updated successfully"
+echo "✅ $FUNCTION_NAME deployed successfully."

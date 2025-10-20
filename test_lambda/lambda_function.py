@@ -33,12 +33,13 @@ OPENSEARCH_ENDPOINT = os.getenv('OPENSEARCH_ENDPOINT')
 OPENSEARCH_INDEX = os.getenv('OPENSEARCH_INDEX', 'research-papers-v2')
 OUTPUTS_BUCKET = os.getenv('OUTPUTS_BUCKET', 'papers-test-outputs')
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
+QUEUE_URL = os.getenv['QUEUE_URL']
 
 # Trainium instance configuration
-TRAINIUM_ENDPOINT = os.getenv('TRAINIUM_ENDPOINT')  # e.g., http://10.0.1.50:8000
-TRAINIUM_INSTANCE_ID = os.getenv('TRAINIUM_INSTANCE_ID')  # EC2 instance ID (optional, for auto-start)
+TRAINIUM_ENDPOINT = os.getenv('TRAINIUM_ENDPOINT') 
+TRAINIUM_INSTANCE_ID = os.getenv('TRAINIUM_INSTANCE_ID') 
 BATCH_SIZE = int(os.getenv('BATCH_SIZE', '10'))
-TRAINIUM_TIMEOUT = int(os.getenv('TRAINIUM_TIMEOUT', '600'))  # 10 minutes default
+TRAINIUM_TIMEOUT = int(os.getenv('TRAINIUM_TIMEOUT', '600')) 
 
 # OpenSearch client setup
 creds = session.get_credentials().get_frozen_credentials()
@@ -104,6 +105,15 @@ def save_output_to_s3(paper_id: str, filename: str, content: str) -> str:
     )
     logger.info(f"Saved {filename} to s3://{OUTPUTS_BUCKET}/{key}")
     return key
+
+def retrieve_messages_from_sqs(sqs_client, queue_url: str, num_messages: int = 10) -> List[Dict[str, Any]]:
+    """Retrieve messages from SQS queue"""
+    response = sqs_client.receive_message(
+        QueueUrl=queue_url,
+        MaxNumberOfMessages=num_messages,
+        WaitTimeSeconds=10
+    )
+    return response.get('Messages', [])
 
 def update_opensearch(paper_id: str, test_results: Dict[str, Any]):
     """Update OpenSearch document with test results"""
@@ -266,17 +276,29 @@ def process_batch_results(batch_data: List[Dict[str, Any]], trainium_results: Di
                 logger.error(f"Failed to update OpenSearch with error for {paper_id}: {update_error}")
 
 def lambda_handler(event, context):
-    """
-    Lambda handler triggered by SQS messages.
-    Processes batches of up to 10 messages at a time.
-    """
+    
     try:
-        logger.info(f"PapersCodeTester invoked with {len(event['Records'])} messages")
+        # Check SQS queue length
+        attrs = sqs_client.get_queue_attributes(
+            QueueUrl=QUEUE_URL,
+            AttributeNames=['ApproximateNumberOfMessages']
+        )
+        
+        num = int(attrs['Attributes']['ApproximateNumberOfMessages'])
+
+        if num < BATCH_SIZE:
+            logger.info(f"Processing queue has {num} papers fewer than set threshold of {BATCH_SIZE}. Postponing Trainium processing.")
+            return {
+                "statusCode": 200,
+                "body": json.dumps({
+                    "message": f"Processing queue has {num} papers fewer than set threshold of {BATCH_SIZE}. Postponing Trainium processing."
+                })
+            }
         
         # Build batch data from SQS messages
         batch_data = []
         
-        for record in event['Records']:
+        for record in retrieve_messages_from_sqs(sqs_client, QUEUE_URL, num_messages=BATCH_SIZE):
             message_body = json.loads(record['body'])
             
             paper_id = message_body['paper_id']

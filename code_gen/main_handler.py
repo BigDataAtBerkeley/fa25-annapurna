@@ -42,7 +42,7 @@ class CodeGenHandler:
             author = event.get('author')
             keywords = event.get('keywords')
             max_papers = event.get('max_papers', 5)
-            include_full_content = event.get('include_full_content', False)
+            include_full_content = event.get('include_full_content', True)
             days = event.get('days', 30)
             
             logger.info(f"Processing action: {action}")
