@@ -227,13 +227,13 @@ class PyTorchCodeGenerator:
         }
         return self.search_and_generate_code(search_query, max_papers, include_full_content)
     
-    def save_generated_code(self, result: Dict[str, Any], output_dir: str = "code_gen/generated_code") -> str:
+    def save_generated_code(self, result: Dict[str, Any], output_dir: str = "generated_code") -> str:
         """
         Save generated code to files.
         
         Args:
             result: Result from code generation
-            output_dir: Directory to save files (default: code_gen/generated_code)
+            output_dir: Directory to save files (default: generated_code)
             
         Returns:
             Path to saved file
