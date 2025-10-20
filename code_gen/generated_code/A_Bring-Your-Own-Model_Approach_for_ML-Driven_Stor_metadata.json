@@ -1,0 +1,17 @@
+{
+  "paper_title": "A Bring-Your-Own-Model Approach for ML-Driven Storage Placement in Warehouse-Scale Computers",
+  "paper_id": "5-j63JkBP8oloYi_6iI5",
+  "authors": [
+    "Chenxi Yang",
+    "Yan Li",
+    "Martin Maas",
+    "Mustafa Uysal",
+    "Ubaid Ullah Hafeez",
+    "Arif Merchant",
+    "Richard McDougall"
+  ],
+  "generated_at": "2025-10-20T00:12:46.372259",
+  "model_used": "anthropic.claude-3-sonnet-20240229-v1:0",
+  "code_file": "A_Bring-Your-Own-Model_Approach_for_ML-Driven_Stor.py",
+  "explanation": "## PyTorch Implementation\n\n### Overview\nThis implementation demonstrates a bring-your-own-model approach for ML-driven storage placement in warehouse-scale computers, as described in the research paper \"A Bring-Your-Own-Model Approach for ML-Driven Storage Placement in Warehouse-Scale Computers\". The code includes data loading and preprocessing, model architecture, training loop, evaluation, visualization, and comprehensive documentation.\n\n### Dependencies\n- torch\n- torchvision\n- numpy\n- matplot..."
+}
