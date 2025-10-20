@@ -1,8 +1,9 @@
 #!/bin/bash
-set -e
 
-FUNCTION_NAME="PapersScraper"
-ZIP_FILE="scraper.zip"
+# Build and deploy scraper Lambda functions
+FUNCTION_NAME=${1:-PaperScraper_ICLR}
+rm -f scraper_lambda.zip
+ZIP_FILE="scraper_lambda.zip"
 
 echo "📦 Packaging $FUNCTION_NAME..."
 

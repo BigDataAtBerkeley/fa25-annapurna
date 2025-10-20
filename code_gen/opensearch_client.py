@@ -223,10 +223,10 @@ class OpenSearchClient:
         date = paper.get('date', 'Unknown date')
         
         summary = f"""
-Paper Title: {title}
-Authors: {', '.join(authors) if isinstance(authors, list) else authors}
-Date: {date}
-Abstract: {abstract}
-"""
+                Paper Title: {title}
+                Authors: {', '.join(authors) if isinstance(authors, list) else authors}
+                Date: {date}
+                Abstract: {abstract}
+                """
         
         return summary.strip()

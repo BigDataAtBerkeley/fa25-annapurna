@@ -123,12 +123,34 @@ Full Paper Content:
         base_prompt += """
 Please generate a complete PyTorch implementation that includes:
 
-1. **Data Loading and Preprocessing**: Create appropriate data loaders and preprocessing pipelines
-2. **Model Architecture**: Implement the main model/algorithm described in the paper
-3. **Training Loop**: Include a complete training loop with proper loss functions and optimizers
-4. **Evaluation**: Add evaluation metrics and testing functionality
-5. **Visualization**: Include plotting and visualization code where appropriate
-6. **Documentation**: Add comprehensive comments explaining each component
+1. **Dataset Acquisition**: 
+   - If the paper uses a public dataset (e.g., CIFAR-10, ImageNet, MNIST, etc.), include code to automatically download it using torchvision.datasets or other standard libraries
+   - If the paper uses a custom dataset, generate synthetic data that matches the paper's data characteristics
+   - Include a function that downloads/generates the dataset and saves it to a local directory
+   - Handle cases where the dataset already exists locally
+
+2. **Data Loading and Preprocessing**: 
+   - Create appropriate data loaders and preprocessing pipelines
+   - Include data augmentation if mentioned in the paper
+
+3. **Model Architecture**: Implement the main model/algorithm described in the paper
+
+4. **Training Loop**: Include a complete training loop with proper loss functions and optimizers
+
+5. **Evaluation**: Add evaluation metrics and testing functionality
+
+6. **Visualization**: Include plotting and visualization code where appropriate
+
+7. **Documentation**: Add comprehensive comments explaining each component
+
+CRITICAL REQUIREMENTS FOR DATASETS:
+- The code MUST be runnable immediately after downloading dependencies
+- Include a `download_dataset()` or `prepare_dataset()` function that runs automatically
+- For public datasets: Use torchvision.datasets, HuggingFace datasets, or other standard libraries
+- For custom datasets: Generate synthetic data with similar characteristics (same dimensions, data types, etc.)
+- Save datasets to a 'data/' directory that the code creates automatically
+- Include error handling for network issues during downloads
+- Print progress messages during dataset preparation
 
 Requirements:
 - Use modern PyTorch practices (PyTorch 2.0+ features when applicable)
@@ -137,7 +159,8 @@ Requirements:
 - Add type hints where appropriate
 - Include example usage and configuration
 - Handle edge cases and provide fallbacks
-- Use appropriate libraries (torch, torchvision, numpy, matplotlib, etc.)
+- Use appropriate libraries (torch, torchvision, numpy, matplotlib, datasets, etc.)
+- THE CODE MUST BE IMMEDIATELY RUNNABLE - no manual dataset setup required
 
 Please structure your response as follows:
 
@@ -147,20 +170,23 @@ Please structure your response as follows:
 [Brief explanation of what the code implements]
 
 ### Dependencies
-[List of required packages]
+[List of required packages including dataset download libraries]
 
 ### Code Implementation
 ```python
-[Complete PyTorch code here]
+[Complete PyTorch code here with dataset downloading/generation]
 ```
 
 ### Usage Example
-[Example of how to use the code]
+[Example of how to use the code - should just work when run]
+
+### Dataset Information
+[Explain which dataset is used and how it's obtained]
 
 ### Key Features
 [List of main features implemented]
 
-Please ensure the code is production-ready and follows best practices.
+Please ensure the code is production-ready, follows best practices, and can be run immediately after installing dependencies.
 """
 
         return base_prompt
