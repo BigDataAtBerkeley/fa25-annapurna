@@ -15,10 +15,10 @@ class RAGConfig:
     EMBEDDINGS_MODEL_ID = os.getenv("EMBEDDINGS_MODEL_ID", "amazon.titan-embed-text-v1")
     EMBEDDING_DIMENSION = 1536  # Titan Embeddings v1 dimension
     
-    # Similarity Thresholds
-    SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.85"))  # 85% similarity for redundancy
-    HIGH_SIMILARITY_THRESHOLD = float(os.getenv("HIGH_SIMILARITY_THRESHOLD", "0.95"))  # 95% for near-duplicates
-    MEDIUM_SIMILARITY_THRESHOLD = float(os.getenv("MEDIUM_SIMILARITY_THRESHOLD", "0.75"))  # 75% for potential duplicates
+    # Similarity Thresholds - Adjusted for academic paper diversity
+    SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.95"))  # 95% similarity for redundancy (near-duplicates only)
+    HIGH_SIMILARITY_THRESHOLD = float(os.getenv("HIGH_SIMILARITY_THRESHOLD", "0.98"))  # 98% for exact duplicates
+    MEDIUM_SIMILARITY_THRESHOLD = float(os.getenv("MEDIUM_SIMILARITY_THRESHOLD", "0.90"))  # 90% for potential duplicates
     
     # Search Configuration
     DEFAULT_SEARCH_SIZE = int(os.getenv("DEFAULT_SEARCH_SIZE", "10"))
