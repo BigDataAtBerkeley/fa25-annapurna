@@ -1,6 +1,6 @@
 # --- Environment & dependencies ---
-.env/
-aws_env/
+.env
+aws_env
 *.egg-info/
 *.dist-info/
 __pycache__/
@@ -59,8 +59,14 @@ secrets.json
 config.json
 
 # --- IDE / system files ---
+.venv
 .vscode/
 .idea/
 .DS_Store
 *.swp
 *.swo
+
+
+
+## 
+clear_opensearch.py 
