@@ -273,10 +273,18 @@ class PyTorchCodeGenerator:
                 f.write(f'"""\n\n')
                 f.write(result["code"])
             
-            # Save metadata
             metadata_file = filepath.replace('.py', '_metadata.json')
+            metadata = {
+                "paper_id": result.get("paper_id"),
+                "paper_title": result.get("paper_title"),
+                "paper_authors": result.get("paper_authors", []),
+                "explanation": result.get("explanation"),  # Contains key info about metrics/improvements
+                "generated_at": result.get("generated_at"),
+                "model_used": result.get("model_used"),
+                "code_file": filepath
+            }
             with open(metadata_file, 'w', encoding='utf-8') as f:
-                json.dump(result, f, indent=2, ensure_ascii=False)
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
             
             logger.info(f"Saved generated code to: {filepath}")
             return filepath
