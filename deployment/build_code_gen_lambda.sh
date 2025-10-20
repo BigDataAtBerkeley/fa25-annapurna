@@ -38,7 +38,7 @@ AWS Lambda handler for the code generation system.
 
 import json
 import logging
-from code_gen.main_handler import lambda_handler as code_gen_handler
+from code_gen.lambda_handler import lambda_handler as code_gen_handler
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)

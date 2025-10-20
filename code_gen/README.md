@@ -43,7 +43,7 @@ code_gen folder: retrieves research papers from OpenSearch and for each paper, g
 ### Generate Code for a Specific Paper
 
 ```python
-from code_gen.main_handler import CodeGenHandler
+from code_gen.lambda_handler import CodeGenHandler
 
 handler = CodeGenHandler()
 result = handler.handle_lambda_event({
@@ -112,14 +112,14 @@ The system is designed to work as an AWS Lambda function. Deploy using:
 # Package the code
 zip -r code_gen_lambda.zip code_gen/
 
-# Deploy to AWS Lambda
-aws lambda create-function \
-  --function-name CodeGenerator \
-  --runtime python3.9 \
-  --role arn:aws:iam::your-account:role/lambda-execution-role \
-  --handler code_gen.main_handler.lambda_handler \
-  --zip-file fileb://code_gen_lambda.zip
-```
+# # Deploy to AWS Lambda
+# aws lambda create-function \
+#   --function-name CodeGenerator \
+#   --runtime python3.9 \
+#   --role arn:aws:iam::your-account:role/lambda-execution-role \
+#   --handler code_gen.lambda_handler.lambda_handler \
+#   --zip-file fileb://code_gen_lambda.zip
+# ```
 
 ## Error Handling
 
