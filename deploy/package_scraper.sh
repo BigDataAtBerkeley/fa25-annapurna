@@ -1,7 +1,8 @@
 #!/bin/bash
 set -e
 
-FUNCTION_NAME="PapersScraper"
+FUNCTION_NAME=${1:-PaperScraper_ICLR}
+rm -f scraper.zip
 ZIP_FILE="scraper.zip"
 
 echo "📦 Packaging $FUNCTION_NAME..."
