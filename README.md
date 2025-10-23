@@ -202,28 +202,55 @@ python check_opensearch.py
 
 # Clear OpenSearch (DO NOT RUN UNLESS ASKING DAN FIRST (anyways this file is gitignored))
 python clear_opensearch.py
-```
 
-### Check Trainium Instance
+
+### Setup Queues (First Time Only)
 
 ```bash
-# Check instance status
-aws ec2 describe-instances \
-  --instance-ids <TRAINIUM_INSTANCE_ID> \
-  --query 'Reservations[0].Instances[0].State.Name' \
-  --output text
+# Create all SQS queues and configure Lambda triggers
+chmod +x deployment/setup_sqs_queues.sh
+./deployment/setup_sqs_queues.sh
+```
 
-# Start Trainium instance manually (if needed)
-aws ec2 start-instances --instance-ids <TRAINIUM_INSTANCE_ID>
+python check_opensearch.py
+```
 
-# Stop Trainium instance (to save costs when not in use)
-aws ec2 stop-instances --instance-ids <TRAINIUM_INSTANCE_ID>
 
-# SSH into Trainium instance (for debugging)
-ssh -i <your-key.pem> ubuntu@<TRAINIUM_PUBLIC_IP>
+```bash
+# Get queue URL
+CODE_EVAL_QUEUE=$(aws sqs get-queue-url --queue-name code-evaluation.fifo --query 'QueueUrl' --output text)
 
-# Check Trainium service logs
-ssh ubuntu@<TRAINIUM_PUBLIC_IP> "tail -f /var/log/trainium-executor.log"
+
+# Watch code generation logs
+aws logs tail /aws/lambda/PapersCodeGenerator --follow
+```
+
+### Check Pipeline Status
+
+```bash
+# Check all queue depths
+echo "=== Queue Status ==="
+aws sqs get-queue-attributes \
+  --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/researchQueue.fifo \
+  --attribute-names ApproximateNumberOfMessages \
+  --query 'Attributes.ApproximateNumberOfMessages' --output text | xargs -I {} echo "researchQueue: {} messages"
+
+CODE_EVAL=$(aws sqs get-queue-url --queue-name code-evaluation.fifo --query 'QueueUrl' --output text)
+aws sqs get-queue-attributes --queue-url $CODE_EVAL \
+  --attribute-names ApproximateNumberOfMessages \
+  --query 'Attributes.ApproximateNumberOfMessages' --output text | xargs -I {} echo "code-evaluation: {} messages"
+
+CODE_TEST=$(aws sqs get-queue-url --queue-name code-testing.fifo --query 'QueueUrl' --output text)
+aws sqs get-queue-attributes --queue-url $CODE_TEST \
+  --attribute-names ApproximateNumberOfMessages \
+  --query 'Attributes.ApproximateNumberOfMessages' --output text | xargs -I {} echo "code-testing: {} messages"
+```
+
+### Check OpenSearch Field Mapping
+
+```bash
+# View all fields in OpenSearch index (should show 66 fields)
+python check_opensearch_mapping.py
 ```
 
 ---
@@ -279,38 +306,6 @@ aws ec2 run-instances \
   --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=PapersCodeTester-Trainium}]'
 ```
 
-### Setup Trainium Executor Service
-
-SSH into the instance and run:
-
-```bash
-# Install dependencies
-sudo apt update
-sudo apt install -y python3-pip python3-venv
-
-# Install PyTorch Neuron
-pip3 install torch-neuronx neuronx-cc --extra-index-url=https://pip.repos.neuron.amazonaws.com
-
-# Create executor service directory
-mkdir -p ~/trainium-executor
-cd ~/trainium-executor
-
-# Create Python service (see trainium_executor.py below)
-# This service should expose an HTTP endpoint at port 8000
-# Endpoint: POST /execute_batch
-# Accepts: {"batch": [{"paper_id": "...", "code": "..."}]}
-# Returns: {"results": {"paper_id": {"success": bool, "stdout": "...", ...}}}
-
-# Run as systemd service (recommended for production)
-sudo systemctl enable trainium-executor
-sudo systemctl start trainium-executor
-```
-
-### Configure Security Group
-
-Ensure the security group allows:
-- Inbound TCP 8000 from Lambda VPC (for HTTP API)
-- Inbound TCP 22 from your IP (for SSH access)
 
 ### Lambda Configuration
 

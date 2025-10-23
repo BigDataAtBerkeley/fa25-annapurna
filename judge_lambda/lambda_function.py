@@ -18,12 +18,14 @@ logger.info("Judge Lambda started")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 OPENSEARCH_ENDPOINT = os.getenv("OPENSEARCH_ENDPOINT")
 OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "research-papers")
+CODE_EVAL_QUEUE_URL = os.getenv("CODE_EVAL_QUEUE_URL")  # SQS queue for code generation
 
 # AWS Clients
 session = boto3.Session(region_name=AWS_REGION)
 creds = session.get_credentials().get_frozen_credentials()
 auth = AWSV4SignerAuth(creds, AWS_REGION, "es")
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
+sqs_client = boto3.client("sqs", region_name=AWS_REGION)
 
 os_client = OpenSearch(
     hosts=[{"host": OPENSEARCH_ENDPOINT.replace("https://","").replace("http://",""), "port": 443}],
@@ -113,6 +115,43 @@ Keep it short.
         logger.warning(f"Claude via Bedrock failed: {e}")
         return {"relevance": "unknown", "novelty": "unknown", "reason": "Claude evaluation failed"}
 
+def send_to_code_eval_queue(paper_id: str, paper_data: Dict) -> bool:
+    """
+    Send paper to code-evaluation queue (for code generation when 10 accumulate).
+    
+    Args:
+        paper_id: OpenSearch document ID
+        paper_data: Paper metadata
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    if not CODE_EVAL_QUEUE_URL:
+        logger.warning("CODE_EVAL_QUEUE_URL not set, skipping queue")
+        return False
+    
+    try:
+        message = {
+            "paper_id": paper_id,
+            "action": "generate_by_id",
+            "paper_title": paper_data.get("title"),
+            "queued_at": datetime.now().isoformat()
+        }
+        
+        sqs_client.send_message(
+            QueueUrl=CODE_EVAL_QUEUE_URL,
+            MessageBody=json.dumps(message),
+            MessageGroupId=paper_id,
+            MessageDeduplicationId=f"{paper_id}-{int(time.time() * 1000)}"
+        )
+        
+        logger.info(f"Sent to code-eval queue: {paper_data.get('title')}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to send to code-eval queue: {e}")
+        return False
+
 # Lambda Handler
 def lambda_handler(event, context):
     ensure_index()
@@ -162,8 +201,15 @@ def lambda_handler(event, context):
                     "novelty": novelty,
                     "ingested_at": int(time.time() * 1000)
                 }
-                os_client.index(index=OPENSEARCH_INDEX, body=doc, refresh=True)
-                logger.info(f"Indexed | {title}")
+                
+                # Index in OpenSearch
+                result = os_client.index(index=OPENSEARCH_INDEX, body=doc, refresh=True)
+                paper_id = result['_id']
+                logger.info(f"Indexed | {title} | ID: {paper_id}")
+                
+                # Send to code-evaluation queue (will trigger code gen when 10 accumulate)
+                send_to_code_eval_queue(paper_id, doc)
+                
             else:
                 logger.info(f"Skipped (irrelevant or not novel) | {title} | {reason}")
 

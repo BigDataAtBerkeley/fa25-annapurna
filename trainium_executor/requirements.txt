@@ -1,0 +1,9 @@
+flask==3.0.0
+psutil==5.9.0
+requests==2.31.0
+
+# PyTorch and Neuron SDK (install separately with pip repos.neuron.amazonaws.com)
+# torch-neuronx
+# neuronx-cc
+# torch==2.1.0
+

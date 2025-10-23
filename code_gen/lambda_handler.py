@@ -20,13 +20,10 @@ except ImportError:
     AWS_AVAILABLE = False
 
 import sys
-sys.path.append('/opt/python')  # Lambda layer path
+sys.path.append('/opt/python')  
 sys.path.append(os.path.dirname(__file__))
 
-try:
-    from .pytorch_generator import PyTorchCodeGenerator
-except ImportError:
-    from pytorch_generator import PyTorchCodeGenerator
+from pytorch_generator import PyTorchCodeGenerator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,13 +31,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# AWS clients (initialized only in Lambda environment)
 s3_client = None
 sqs_client = None
 os_client = None
 
 CODE_BUCKET = os.getenv('CODE_BUCKET', 'papers-code-artifacts')
-CODE_QUEUE_URL = os.getenv('CODE_QUEUE_URL')
+CODE_TEST_QUEUE_URL = os.getenv('CODE_TEST_QUEUE_URL')  # code-testing.fifo queue
 OPENSEARCH_ENDPOINT = os.getenv('OPENSEARCH_ENDPOINT')
 OPENSEARCH_INDEX = os.getenv('OPENSEARCH_INDEX', 'research-papers-v2')
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
@@ -141,10 +137,10 @@ def update_opensearch(paper_id: str, code_info: Dict[str, Any]):
         logger.error(f"Error updating OpenSearch: {e}")
         raise
 
-def send_to_sqs(paper_id: str, paper_title: str, s3_info: Dict[str, str]):
-    """Send message to SQS for code testing"""
-    if not CODE_QUEUE_URL:
-        logger.warning("CODE_QUEUE_URL not set, skipping SQS")
+def send_to_testing_queue(paper_id: str, paper_title: str, s3_info: Dict[str, str]):
+    """Send message to code-testing.fifo for Trainium testing"""
+    if not CODE_TEST_QUEUE_URL:
+        logger.warning("CODE_TEST_QUEUE_URL not set, skipping SQS")
         return
     
     if sqs_client is None:
@@ -160,13 +156,13 @@ def send_to_sqs(paper_id: str, paper_title: str, s3_info: Dict[str, str]):
     }
     
     sqs_client.send_message(
-        QueueUrl=CODE_QUEUE_URL,
+        QueueUrl=CODE_TEST_QUEUE_URL,
         MessageBody=json.dumps(message),
         MessageGroupId=paper_id,
         MessageDeduplicationId=f"{paper_id}-{datetime.now().isoformat()}"
     )
     
-    logger.info(f"Sent message to SQS for paper {paper_id}")
+    logger.info(f"Sent to code-testing queue for paper {paper_id}")
 
 
 class CodeGenHandler:
@@ -281,8 +277,8 @@ class CodeGenHandler:
             # Update OpenSearch
             update_opensearch(paper_id, s3_info)
             
-            # Send to SQS for testing
-            send_to_sqs(paper_id, paper_title, s3_info)
+            # Send to code-testing queue for Trainium testing
+            send_to_testing_queue(paper_id, paper_title, s3_info)
             
             # Add info to response
             code_result['s3_bucket'] = s3_info['s3_bucket']
@@ -366,10 +362,11 @@ class CodeGenHandler:
 def lambda_handler(event, context):
     """
     AWS Lambda handler function.
+    Handles both direct invocations and SQS batch events.
     Generates code, saves to S3, updates OpenSearch, and queues for testing.
     
     Args:
-        event: Lambda event
+        event: Lambda event (direct or SQS batch)
         context: Lambda context
         
     Returns:
@@ -381,11 +378,45 @@ def lambda_handler(event, context):
         # Initialize AWS clients
         init_aws_clients()
         
-        # Generate code and handle AWS integrations
         handler = CodeGenHandler()
-        result = handler.handle_lambda_event(event, use_aws=True)
         
-        return result
+        # Check if this is an SQS batch event
+        if 'Records' in event:
+            logger.info(f"Processing SQS batch with {len(event['Records'])} messages")
+            
+            results = []
+            failures = []
+            
+            for record in event['Records']:
+                try:
+                    # Parse message body
+                    message = json.loads(record['body'])
+                    paper_id = message.get('paper_id')
+                    
+                    logger.info(f"Generating code for paper: {paper_id}")
+                    
+                    # Generate code for this paper
+                    result = handler.handle_lambda_event(message, use_aws=True)
+                    results.append(result)
+                    
+                except Exception as e:
+                    logger.error(f"Error processing record: {e}")
+                    failures.append({
+                        "itemIdentifier": record.get('messageId'),
+                        "error": str(e)
+                    })
+            
+            return {
+                "success": True,
+                "processed": len(results),
+                "failed": len(failures),
+                "batchItemFailures": failures  # SQS partial batch failure handling
+            }
+        
+        else:
+            # Direct invocation (not from SQS)
+            result = handler.handle_lambda_event(event, use_aws=True)
+            return result
         
     except Exception as e:
         logger.error(f"Error in PapersCodeGenerator Lambda: {e}")

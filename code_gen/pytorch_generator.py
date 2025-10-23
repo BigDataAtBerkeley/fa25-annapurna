@@ -7,8 +7,12 @@ import json
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime
-from .opensearch_client import OpenSearchClient
-from .bedrock_client import BedrockClient
+try:
+    from opensearch_client import OpenSearchClient
+    from bedrock_client import BedrockClient
+except ImportError:
+    from .opensearch_client import OpenSearchClient
+    from .bedrock_client import BedrockClient
 
 logger = logging.getLogger(__name__)
 

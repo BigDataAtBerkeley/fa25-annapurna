@@ -21,14 +21,13 @@ rm -f $PACKAGE_NAME
 # Create deployment directory
 mkdir -p $DEPLOY_DIR
 
-# Copy the code_gen module
-cp -r code_gen $DEPLOY_DIR/
+# Copy all Python files from code_gen to root (so imports work)
+echo "Copying code_gen files..."
+cp code_gen/*.py $DEPLOY_DIR/
 
 # Install dependencies
 echo "Installing dependencies..."
 pip install -r code_gen/requirements.txt -t $DEPLOY_DIR/
-
-cp $DEPLOY_DIR/code_gen/lambda_handler.py $DEPLOY_DIR/lambda_handler.py
 
 # Don't need to create it, comment out the cat command
 : << 'SKIP'
