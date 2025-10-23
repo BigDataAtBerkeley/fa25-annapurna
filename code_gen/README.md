@@ -13,8 +13,6 @@ code_gen folder: retrieves research papers from OpenSearch and for each paper, g
 - **Lambda Support**: AWS Lambda handler for serverless deployment
 
 
-
-
 ## API Reference
 
 ### Actions

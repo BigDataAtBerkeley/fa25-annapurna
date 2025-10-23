@@ -90,6 +90,11 @@ chmod +x deployment/*.sh
 ### Trigger Scrapers Manually
 
 ```bash
+
+
+**"ICLR" IS USED AS AN EXAMPLE. TO TEST OTHER LAMBDA FUNCTIONS, REPLACE "ICLR" WITH "ICML", "arxiv", "MLSYS", or "NEURIPS".**
+
+
 # Scrape ICLR papers
 aws lambda invoke \
   --function-name PaperScraper_ICLR \
@@ -170,7 +175,7 @@ python -m code_gen.main_handler generate_recent --max-papers 5
 aws logs tail /aws/lambda/PaperScraper_ICLR --since 5m --follow
 aws logs tail /aws/lambda/PaperScraper_ICML --since 5m --follow
 
-# Judge logs
+2. Judge logs
 aws logs tail /aws/lambda/PapersJudge --since 15m --follow
 
 # Code Generator logs

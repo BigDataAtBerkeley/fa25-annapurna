@@ -57,26 +57,29 @@ def extract_papers_function(source: str, logger, search_term: str = "LLM"):
         for i, (title, link) in enumerate(paper_cards.items(), start=1):
             if count >= limit:
                 break
-            logger.info(f"[{i}] {title}")
+            logger.info(f"[{i}] {title}: {link}")
+            count += 1
             try:
                 psoup = get_soup(link)
                 openreview_link = psoup.find("a", {"title": "OpenReview"})
                 if not openreview_link:
+                    logger.exception(f"Error processing {title}: could not find a link to OpenReview.")
                     continue
                 url = openreview_link["href"]
                 if url.startswith("/"): 
+                    logger.exception(f"Error processing {title}: OpenReview link references site.")
                     continue
 
                 authors, abstract, date, pdf_link = _fetch_openreview_details(url)
                 if not pdf_link:
+                    logger.exception(f"Error processing {title}: could not find PDF link on OpenReview.")
                     continue
-
+                
                 key = safe_filename(title)
                 with requests.get(pdf_link, stream=True, timeout=60) as r:
                     r.raise_for_status()
                     upload_pdf_to_s3(r.raw, key)
                 send_to_sqs(title, authors, date, abstract, key)
-                count += 1
             except Exception as e:
                 logger.exception(f"Error processing {title}: {e}")
                 continue

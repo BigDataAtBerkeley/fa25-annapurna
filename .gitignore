@@ -1,6 +1,7 @@
 # --- Environment & dependencies ---
 .env
-aws_env
+.env/
+aws_env/
 *.egg-info/
 *.dist-info/
 __pycache__/
