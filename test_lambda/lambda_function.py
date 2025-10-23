@@ -25,22 +25,20 @@ logger.setLevel(logging.INFO)
 
 s3_client = boto3.client('s3')
 sqs_client = boto3.client('sqs')
-ec2_client = boto3.client('ec2')
+
+ec2_client = boto3.client('ec2', region_name='us-east-2')
 session = boto3.Session()
 
-# Environment variables
 OPENSEARCH_ENDPOINT = os.getenv('OPENSEARCH_ENDPOINT')
 OPENSEARCH_INDEX = os.getenv('OPENSEARCH_INDEX', 'research-papers-v2')
 OUTPUTS_BUCKET = os.getenv('OUTPUTS_BUCKET', 'papers-test-outputs')
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
 
-# Trainium instance configuration
-TRAINIUM_ENDPOINT = os.getenv('TRAINIUM_ENDPOINT')  # e.g., http://10.0.1.50:8000
-TRAINIUM_INSTANCE_ID = os.getenv('TRAINIUM_INSTANCE_ID')  # EC2 instance ID (optional, for auto-start)
+TRAINIUM_ENDPOINT = os.getenv('TRAINIUM_ENDPOINT')  
+TRAINIUM_INSTANCE_ID = os.getenv('TRAINIUM_INSTANCE_ID')
 BATCH_SIZE = int(os.getenv('BATCH_SIZE', '10'))
-TRAINIUM_TIMEOUT = int(os.getenv('TRAINIUM_TIMEOUT', '600'))  # 10 minutes default
+TRAINIUM_TIMEOUT = int(os.getenv('TRAINIUM_TIMEOUT', '600'))
 
-# OpenSearch client setup
 creds = session.get_credentials().get_frozen_credentials()
 auth = AWSV4SignerAuth(creds, AWS_REGION, "es")
 
@@ -53,41 +51,42 @@ os_client = OpenSearch(
     timeout=60
 )
 
-# def ensure_trainium_running() -> bool:
-#     """
-#     Ensure Trainium instance is running (if TRAINIUM_INSTANCE_ID is set).
-#     Returns True if instance is running, False otherwise.
-#     """
-#     if not TRAINIUM_INSTANCE_ID:
-#         logger.info("No TRAINIUM_INSTANCE_ID set, assuming instance is already running")
-#         return True
-    
-#     try:
-#         response = ec2_client.describe_instances(InstanceIds=[TRAINIUM_INSTANCE_ID])
-#         state = response['Reservations'][0]['Instances'][0]['State']['Name']
-        
-#         if state == 'running':
-#             logger.info(f"Trainium instance {TRAINIUM_INSTANCE_ID} is running")
-#             return True
-#         elif state == 'stopped':
-#             logger.info(f"Starting Trainium instance {TRAINIUM_INSTANCE_ID}...")
-#             ec2_client.start_instances(InstanceIds=[TRAINIUM_INSTANCE_ID])
-            
-#             # Wait for instance to be running
-#             waiter = ec2_client.get_waiter('instance_running')
-#             waiter.wait(InstanceIds=[TRAINIUM_INSTANCE_ID])
-            
-#             # Additional wait for services to start
-#             time.sleep(30)
-#             logger.info(f"Trainium instance {TRAINIUM_INSTANCE_ID} is now running")
-#             return True
-#         else:
-#             logger.warning(f"Trainium instance {TRAINIUM_INSTANCE_ID} is in state: {state}")
-#             return False
-            
-#     except Exception as e:
-#         logger.error(f"Error checking/starting Trainium instance: {e}")
-#         return False
+def ensure_trainium_running() -> bool:
+    """
+    Ensure Trainium instance is running (if TRAINIUM_INSTANCE_ID is set).
+    Returns True if instance is running, False otherwise.
+    """
+    if not TRAINIUM_INSTANCE_ID:
+        logger.info("No TRAINIUM_INSTANCE_ID set, assuming instance is already running")
+        return True
+   
+    try:
+        response = ec2_client.describe_instances(InstanceIds=[TRAINIUM_INSTANCE_ID])
+        state = response['Reservations'][0]['Instances'][0]['State']['Name']
+       
+        if state == 'running':
+            logger.info(f"Trainium instance {TRAINIUM_INSTANCE_ID} is running")
+            return True
+        elif state == 'stopped':
+            logger.info(f"Starting Trainium instance {TRAINIUM_INSTANCE_ID}...")
+            ec2_client.start_instances(InstanceIds=[TRAINIUM_INSTANCE_ID])
+           
+            # Wait for instance to be running
+            waiter = ec2_client.get_waiter('instance_running')
+            waiter.wait(InstanceIds=[TRAINIUM_INSTANCE_ID])
+           
+            # Additional wait for services to start (Flask app, etc.)
+            logger.info("Waiting 60 seconds for Trainium services to start...")
+            time.sleep(60)
+            logger.info(f"Trainium instance {TRAINIUM_INSTANCE_ID} is now running")
+            return True
+        else:
+            logger.warning(f"Trainium instance {TRAINIUM_INSTANCE_ID} is in state: {state}")
+            return False
+           
+    except Exception as e:
+        logger.error(f"Error checking/starting Trainium instance: {e}")
+        return False
 
 def download_code_from_s3(bucket: str, key: str) -> str:
     """Download code from S3"""
@@ -151,7 +150,7 @@ def send_batch_to_trainium(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         response = requests.post(
             f"{TRAINIUM_ENDPOINT}/execute_batch",
             json=payload,
-            timeout=TRAINIUM_TIMEOUT + 30  # Add buffer to timeout
+            timeout=TRAINIUM_TIMEOUT + 30  
         )
         
         response.raise_for_status()
@@ -162,7 +161,6 @@ def send_batch_to_trainium(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         
     except requests.exceptions.Timeout:
         logger.error(f"Trainium execution timed out after {TRAINIUM_TIMEOUT} seconds")
-        # Return timeout results for all papers in batch
         return {
             "success": False,
             "error": "Batch execution timed out",
@@ -182,7 +180,6 @@ def send_batch_to_trainium(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         }
     except requests.exceptions.RequestException as e:
         logger.error(f"Error communicating with Trainium: {e}")
-        # Return error results for all papers in batch
         return {
             "success": False,
             "error": str(e),
@@ -220,11 +217,9 @@ def process_batch_results(batch_data: List[Dict[str, Any]], trainium_results: Di
         })
         
         try:
-            # Save stdout and stderr to S3
             stdout_key = save_output_to_s3(paper_id, 'stdout.log', exec_result.get('stdout', ''))
             stderr_key = save_output_to_s3(paper_id, 'stderr.log', exec_result.get('stderr', ''))
-            
-            # Save plots if any (Trainium might return these)
+    
             plots_keys = []
             if 'plots' in exec_result:
                 for plot_name, plot_data in exec_result.get('plots', {}).items():
@@ -246,7 +241,6 @@ def process_batch_results(batch_data: List[Dict[str, Any]], trainium_results: Di
             execution_hours = exec_result.get('execution_time', 0) / 3600
             estimated_cost = execution_hours * 1.34
             
-            # Prepare comprehensive test results for OpenSearch
             test_results = {
                 # === Core Test Status ===
                 "tested": True,
@@ -309,7 +303,7 @@ def process_batch_results(batch_data: List[Dict[str, Any]], trainium_results: Di
             # Update OpenSearch with comprehensive results
             update_opensearch(paper_id, test_results)
             
-            success_status = "✅ SUCCESS" if exec_result.get('success', False) else "❌ FAILED"
+            success_status = "SUCCESS" if exec_result.get('success', False) else "FAILED"
             logger.info(
                 f"{success_status} | {paper_id} | "
                 f"Time: {exec_result.get('execution_time', 0):.1f}s | "
@@ -318,7 +312,6 @@ def process_batch_results(batch_data: List[Dict[str, Any]], trainium_results: Di
             
         except Exception as e:
             logger.error(f"Error processing results for paper {paper_id}: {e}")
-            # Update OpenSearch with processing error
             try:
                 update_opensearch(paper_id, {
                     "tested": True,
@@ -366,7 +359,6 @@ def lambda_handler(event, context):
                 })
             except Exception as e:
                 logger.error(f"Error downloading code for {paper_id}: {e}")
-                # Update OpenSearch with download error
                 try:
                     update_opensearch(paper_id, {
                         "tested": True,

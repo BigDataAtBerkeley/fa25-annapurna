@@ -1,17 +1,18 @@
 #!/bin/bash
 
-# Build script for Code Test Lambda Function
+# Lambda deployment script for code testing system
+# This script packages the test_lambda for AWS Lambda deployment
 
 set -e
 
 # Navigate to project root
 cd "$(dirname "$0")/.."
 
-echo "Packaging Code Test Lambda Function..."
+echo "Packaging Code Testing Lambda Function..."
 
 # Create deployment directory
-DEPLOY_DIR="test_lambda_deploy"
-PACKAGE_NAME="test_lambda.zip"
+DEPLOY_DIR="lambda_test_deploy"
+PACKAGE_NAME="code_test_lambda.zip"
 
 # Clean up previous builds
 rm -rf $DEPLOY_DIR
@@ -20,8 +21,9 @@ rm -f $PACKAGE_NAME
 # Create deployment directory
 mkdir -p $DEPLOY_DIR
 
-# Copy the Lambda function
+# Copy the lambda function
 cp test_lambda/lambda_function.py $DEPLOY_DIR/
+cp test_lambda/requirements.txt $DEPLOY_DIR/
 
 # Install dependencies
 echo "Installing dependencies..."
@@ -30,7 +32,7 @@ pip install -r test_lambda/requirements.txt -t $DEPLOY_DIR/
 # Create deployment package
 echo "Creating deployment package..."
 cd $DEPLOY_DIR
-zip -r ../$PACKAGE_NAME . -x "*.pyc" "*/__pycache__/*"
+zip -r ../$PACKAGE_NAME . -x "*.pyc" "*/__pycache__/*" "*/tests/*" "*/test_*"
 cd ..
 
 echo "Package created: $PACKAGE_NAME"
@@ -44,23 +46,13 @@ echo ""
 echo "Next steps:"
 echo "1. Upload $PACKAGE_NAME to AWS Lambda"
 echo "2. Set handler to: lambda_function.lambda_handler"
-echo "3. Set timeout to 900 seconds (15 minutes) to allow for Trainium communication"
-echo "4. Set memory to 512 MB (lightweight dispatcher, no heavy computation)"
-echo "5. Deploy Lambda in same VPC as Trainium instance"
-echo "6. Configure SQS trigger:"
-echo "   - Set BatchSize to 10"
-echo "   - Set MaximumBatchingWindowInSeconds to 60"
-echo "7. Configure environment variables:"
+echo "3. Set timeout to at least 15 minutes (900 seconds)"
+echo "4. Set memory to at least 512 MB"
+echo "5. Configure environment variables:"
 echo "   - OPENSEARCH_ENDPOINT"
-echo "   - OPENSEARCH_INDEX (default: research-papers-v2)"
-echo "   - OUTPUTS_BUCKET (default: papers-test-outputs)"
+echo "   - OPENSEARCH_INDEX=research-papers-v2"
+echo "   - OUTPUTS_BUCKET=papers-test-outputs"
 echo "   - TRAINIUM_ENDPOINT (e.g., http://10.0.1.50:8000)"
-echo "   - TRAINIUM_INSTANCE_ID (optional, for auto-start)"
-echo "   - BATCH_SIZE (default: 10)"
-echo "   - TRAINIUM_TIMEOUT (default: 600)"
-echo "8. Ensure IAM role has permissions for:"
-echo "   - S3 read/write"
-echo "   - SQS receive/delete messages"
-echo "   - OpenSearch read/write"
-echo "   - EC2 describe/start instances (if using auto-start)"
-
+echo "   - TRAINIUM_INSTANCE_ID (EC2 instance ID)"
+echo "   - BATCH_SIZE=10"
+echo "   - TRAINIUM_TIMEOUT=600"

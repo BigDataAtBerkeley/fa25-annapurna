@@ -3,7 +3,6 @@
 HTTP service that runs on AWS Trainium instances (trn1.2xlarge) to execute PyTorch code with hardware acceleration.
 
 ## Overview
-
 This service receives batches of PyTorch code from the `test_lambda` Lambda function, executes them using AWS Neuron SDK on Trainium hardware, and returns detailed execution results.
 
 ## Architecture
@@ -20,32 +19,37 @@ Lambda (test_lambda)  →  HTTP POST  →  Trainium Service (this)
 
 - **`app.py`** - Flask-based HTTP server for code execution
 - **`requirements.txt`** - Python dependencies
-- **`setup_trainium.sh`** - Automated setup script for Trainium instance
+
 
 ## Setup on Trainium Instance
 
 ### Prerequisites
-- AWS trn1.2xlarge instance (or similar Trainium instance)
-- Deep Learning AMI (Ubuntu recommended)
+- AWS trn1 instance
+- Deep Learning AMI 
 - SSH access to the instance
 
 ### Installation
 
-1. SSH into your Trainium instance:
+1. SSH into your Trainium instance (GET PUBLIC_IP FROM DAN):
 ```bash
-ssh -i your-key.pem ubuntu@<TRAINIUM_PUBLIC_IP>
+ssh -i your-key.pem ubuntu@<TRAINIUM_PUBLIC_IP> 
 ```
 
-2. Copy files to the instance:
+2. Deploy using the automated script:
 ```bash
-# From your local machine
-scp -i your-key.pem app.py requirements.txt setup_trainium.sh ubuntu@<TRAINIUM_PUBLIC_IP>:~/
+# From the annapurna directory
+cd deployment
+./deploy_trainium.sh /path/to/your-key.pem
 ```
 
-3. Run the setup script:
+Or manually copy files and run setup:
 ```bash
-chmod +x setup_trainium.sh
-./setup_trainium.sh
+# Files are uploaded to S3, download them on the instance:
+aws s3 cp s3://papers-test-outputs/setup/app.py ~/trainium-executor/
+aws s3 cp s3://papers-test-outputs/setup/requirements.txt ~/trainium-executor/
+aws s3 cp s3://papers-test-outputs/setup/setup_trainium_remote.sh ./
+chmod +x setup_trainium_remote.sh
+./setup_trainium_remote.sh
 ```
 
 This will:
@@ -147,48 +151,28 @@ The service will parse this and include it in the response.
 ```bash
 # View logs
 sudo journalctl -u trainium-executor -f
-
 # Restart service
 sudo systemctl restart trainium-executor
-
 # Stop service
 sudo systemctl stop trainium-executor
-
 # Check status
 sudo systemctl status trainium-executor
-
 # Test health
 curl http://localhost:8000/health
 ```
 
-## Network Configuration
-
-### Security Group Rules
-Your Trainium instance's security group must allow:
-- **Inbound TCP 8000** from Lambda VPC CIDR (e.g., 10.0.0.0/16)
-- **Inbound TCP 22** from your IP (for SSH)
+## Network Config
 
 ### Lambda Configuration
-Your `test_lambda` Lambda function must:
-- Be deployed in the **same VPC** as the Trainium instance
+`test_lambda` Lambda function has to:
+- Be deployed in the **same VPC** as the Trainium instance (Alrdy configured this way)
 - Have `TRAINIUM_ENDPOINT` environment variable set to: `http://<PRIVATE_IP>:8000`
 
-## Troubleshooting
-
-### Service not starting
-```bash
-# Check logs
-sudo journalctl -u trainium-executor -n 100
-
-# Check if port is in use
-sudo netstat -tulpn | grep 8000
-```
 
 ### Neuron runtime issues
 ```bash
 # Check Neuron status
 neuron-ls
-
 # Check Neuron tools
 neuron-top
 ```

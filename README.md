@@ -53,6 +53,7 @@ S3 (papers-test-outputs) + OpenSearch (test results) --> execution results from 
 ### **SQS Queues**
 - `researchQueue.fifo` - Papers pending evaluation
 - `code-evaluation.fifo` - Code pending testing
+- `code-testing.fifo` - testing on trn instances (10 )
 
 ### **OpenSearch Index**
 - `research-papers-v2` - All papers with metadata, code status, and test results
@@ -293,11 +294,6 @@ python check_opensearch_mapping.py
 
 ## Trainium Instance Setup
 
-### Prerequisites
-- AWS account with access to Trainium instances (trn1 family)
-- VPC with subnet and security group configured
-- SSH key pair for instance access
-
 ### Launch Trainium Instance
 
 ```bash
@@ -310,42 +306,9 @@ aws ec2 run-instances \
   --subnet-id <YOUR_SUBNET_ID> \
   --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=PapersCodeTester-Trainium}]'
 ```
-
-
-### Lambda Configuration
-
-- Deploy Lambda in same VPC as Trainium instance
-- Set `TRAINIUM_ENDPOINT` to private IP of instance (e.g., `http://10.0.1.50:8000`)
-- Configure SQS trigger with:
-  - **BatchSize**: 10
-  - **MaximumBatchingWindowInSeconds**: 60 (wait up to 60s to accumulate 10 messages)
-
 ---
 
-## 🎯 Complete E2E Example
-
-```bash
-# 1. Scrape papers
-aws lambda invoke --function-name PaperScraper_ICLR \
-  --payload '{"MAX_PAPERS": "10"}' response.json
-
-# 2. Wait for judge to process (automatic via SQS)
-# Papers are automatically sent to OpenSearch
-
-# 3. Generate code for accepted papers
-aws lambda invoke --function-name PapersCodeGenerator \
-  --payload '{"action":"generate_recent","max_papers":10}' response.json
-
-# 4. Wait for code testing (automatic via SQS + Trainium)
-# - Papers accumulate in SQS (up to 10)
-# - Lambda batches them and sends to Trainium
-# - Test results automatically saved to OpenSearch
-
-# 5. Check results in OpenSearch
-python check_opensearch.py
-```
-
-## 💰 Cost Estimate (per 100 papers)
+## Cost Estimate (per 100 papers)
 
 - **Scraping**: ~$0.10 (Lambda + S3)
 - **Judging**: ~$0.05 (Lambda + Claude API)

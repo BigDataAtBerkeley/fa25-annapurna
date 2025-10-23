@@ -3,7 +3,7 @@
 Trainium Executor Service
 
 HTTP server that receives batches of PyTorch code from Lambda,
-executes them on Trainium hardware, and returns results.
+executes them on Trainium, and returns results.
 
 This service runs on trn1.2xlarge instance and uses AWS Neuron SDK.
 """
@@ -24,21 +24,23 @@ import psutil
 app = Flask(__name__)
 
 # Configure logging
+log_dir = os.path.join(os.path.expanduser('~'), 'trainium-executor', 'logs')
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, 'trainium-executor.log')
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/var/log/trainium-executor.log'),
+        logging.FileHandler(log_file),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-# Configuration
 MAX_EXECUTION_TIME = int(os.getenv('MAX_EXECUTION_TIME', '600'))  # 10 minutes
 WORKING_DIR = os.getenv('WORKING_DIR', '/tmp/trainium_jobs')
 
-# Create working directory
 os.makedirs(WORKING_DIR, exist_ok=True)
 
 def measure_resources_before():
@@ -81,42 +83,36 @@ def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME) ->
     job_dir = os.path.join(WORKING_DIR, paper_id)
     os.makedirs(job_dir, exist_ok=True)
     
-    code_file = os.path.join(job_dir, 'code.py')
+    code_file = os.path.join(job_dir, 'main.py')
     
     try:
-        # Write code to file
         with open(code_file, 'w') as f:
             f.write(code)
         
         logger.info(f"Executing code for paper {paper_id} (timeout: {timeout}s)")
         
-        # Measure resources before
         resources_before = measure_resources_before()
         start_time = time.time()
-        
-        # Execute code with timeout
-        # Use subprocess with timeout and resource limits
+
         result = subprocess.run(
-            ['python3', 'code.py'],
+            ['python3', 'main.py'],
             cwd=job_dir,
             capture_output=True,
             text=True,
             timeout=timeout,
             env={
                 **os.environ,
-                'NEURON_RT_LOG_LEVEL': 'ERROR',  # Reduce Neuron logging
+                'NEURON_RT_LOG_LEVEL': 'ERROR',  
                 'PYTHONUNBUFFERED': '1'
             }
         )
         
         execution_time = time.time() - start_time
         
-        # Measure resources after
         resources_after = measure_resources_after()
         
         success = result.returncode == 0
         
-        # Try to extract metrics from output (if code prints metrics)
         metrics = extract_metrics_from_output(result.stdout)
         
         execution_result = {
@@ -131,15 +127,15 @@ def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME) ->
         }
         
         if success:
-            logger.info(f"✅ Paper {paper_id} executed successfully in {execution_time:.1f}s")
+            logger.info(f"Paper {paper_id} executed successfully in {execution_time:.1f}s")
         else:
-            logger.warning(f"❌ Paper {paper_id} failed with return code {result.returncode}")
+            logger.warning(f"Paper {paper_id} failed with return code {result.returncode}")
         
         return execution_result
         
     except subprocess.TimeoutExpired as e:
         execution_time = time.time() - start_time
-        logger.error(f"⏱️ Paper {paper_id} timed out after {timeout}s")
+        logger.error(f"⏱Paper {paper_id} timed out after {timeout}s")
         return {
             "success": False,
             "execution_time": timeout,
@@ -152,7 +148,7 @@ def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME) ->
         }
         
     except Exception as e:
-        logger.error(f"💥 Error executing code for paper {paper_id}: {e}")
+        logger.error(f"Error executing code for paper {paper_id}: {e}")
         logger.error(traceback.format_exc())
         return {
             "success": False,
@@ -191,7 +187,6 @@ def extract_metrics_from_output(stdout: str) -> Dict[str, Any]:
     try:
         for line in stdout.split('\n'):
             if line.startswith('METRICS:'):
-                # Extract JSON after "METRICS:"
                 json_str = line.replace('METRICS:', '').strip()
                 parsed_metrics = json.loads(json_str)
                 metrics.update(parsed_metrics)
@@ -288,7 +283,7 @@ def execute_batch():
             paper_title = item.get('paper_title', 'Unknown')
             code = item['code']
             
-            logger.info(f"🚀 Executing: {paper_title} ({paper_id})")
+            logger.info(f"Executing: {paper_title} ({paper_id})")
  
             code_analysis = analyze_code(code)
    
@@ -301,7 +296,7 @@ def execute_batch():
         successful = sum(1 for r in results.values() if r['success'])
         failed = len(results) - successful
         
-        logger.info(f"✅ Batch complete: {successful} succeeded, {failed} failed")
+        logger.info(f"Batch complete: {successful} succeeded, {failed} failed")
         
         return jsonify({
             "success": True,
@@ -355,7 +350,7 @@ def execute_single():
         }), 500
 
 if __name__ == '__main__':
-    logger.info("🚀 Starting Trainium Executor Service")
+    logger.info("Starting Trainium Executor Service")
     logger.info(f"Working directory: {WORKING_DIR}")
     logger.info(f"Max execution time: {MAX_EXECUTION_TIME}s")
     
