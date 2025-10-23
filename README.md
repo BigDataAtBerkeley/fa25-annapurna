@@ -129,6 +129,15 @@ aws lambda invoke \
   --cli-binary-format raw-in-base64-out \
   response.json
 
+```
+
+### Grabbing code locally from S3
+
+```bash
+1. python download_s3_code.py
+--> this will ask you which code files to download from S3 (choose which you want)
+2. Check generated_code/
+---> this should contain (a) pyTorch code that was generated and (b) metadata about the paper & its code 
 
 ```
 
