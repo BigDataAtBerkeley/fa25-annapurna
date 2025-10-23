@@ -58,15 +58,13 @@ try:
             print(f"Document #{i} (ID: {hit.get('_id', 'N/A')})")
             print(f"{'='*80}")
             
-            # Print all fields in the document
             for field, value in sorted(src.items()):
-                # Format the value for better readability
                 if isinstance(value, list):
                     if len(value) > 3:
                         value_str = f"{value[:3]}... ({len(value)} items)"
                     else:
                         value_str = str(value)
-                elif isinstance(value, str) and len(value) > 200:
+                elif isinstance(value, str) and len(value) > 200 and field != 'abstract':
                     value_str = value[:200] + "..."
                 else:
                     value_str = str(value)
