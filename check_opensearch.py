@@ -54,12 +54,23 @@ try:
     else:
         for i, hit in enumerate(hits, 1):
             src = hit["_source"]
-            print(f"\n--- Document #{i} ---")
-            print(f"Title: {src.get('title', 'N/A')}")
-            print(f"Decision: {src.get('decision', 'N/A')}")
-            print(f"Reason: {src.get('reason', 'N/A')}")
-            print(f"Authors: {src.get('authors', [])}")
-            print(f"Date: {src.get('date', 'N/A')}")
-            print(f"S3 Key: {src.get('s3_key', 'N/A')}")
+            print(f"\n{'='*80}")
+            print(f"Document #{i} (ID: {hit.get('_id', 'N/A')})")
+            print(f"{'='*80}")
+            
+            # Print all fields in the document
+            for field, value in sorted(src.items()):
+                # Format the value for better readability
+                if isinstance(value, list):
+                    if len(value) > 3:
+                        value_str = f"{value[:3]}... ({len(value)} items)"
+                    else:
+                        value_str = str(value)
+                elif isinstance(value, str) and len(value) > 200:
+                    value_str = value[:200] + "..."
+                else:
+                    value_str = str(value)
+                
+                print(f"  {field}: {value_str}")
 except Exception as e:
     print(f"⚠️ Error while fetching documents: {e}")
