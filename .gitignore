@@ -46,7 +46,7 @@ logs/
 tmp/
 temp/
 scratch/
-*.csv
+# *.csv
 *.parquet
 test_*.json
 
