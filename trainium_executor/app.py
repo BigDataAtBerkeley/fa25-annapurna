@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Dict, List, Any
 import resource
 import psutil
+import shutil
 
 app = Flask(__name__)
 
@@ -40,8 +41,10 @@ logger = logging.getLogger(__name__)
 
 MAX_EXECUTION_TIME = int(os.getenv('MAX_EXECUTION_TIME', '600'))  # 10 minutes
 WORKING_DIR = os.getenv('WORKING_DIR', '/tmp/trainium_jobs')
+DATASET_CACHE_DIR = os.getenv('DATASET_CACHE_DIR', '/tmp/datasets')
 
 os.makedirs(WORKING_DIR, exist_ok=True)
+os.makedirs(DATASET_CACHE_DIR, exist_ok=True)
 
 def measure_resources_before():
     """Measure system resources before execution"""
@@ -68,6 +71,17 @@ def measure_resources_after():
         logger.warning(f"Failed to measure resources: {e}")
         return {}
 
+def setup_dataset_loader(job_dir: str):
+    """Copy dataset_loader.py to job directory for use by generated code"""
+    loader_source = os.path.join(os.path.dirname(__file__), 'dataset_loader.py')
+    loader_dest = os.path.join(job_dir, 'dataset_loader.py')
+    
+    if os.path.exists(loader_source):
+        shutil.copy2(loader_source, loader_dest)
+        logger.debug(f"Copied dataset_loader.py to {job_dir}")
+    else:
+        logger.warning("dataset_loader.py not found, generated code won't have dataset utilities")
+
 def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME) -> Dict[str, Any]:
     """
     Execute Python code in isolated environment with Neuron support.
@@ -82,6 +96,9 @@ def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME) ->
     """
     job_dir = os.path.join(WORKING_DIR, paper_id)
     os.makedirs(job_dir, exist_ok=True)
+    
+    # Copy dataset loader utilities to job directory
+    setup_dataset_loader(job_dir)
     
     code_file = os.path.join(job_dir, 'main.py')
     
@@ -103,7 +120,8 @@ def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME) ->
             env={
                 **os.environ,
                 'NEURON_RT_LOG_LEVEL': 'ERROR',  
-                'PYTHONUNBUFFERED': '1'
+                'PYTHONUNBUFFERED': '1',
+                'DATASET_CACHE_DIR': DATASET_CACHE_DIR
             }
         )
         
