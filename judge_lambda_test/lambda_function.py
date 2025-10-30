@@ -1,3 +1,6 @@
+# This is a simlation version of the judge lambda that does not modify any data in OpenSearch.
+# Requests are sent using setup_test.py and require existing documents in OpenSearch.
+
 import boto3
 import json
 import os
@@ -8,27 +11,26 @@ from typing import List, Dict
 from datetime import datetime
 from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
 
-# Logging setup
+# === Logging setup ===
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
-logger.info("Judge Lambda started")
+logger.info("Tester Lambda (Simulation) started")
 
-# Environment variables
+# === Environment variables ===
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 OPENSEARCH_ENDPOINT = os.getenv("OPENSEARCH_ENDPOINT")
 OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "research-papers")
-CODE_EVAL_QUEUE_URL = os.getenv("CODE_EVAL_QUEUE_URL")  # SQS queue for code generation
+SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.85"))
 
-# AWS Clients
+# === AWS Clients ===
 session = boto3.Session(region_name=AWS_REGION)
 creds = session.get_credentials().get_frozen_credentials()
 auth = AWSV4SignerAuth(creds, AWS_REGION, "es")
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
-sqs_client = boto3.client("sqs", region_name=AWS_REGION)
 
 os_client = OpenSearch(
-    hosts=[{"host": OPENSEARCH_ENDPOINT.replace("https://","").replace("http://",""), "port": 443}],
+    hosts=[{"host": OPENSEARCH_ENDPOINT.replace("https://", "").replace("http://", ""), "port": 443}],
     http_auth=auth,
     use_ssl=True,
     verify_certs=True,
@@ -36,67 +38,69 @@ os_client = OpenSearch(
     timeout=60
 )
 
-
+# === Utility Functions ===
 def normalize_title(t: str) -> str:
     return "".join(ch.lower() for ch in t if ch.isalnum() or ch.isspace()).strip().replace(" ", "_")
 
 def sha256_text(t: str) -> str:
     return hashlib.sha256(t.encode("utf-8")).hexdigest()
 
-def ensure_index():
-    if not os_client.indices.exists(index=OPENSEARCH_INDEX):
-        body = {
-            "settings": {"index": {"number_of_shards": 1}},
-            "mappings": {"properties": {
-                "title": {"type": "text"},
-                "title_normalized": {"type": "keyword"},
-                "authors": {"type": "keyword"},
-                "abstract": {"type": "text"},
-                "date": {"type": "date"},
-                "s3_bucket": {"type": "keyword"},
-                "s3_key": {"type": "keyword"},
-                "sha_abstract": {"type": "keyword"},
-                "decision": {"type": "keyword"},
-                "reason": {"type": "text"},
-                "relevance": {"type": "keyword"},
-                "novelty": {"type": "keyword"},
-                "ingested_at": {"type": "date"}
-            }}
-        }
-        os_client.indices.create(index=OPENSEARCH_INDEX, body=body)
-        logger.info("Created index")
-        
-
-# Redundancy check - filters out duplicates and papers that are very similar to existing ones.
-def is_duplicate(title_norm: str, sha_abs: str) -> bool:
+def generate_embedding(text: str) -> List[float]:
+    """Generate embedding via Titan Embed (Bedrock)."""
     try:
-        exact_query = {"query": {"bool": {"should": [
-                    {"term": {"title_normalized": title_norm}},
-                    {"term": {"sha_abstract": sha_abs}}],
-                    "minimum_should_match": 1}}}
-
-        res = os_client.search(index=OPENSEARCH_INDEX, body=exact_query)
-        return res["hits"]["total"]["value"] > 0
+        body = json.dumps({"inputText": text})
+        response = bedrock.invoke_model(
+            modelId="amazon.titan-embed-text-v1",
+            body=body,
+            contentType="application/json"
+        )
+        result = json.loads(response["body"].read())
+        return result.get("embedding", [])
     except Exception as e:
-        return False
+        logger.warning(f"Embedding generation failed: {e}")
+        return []
 
-# Claude via Bedrock evaluation
+def search_similar_papers_rag(abstract: str, size: int = 10) -> List[Dict]:
+    """Perform KNN search in OpenSearch for similar papers."""
+    try:
+        embedding = generate_embedding(abstract)
+        if not embedding:
+            return []
+        query = {
+            "knn": {
+                "field": "abstract_embedding",
+                "query_vector": embedding,
+                "k": size,
+                "num_candidates": 100
+            }
+        }
+        res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query, "size": size})
+        hits = res.get("hits", {}).get("hits", [])
+        out = []
+        for hit in hits:
+            src = hit.get("_source", {})
+            src["_id"] = hit.get("_id")
+            src["similarity_score"] = hit.get("_score")
+            out.append(src)
+        return out
+    except Exception as e:
+        logger.warning(f"RAG search failed: {e}")
+        return []
+
 def evaluate_paper_with_claude(title: str, abstract: str) -> Dict[str, str]:
-    """Ask Claude (via Bedrock) to assess relevance and novelty."""
+    """Ask Claude to assess relevance and novelty."""
     prompt = f"""
-You are an expert ML researcher. 
+You are an expert ML researcher.
 Read the paper below and decide:
 1. Is it relevant to current LLM, AI, or ML research?
-2. Is it novel (introduces new techniques or methods, specifically for training or inference)?
-Exclude papers that are surveys, summaries, or non-technical, such as ethics or proposals for new benchmarks. 
+2. Is it novel (introduces new techniques for training/inference)?
+Exclude surveys or benchmark proposals.
 
 Paper:
 Title: {title}
 Abstract: {abstract}
 
-Answer in JSON with fields: relevance, novelty, reason.
-Keep answers to 'yes' or 'no' for relevance and novelty.
-Keep it short.
+Respond in JSON: {{ "relevance": "yes/no", "novelty": "yes/no", "reason": "..." }}
 """
     try:
         body = json.dumps({
@@ -106,116 +110,91 @@ Keep it short.
         })
         response = bedrock.invoke_model(
             modelId="anthropic.claude-3-haiku-20240307-v1:0",
-            # modelId="arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0",
             body=body
         )
         text = json.loads(response["body"].read())["content"][0]["text"].strip()
         return json.loads(text)
     except Exception as e:
-        logger.warning(f"Claude via Bedrock failed: {e}")
+        logger.warning(f"Claude evaluation failed: {e}")
         return {"relevance": "unknown", "novelty": "unknown", "reason": "Claude evaluation failed"}
 
-def send_to_code_eval_queue(paper_id: str, paper_data: Dict) -> bool:
-    """
-    Send paper to code-evaluation queue (for code generation when 10 accumulate).
-    
-    Args:
-        paper_id: OpenSearch document ID
-        paper_data: Paper metadata
-        
-    Returns:
-        True if successful, False otherwise
-    """
-    if not CODE_EVAL_QUEUE_URL:
-        logger.warning("CODE_EVAL_QUEUE_URL not set, skipping queue")
-        return False
-    
-    try:
-        message = {
-            "paper_id": paper_id,
-            "action": "generate_by_id",
-            "paper_title": paper_data.get("title"),
-            "queued_at": datetime.now().isoformat()
-        }
-        
-        sqs_client.send_message(
-            QueueUrl=CODE_EVAL_QUEUE_URL,
-            MessageBody=json.dumps(message),
-            MessageGroupId=paper_id,
-            MessageDeduplicationId=f"{paper_id}-{int(time.time() * 1000)}"
-        )
-        
-        logger.info(f"Sent to code-eval queue: {paper_data.get('title')}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Failed to send to code-eval queue: {e}")
-        return False
+def simulate_paper_decision(title: str, abstract: str) -> Dict[str, any]:
+    """Simulate full judge pipeline without modifying data."""
+    title_norm = normalize_title(title)
+    sha_abs = sha256_text(abstract)
 
-# Lambda Handler
+    # === Step 1: Similarity Check ===
+    similar_papers = search_similar_papers_rag(abstract, size=10)
+    if not similar_papers or len(similar_papers) < 2:
+        sim_score = 0.0
+        sim_reason = "No comparable papers found."
+    else:
+        # Skip first (self-match) and use second-most similar
+        second_best = similar_papers[1]
+        sim_score = second_best.get("similarity_score", 0.0) or 0.0
+        sim_reason = f"Second-most similar: '{second_best.get('title', 'Unknown')}' ({sim_score:.3f} similarity)"
+
+    is_redundant = sim_score >= SIMILARITY_THRESHOLD
+    if is_redundant:
+        return {
+            "title": title,
+            "decision": "reject",
+            "rejected_by": "rag",
+            "reason": f"Similarity {sim_score:.3f} ≥ threshold {SIMILARITY_THRESHOLD}. {sim_reason}"
+        }
+
+    # === Step 2: Claude Evaluation ===
+    eval_result = evaluate_paper_with_claude(title, abstract)
+    rel = eval_result.get("relevance", "unknown").lower()
+    nov = eval_result.get("novelty", "unknown").lower()
+    reason = eval_result.get("reason", "No reason provided")
+
+    if rel == "yes" and nov == "yes":
+        return {
+            "title": title,
+            "decision": "accept",
+            "rejected_by": None,
+            "reason": f"Accepted — {reason}",
+            "similarity": sim_score,
+            "similar_paper": sim_reason
+        }
+    else:
+        return {
+            "title": title,
+            "decision": "reject",
+            "rejected_by": "claude",
+            "reason": f"Rejected by Claude — {reason}",
+            "similarity": sim_score,
+            "similar_paper": sim_reason
+        }
+
+# === Lambda Handler (Simulation Mode) ===
 def lambda_handler(event, context):
-    ensure_index()
-    failures = []
+    logger.info("Running tester simulation Lambda...")
+    results = []
 
     for record in event.get("Records", []):
-        msg_id = record["messageId"]
-
         try:
             body = json.loads(record["body"])
-            title = body["title"]
+            title = body.get("title", "Untitled")
             abstract = body.get("abstract", "")
             authors = body.get("authors", [])
-            s3_bucket = body["s3_bucket"]
-            s3_key = body["s3_key"]
-            date = body.get("date")
+            s3_bucket = body.get("s3_bucket")
+            s3_key = body.get("s3_key")
 
-            title_norm = normalize_title(title)
-            sha_abs = sha256_text(abstract)
-            
-            if is_duplicate(title_norm, sha_abs):
-                logger.info(f"Duplicate skipped | {title}")
-                continue
+            result = simulate_paper_decision(title, abstract)
+            result.update({
+                "authors": authors,
+                "s3_bucket": s3_bucket,
+                "s3_key": s3_key
+            })
+            results.append(result)
 
-            # Evaluate with Claude (Bedrock)
-            # evaluation = evaluate_paper_with_claude(title, abstract)
-            # relevance = evaluation.get("relevance", "unknown").lower()
-            # novelty = evaluation.get("novelty", "unknown").lower()
-            # reason = evaluation.get("reason", "No reason provided.")
-            relevance = 'yes'
-            novelty = 'yes'
-
-            # Only store relevant + novel papers
-            if relevance == "yes" and novelty == "yes":
-                doc = {
-                    "title": title,
-                    "title_normalized": title_norm,
-                    "authors": authors,
-                    "abstract": abstract,
-                    "date": date.replace("/", "-") if date else None,
-                    "s3_bucket": s3_bucket,
-                    "s3_key": s3_key,
-                    "sha_abstract": sha_abs,
-                    "decision": "accept",
-                    "reason": "testing purposes", ## changing to "reason": reason later
-                    "relevance": relevance,
-                    "novelty": novelty,
-                    "ingested_at": int(time.time() * 1000)
-                }
-                
-                # Index in OpenSearch
-                result = os_client.index(index=OPENSEARCH_INDEX, body=doc, refresh=True)
-                paper_id = result['_id']
-                logger.info(f"Indexed | {title} | ID: {paper_id}")
-                
-                # Send to code-evaluation queue (will trigger code gen when 10 accumulate)
-                send_to_code_eval_queue(paper_id, doc)
-                
-            else:
-                logger.info(f"Skipped (irrelevant or not novel) | {title} | {reason}")
+            logger.info(f"Simulated decision for '{title}': {result['decision']} ({result['reason']})")
 
         except Exception as e:
-            logger.exception(f"Failed to process message {msg_id}: {e}")
-            failures.append({"itemIdentifier": msg_id})
+            logger.exception(f"Error processing record: {e}")
+            results.append({"error": str(e)})
 
-    logger.info(f"Lambda complete. Failures: {len(failures)}")
-    return {"batchItemFailures": failures}
+    logger.info("Simulation complete.")
+    return {"simulation_results": results}
