@@ -3,12 +3,14 @@ from utils.aws_utils import upload_pdf_to_s3, send_to_sqs
 from utils.request_utils import safe_filename
 
 import arxiv
+import requests
 import datetime
 
 logger = setup_logger("arxiv_scraper")
 
 def extract_papers_arxiv(limit: int = 10):
     query = '(LLM OR "large language model" OR "large language models") AND (cat:cs.CL OR cat:cs.LG OR cat:cs.AI OR cat:stat.ML)'
+    date_threshold = datetime.date.today() - datetime.timedelta(days=1)
     logger.info(f"Querying arXiv with: {query}")
     client = arxiv.Client(num_retries=5, delay_seconds=3)
     search = arxiv.Search(
@@ -22,7 +24,9 @@ def extract_papers_arxiv(limit: int = 10):
 
     for i, result in enumerate(client.results(search), start=1):
         found += 1
-        if count >= limit:
+        if found >= limit:
+            break
+        if result.published and result.published.date() < date_threshold:
             break
 
         title = result.title.strip()
@@ -42,10 +46,10 @@ def extract_papers_arxiv(limit: int = 10):
 
         try:
             key = safe_filename(title)
-            pdf_stream = arxiv.Client()._session.get(pdf_link, stream=True, timeout=60)
-            pdf_stream.raise_for_status()
+            response = requests.get(pdf_link, stream=True)
+            response.raise_for_status()
 
-            upload_pdf_to_s3(pdf_stream.raw, key)
+            upload_pdf_to_s3(response.raw, key)
             send_to_sqs(title, authors, date, abstract, key)
             count += 1
 
