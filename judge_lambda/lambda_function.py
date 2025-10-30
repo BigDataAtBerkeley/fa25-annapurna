@@ -19,6 +19,8 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 OPENSEARCH_ENDPOINT = os.getenv("OPENSEARCH_ENDPOINT")
 OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "research-papers")
 CODE_EVAL_QUEUE_URL = os.getenv("CODE_EVAL_QUEUE_URL")  # SQS queue for code generation
+DISCARDED_BUCKET = os.getenv("DISCARDED_BUCKET", "discarded-papers")
+SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.85"))
 
 # AWS Clients
 session = boto3.Session(region_name=AWS_REGION)
@@ -26,6 +28,7 @@ creds = session.get_credentials().get_frozen_credentials()
 auth = AWSV4SignerAuth(creds, AWS_REGION, "es")
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 sqs_client = boto3.client("sqs", region_name=AWS_REGION)
+s3_client = boto3.client("s3", region_name=AWS_REGION)
 
 os_client = OpenSearch(
     hosts=[{"host": OPENSEARCH_ENDPOINT.replace("https://","").replace("http://",""), "port": 443}],
@@ -46,12 +49,28 @@ def sha256_text(t: str) -> str:
 def ensure_index():
     if not os_client.indices.exists(index=OPENSEARCH_INDEX):
         body = {
-            "settings": {"index": {"number_of_shards": 1}},
+            "settings": {
+                "index": {
+                    "number_of_shards": 1,
+                    "knn": True,
+                    "knn.algo_param.ef_search": 100
+                }
+            },
             "mappings": {"properties": {
                 "title": {"type": "text"},
                 "title_normalized": {"type": "keyword"},
                 "authors": {"type": "keyword"},
                 "abstract": {"type": "text"},
+                "abstract_embedding": {
+                    "type": "knn_vector",
+                    "dimension": 1536,
+                    "method": {
+                        "name": "hnsw",
+                        "space_type": "cosinesimil",
+                        "engine": "nmslib",
+                        "parameters": {"ef_construction": 128, "m": 24}
+                    }
+                },
                 "date": {"type": "date"},
                 "s3_bucket": {"type": "keyword"},
                 "s3_key": {"type": "keyword"},
@@ -64,7 +83,79 @@ def ensure_index():
             }}
         }
         os_client.indices.create(index=OPENSEARCH_INDEX, body=body)
-        logger.info("Created index")
+        logger.info("Created vector-enabled index")
+
+def generate_embedding(text: str) -> List[float]:
+    try:
+        body = json.dumps({"inputText": text})
+        response = bedrock.invoke_model(
+            modelId="amazon.titan-embed-text-v1",
+            body=body,
+            contentType="application/json"
+        )
+        result = json.loads(response["body"].read())
+        return result.get("embedding", [])
+    except Exception as e:
+        logger.warning(f"Embedding generation failed: {e}")
+        return []
+
+def search_similar_papers_rag(abstract: str, size: int = 5) -> List[Dict]:
+    try:
+        embedding = generate_embedding(abstract)
+        if not embedding:
+            return []
+        query = {
+            "knn": {
+                "field": "abstract_embedding",
+                "query_vector": embedding,
+                "k": size,
+                "num_candidates": 100
+            }
+        }
+        res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query, "size": size})
+        out = []
+        for hit in res.get('hits', {}).get('hits', []):
+            src = hit.get('_source', {})
+            src['_id'] = hit.get('_id')
+            src['similarity_score'] = hit.get('_score')
+            out.append(src)
+        return out
+    except Exception as e:
+        logger.warning(f"RAG search failed: {e}")
+        return []
+
+def is_paper_redundant_rag(title: str, abstract: str) -> Dict[str, any]:
+    similar = search_similar_papers_rag(abstract, size=10)
+    if not similar:
+        return {"is_redundant": False, "reason": "No similar papers found", "max_similarity": 0.0}
+    most_similar = similar[0]
+    max_sim = most_similar.get('similarity_score', 0.0) or 0.0
+    return {
+        "is_redundant": max_sim >= SIMILARITY_THRESHOLD,
+        "reason": f"Most similar has {max_sim:.3f} similarity (threshold={SIMILARITY_THRESHOLD})",
+        "max_similarity": max_sim,
+        "most_similar_paper": most_similar.get('title', 'Unknown')
+    }
+
+def write_discard_record(rejected_by: str, reason: str, original: Dict, msg_id: str) -> None:
+    try:
+        now = datetime.utcnow()
+        key = (
+            f"rejected/{now.year:04d}/{now.month:02d}/{now.day:02d}/"
+            f"{normalize_title(original.get('title','unknown'))}_{int(time.time()*1000)}.json"
+        )
+        record = {
+            "decision": "reject",
+            "rejected_by": rejected_by,
+            "reason": reason,
+            "message_id": msg_id,
+            "evaluated_at": now.isoformat(),
+            "paper": original
+        }
+        s3_client.put_object(Bucket=DISCARDED_BUCKET, Key=key, Body=json.dumps(record).encode('utf-8'), ContentType='application/json')
+        logger.info(f"Wrote discard record to s3://{DISCARDED_BUCKET}/{key}")
+    except Exception as e:
+        logger.error(f"Failed to write discard record: {e}")
         
 
 # Redundancy check - filters out duplicates and papers that are very similar to existing ones.
@@ -172,17 +263,18 @@ def lambda_handler(event, context):
             title_norm = normalize_title(title)
             sha_abs = sha256_text(abstract)
             
-            if is_duplicate(title_norm, sha_abs):
-                logger.info(f"Duplicate skipped | {title}")
+            # RAG redundancy pre-check
+            redundancy = is_paper_redundant_rag(title, abstract)
+            if redundancy.get("is_redundant"):
+                write_discard_record("rag", redundancy.get("reason", "RAG redundancy"), body, msg_id)
+                logger.info(f"Rejected by RAG | {title} | {redundancy.get('reason')}")
                 continue
 
             # Evaluate with Claude (Bedrock)
-            # evaluation = evaluate_paper_with_claude(title, abstract)
-            # relevance = evaluation.get("relevance", "unknown").lower()
-            # novelty = evaluation.get("novelty", "unknown").lower()
-            # reason = evaluation.get("reason", "No reason provided.")
-            relevance = 'yes'
-            novelty = 'yes'
+            evaluation = evaluate_paper_with_claude(title, abstract)
+            relevance = evaluation.get("relevance", "unknown").lower()
+            novelty = evaluation.get("novelty", "unknown").lower()
+            reason = evaluation.get("reason", "No reason provided.")
 
             # Only store relevant + novel papers
             if relevance == "yes" and novelty == "yes":
@@ -196,12 +288,15 @@ def lambda_handler(event, context):
                     "s3_key": s3_key,
                     "sha_abstract": sha_abs,
                     "decision": "accept",
-                    "reason": "testing purposes", ## changing to "reason": reason later
+                    "reason": reason,
                     "relevance": relevance,
                     "novelty": novelty,
                     "ingested_at": int(time.time() * 1000)
                 }
-                
+                # Add embedding for accepted docs
+                emb = generate_embedding(abstract)
+                if emb:
+                    doc["abstract_embedding"] = emb
                 # Index in OpenSearch
                 result = os_client.index(index=OPENSEARCH_INDEX, body=doc, refresh=True)
                 paper_id = result['_id']
@@ -211,6 +306,7 @@ def lambda_handler(event, context):
                 send_to_code_eval_queue(paper_id, doc)
                 
             else:
+                write_discard_record("claude", reason, body, msg_id)
                 logger.info(f"Skipped (irrelevant or not novel) | {title} | {reason}")
 
         except Exception as e:
