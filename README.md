@@ -137,6 +137,39 @@ aws lambda invoke \
 
 ```
 
+### Test Generated Code on Trainium
+
+Test a specific paper's generated code directly on Trainium (bypasses full pipeline):
+
+```bash
+# Test by paper ID (downloads code from S3)
+python test_code_on_trainium.py --paper-id <PAPER_ID>
+
+# Test local code file
+python test_code_on_trainium.py --file generated_code/my_code.py --paper-id <PAPER_ID>
+
+# Test with custom timeout (default is 600s)
+python test_code_on_trainium.py --paper-id <PAPER_ID> --timeout 900
+
+# Test without saving results (for debugging)
+python test_code_on_trainium.py --paper-id <PAPER_ID> --no-save
+
+# Example with actual paper ID:
+python test_code_on_trainium.py --paper-id 6-j63JkBP8oloYi_8CJH
+```
+
+**What it does:**
+- Downloads code from S3 (or uses local file)
+- Sends to Trainium for execution
+- Saves stdout/stderr/metrics to S3
+- Updates OpenSearch with test results
+- Displays execution results and metrics
+
+**Requirements:**
+- Trainium instance running (script will auto-start if stopped)
+- Dataset loader deployed on Trainium (`./deployment/deploy_trainium.sh`)
+- TRAINIUM_ENDPOINT and TRAINIUM_INSTANCE_ID in .env
+
 ### Grabbing code locally from S3
 
 ```bash
