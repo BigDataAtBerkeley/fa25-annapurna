@@ -11,26 +11,28 @@ from typing import List, Dict
 from datetime import datetime
 from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
 
-# === Logging setup ===
+# Logging setup
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
-logger.info("Tester Lambda (Simulation) started")
+logger.info("Judge Lambda Simulation started")
 
-# === Environment variables ===
+# Environment variables
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 OPENSEARCH_ENDPOINT = os.getenv("OPENSEARCH_ENDPOINT")
 OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "research-papers")
+RESULTS_QUEUE_URL = os.getenv("RESULTS_QUEUE_URL")
 SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.85"))
 
-# === AWS Clients ===
+# AWS Clients
 session = boto3.Session(region_name=AWS_REGION)
 creds = session.get_credentials().get_frozen_credentials()
 auth = AWSV4SignerAuth(creds, AWS_REGION, "es")
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
+sqs_client = boto3.client("sqs", region_name=AWS_REGION)
 
 os_client = OpenSearch(
-    hosts=[{"host": OPENSEARCH_ENDPOINT.replace("https://", "").replace("http://", ""), "port": 443}],
+    hosts=[{"host": OPENSEARCH_ENDPOINT.replace("https://","").replace("http://",""), "port": 443}],
     http_auth=auth,
     use_ssl=True,
     verify_certs=True,
@@ -38,7 +40,7 @@ os_client = OpenSearch(
     timeout=60
 )
 
-# === Utility Functions ===
+
 def normalize_title(t: str) -> str:
     return "".join(ch.lower() for ch in t if ch.isalnum() or ch.isspace()).strip().replace(" ", "_")
 
@@ -46,7 +48,6 @@ def sha256_text(t: str) -> str:
     return hashlib.sha256(t.encode("utf-8")).hexdigest()
 
 def generate_embedding(text: str) -> List[float]:
-    """Generate embedding via Titan Embed (Bedrock)."""
     try:
         body = json.dumps({"inputText": text})
         response = bedrock.invoke_model(
@@ -60,47 +61,119 @@ def generate_embedding(text: str) -> List[float]:
         logger.warning(f"Embedding generation failed: {e}")
         return []
 
-def search_similar_papers_rag(abstract: str, size: int = 10) -> List[Dict]:
-    """Perform KNN search in OpenSearch for similar papers."""
+def search_similar_papers_rag(abstract: str, exclude_id: str = None, size: int = 5) -> List[Dict]:
+    """
+    Perform KNN search, optionally excluding a specific document ID.
+    This prevents self-comparison in simulation mode.
+    """
     try:
         embedding = generate_embedding(abstract)
         if not embedding:
             return []
-        query = {
-            "knn": {
-                "field": "abstract_embedding",
-                "query_vector": embedding,
-                "k": size,
-                "num_candidates": 100
-            }
+        
+        # Build query with optional exclusion filter
+        query_body = {
+            "query": {
+                "knn": {
+                    "abstract_embedding": {
+                        "vector": embedding,
+                        "k": size + 1 if exclude_id else size  # Request extra if filtering
+                    }
+                }
+            },
+            "size": size + 1 if exclude_id else size
         }
-        res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query, "size": size})
-        hits = res.get("hits", {}).get("hits", [])
+        
+        res = os_client.search(index=OPENSEARCH_INDEX, body=query_body)
         out = []
-        for hit in hits:
-            src = hit.get("_source", {})
-            src["_id"] = hit.get("_id")
-            src["similarity_score"] = hit.get("_score")
+        for hit in res.get('hits', {}).get('hits', []):
+            doc_id = hit.get('_id')
+            # Skip the document we're testing (self-comparison guard)
+            if exclude_id and doc_id == exclude_id:
+                logger.info(f"Skipping self-match: {doc_id}")
+                continue
+            
+            src = hit.get('_source', {})
+            src['_id'] = doc_id
+            src['similarity_score'] = hit.get('_score')
             out.append(src)
+            
+            # Stop once we have enough results
+            if len(out) >= size:
+                break
+                
         return out
     except Exception as e:
         logger.warning(f"RAG search failed: {e}")
         return []
 
+def is_paper_redundant_rag(title: str, abstract: str, exclude_id: str = None) -> Dict[str, any]:
+    """
+    Check if paper is redundant by comparing to similar papers.
+    Excludes the paper itself from comparison in simulation mode.
+    """
+    similar = search_similar_papers_rag(abstract, exclude_id=exclude_id, size=10)
+    if not similar:
+        return {"is_redundant": False, "reason": "No similar papers found", "max_similarity": 0.0}
+    
+    most_similar = similar[0]
+    max_sim = most_similar.get('similarity_score', 0.0) or 0.0
+    return {
+        "is_redundant": max_sim >= SIMILARITY_THRESHOLD,
+        "reason": f"Most similar has {max_sim:.3f} similarity (threshold={SIMILARITY_THRESHOLD})",
+        "max_similarity": max_sim,
+        "most_similar_paper": most_similar.get('title', 'Unknown'),
+        "most_similar_id": most_similar.get('_id', 'Unknown')
+    }
+
+def is_duplicate(title_norm: str, sha_abs: str, exclude_id: str = None) -> bool:
+    """
+    Check for exact duplicates by title or abstract hash.
+    Excludes the paper itself from comparison in simulation mode.
+    """
+    try:
+        query_filters = [
+            {"term": {"title_normalized": title_norm}},
+            {"term": {"sha_abstract": sha_abs}}
+        ]
+        
+        exact_query = {
+            "query": {
+                "bool": {
+                    "should": query_filters,
+                    "minimum_should_match": 1
+                }
+            }
+        }
+        
+        # Add exclusion filter if provided
+        if exclude_id:
+            exact_query["query"]["bool"]["must_not"] = [
+                {"term": {"_id": exclude_id}}
+            ]
+
+        res = os_client.search(index=OPENSEARCH_INDEX, body=exact_query)
+        return res["hits"]["total"]["value"] > 0
+    except Exception as e:
+        logger.warning(f"Duplicate check failed: {e}")
+        return False
+
 def evaluate_paper_with_claude(title: str, abstract: str) -> Dict[str, str]:
-    """Ask Claude to assess relevance and novelty."""
+    """Ask Claude (via Bedrock) to assess relevance and novelty."""
     prompt = f"""
-You are an expert ML researcher.
+You are an expert ML researcher. 
 Read the paper below and decide:
 1. Is it relevant to current LLM, AI, or ML research?
-2. Is it novel (introduces new techniques for training/inference)?
-Exclude surveys or benchmark proposals.
+2. Is it novel (introduces new techniques or methods, specifically for training or inference)?
+Exclude papers that are surveys, summaries, or non-technical, such as ethics or proposals for new benchmarks. 
 
 Paper:
 Title: {title}
 Abstract: {abstract}
 
-Respond in JSON: {{ "relevance": "yes/no", "novelty": "yes/no", "reason": "..." }}
+Answer in JSON with fields: relevance, novelty, reason.
+Keep answers to 'yes' or 'no' for relevance and novelty.
+Keep it short.
 """
     try:
         body = json.dumps({
@@ -115,86 +188,122 @@ Respond in JSON: {{ "relevance": "yes/no", "novelty": "yes/no", "reason": "..." 
         text = json.loads(response["body"].read())["content"][0]["text"].strip()
         return json.loads(text)
     except Exception as e:
-        logger.warning(f"Claude evaluation failed: {e}")
+        logger.warning(f"Claude via Bedrock failed: {e}")
         return {"relevance": "unknown", "novelty": "unknown", "reason": "Claude evaluation failed"}
 
-def simulate_paper_decision(title: str, abstract: str) -> Dict[str, any]:
-    """Simulate full judge pipeline without modifying data."""
+def send_result_to_queue(result: Dict) -> bool:
+    """Send simulation result to SQS results queue."""
+    if not RESULTS_QUEUE_URL:
+        logger.warning("RESULTS_QUEUE_URL not set, skipping queue send")
+        return False
+    
+    try:
+        sqs_client.send_message(
+            QueueUrl=RESULTS_QUEUE_URL,
+            MessageBody=json.dumps(result)
+        )
+        logger.info(f"Sent result to queue: {result.get('title', 'Unknown')}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send result to queue: {e}")
+        return False
+
+def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
+    """
+    Simulate the entire judge lambda evaluation pipeline without modifying data.
+    Returns a result dictionary with the decision and reasoning.
+    """
+    title = body["title"]
+    abstract = body.get("abstract", "")
+    authors = body.get("authors", [])
+    s3_bucket = body.get("s3_bucket", "")
+    s3_key = body.get("s3_key", "")
+    date = body.get("date")
+    paper_id = body.get("paper_id")  # For self-comparison guard
+    
     title_norm = normalize_title(title)
     sha_abs = sha256_text(abstract)
-
-    # === Step 1: Similarity Check ===
-    similar_papers = search_similar_papers_rag(abstract, size=10)
-    if not similar_papers or len(similar_papers) < 2:
-        sim_score = 0.0
-        sim_reason = "No comparable papers found."
-    else:
-        # Skip first (self-match) and use second-most similar
-        second_best = similar_papers[1]
-        sim_score = second_best.get("similarity_score", 0.0) or 0.0
-        sim_reason = f"Second-most similar: '{second_best.get('title', 'Unknown')}' ({sim_score:.3f} similarity)"
-
-    is_redundant = sim_score >= SIMILARITY_THRESHOLD
-    if is_redundant:
-        return {
-            "title": title,
+    
+    result = {
+        "paper_id": paper_id,
+        "title": title,
+        "authors": authors,
+        "s3_bucket": s3_bucket,
+        "s3_key": s3_key,
+        "date": date,
+        "message_id": msg_id,
+        "evaluated_at": datetime.utcnow().isoformat()
+    }
+    
+    # RAG redundancy pre-check (excluding self)
+    redundancy = is_paper_redundant_rag(title, abstract, exclude_id=paper_id)
+    if redundancy.get("is_redundant"):
+        result.update({
             "decision": "reject",
             "rejected_by": "rag",
-            "reason": f"Similarity {sim_score:.3f} ≥ threshold {SIMILARITY_THRESHOLD}. {sim_reason}"
-        }
-
-    # === Step 2: Claude Evaluation ===
-    eval_result = evaluate_paper_with_claude(title, abstract)
-    rel = eval_result.get("relevance", "unknown").lower()
-    nov = eval_result.get("novelty", "unknown").lower()
-    reason = eval_result.get("reason", "No reason provided")
-
-    if rel == "yes" and nov == "yes":
-        return {
-            "title": title,
+            "reason": redundancy.get("reason", "RAG redundancy"),
+            "max_similarity": redundancy.get("max_similarity"),
+            "most_similar_paper": redundancy.get("most_similar_paper"),
+            "most_similar_id": redundancy.get("most_similar_id")
+        })
+        logger.info(f"[SIMULATION] Rejected by RAG | {title} | {redundancy.get('reason')}")
+        return result
+    
+    # Evaluate with Claude (Bedrock)
+    evaluation = evaluate_paper_with_claude(title, abstract)
+    relevance = evaluation.get("relevance", "unknown").lower()
+    novelty = evaluation.get("novelty", "unknown").lower()
+    reason = evaluation.get("reason", "No reason provided.")
+    
+    result.update({
+        "relevance": relevance,
+        "novelty": novelty,
+        "claude_reason": reason
+    })
+    
+    # Only accept relevant + novel papers
+    if relevance == "yes" and novelty == "yes":
+        result.update({
             "decision": "accept",
             "rejected_by": None,
-            "reason": f"Accepted — {reason}",
-            "similarity": sim_score,
-            "similar_paper": sim_reason
-        }
+            "reason": reason
+        })
+        logger.info(f"[SIMULATION] Would accept | {title}")
     else:
-        return {
-            "title": title,
+        result.update({
             "decision": "reject",
             "rejected_by": "claude",
-            "reason": f"Rejected by Claude — {reason}",
-            "similarity": sim_score,
-            "similar_paper": sim_reason
-        }
+            "reason": reason
+        })
+        logger.info(f"[SIMULATION] Rejected by Claude | {title} | {reason}")
+    
+    return result
 
-# === Lambda Handler (Simulation Mode) ===
+# Lambda Handler
 def lambda_handler(event, context):
-    logger.info("Running tester simulation Lambda...")
+    logger.info("Starting simulation lambda handler")
+    failures = []
     results = []
 
     for record in event.get("Records", []):
+        msg_id = record["messageId"]
+
         try:
             body = json.loads(record["body"])
-            title = body.get("title", "Untitled")
-            abstract = body.get("abstract", "")
-            authors = body.get("authors", [])
-            s3_bucket = body.get("s3_bucket")
-            s3_key = body.get("s3_key")
-
-            result = simulate_paper_decision(title, abstract)
-            result.update({
-                "authors": authors,
-                "s3_bucket": s3_bucket,
-                "s3_key": s3_key
-            })
+            
+            # Simulate the evaluation
+            result = simulate_paper_evaluation(body, msg_id)
             results.append(result)
-
-            logger.info(f"Simulated decision for '{title}': {result['decision']} ({result['reason']})")
+            
+            # Send result to queue
+            send_result_to_queue(result)
 
         except Exception as e:
-            logger.exception(f"Error processing record: {e}")
-            results.append({"error": str(e)})
+            logger.exception(f"Failed to process message {msg_id}: {e}")
+            failures.append({"itemIdentifier": msg_id})
 
-    logger.info("Simulation complete.")
-    return {"simulation_results": results}
+    logger.info(f"Simulation complete. Processed: {len(results)}, Failures: {len(failures)}")
+    return {
+        "batchItemFailures": failures,
+        "simulation_results": results
+    }

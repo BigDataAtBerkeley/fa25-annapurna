@@ -46,7 +46,7 @@ if total_docs == 0:
 print(f"\n✅ Found {total_docs} total documents in '{index_name}'")
 
 # === 2. Randomly select 100 ===
-sample_size = min(100, total_docs)
+sample_size = min(1, total_docs)
 random_offsets = random.sample(range(total_docs), sample_size)
 print(f"📦 Sampling {sample_size} random documents...")
 
@@ -66,22 +66,19 @@ for i, offset in enumerate(random_offsets, start=1):
         message = {
             "paper_id": doc_id,
             "title": src.get("title") or src.get("name") or "Untitled",
-            "s3_bucket": src.get("s3_bucket", "N/A"),
-            "s3_key": src.get("s3_key", "N/A"),
             "abstract": src.get("abstract", "No abstract available"),
-            "authors": src.get("authors", []),
+            "authors": src.get("authors", [])
         }
 
         sqs.send_message(
             QueueUrl=send_queue_url,
             MessageBody=json.dumps(message),
             MessageAttributes={
-                "PaperName": {"StringValue": message["paper_name"], "DataType": "String"},
-                "S3Link": {"StringValue": str(message["s3_link"]), "DataType": "String"},
+                "PaperName": {"StringValue": message["title"], "DataType": "String"},
             },
         )
         sent_ids.append(doc_id)
-        print(f"✅ [{i}/{sample_size}] Sent '{message['paper_name']}'")
+        print(f"✅ [{i}/{sample_size}] Sent '{message['title']}'")
 
     except Exception as e:
         print(f"❌ Error sending doc at offset {offset}: {e}")
@@ -138,7 +135,7 @@ print(f"\n✅ Done! Received {len(received_ids)}/{sample_size} results.")
 # === 5. Save results to CSV ===
 output_file = "paper_results.csv"
 with open(output_file, mode="w", newline="", encoding="utf-8") as f:
-    writer = csv.DictWriter(f, fieldnames=["paper_id", "paper_name", "score", "judgment", "notes"])
+    writer = csv.DictWriter(f, fieldnames=["paper_id", "title", "score", "judgment", "notes"])
     writer.writeheader()
     for r in results:
         writer.writerow({
