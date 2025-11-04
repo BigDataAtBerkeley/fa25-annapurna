@@ -129,12 +129,18 @@ def search_similar_papers_rag(abstract: str, size: int = 5) -> List[Dict]:
         embedding = generate_embedding(abstract)
         if not embedding:
             return []
+        try:
+            embedding = [float(x) for x in embedding]
+        except Exception:
+            pass
+
         query = {
             "knn": {
-                "field": "abstract_embedding",
-                "query_vector": embedding,
-                "k": size,
-                "num_candidates": 100
+                "abstract_embedding": {
+                    "vector": embedding,
+                    "k": size,
+                    "num_candidates": 100
+                }
             }
         }
         res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query, "size": size})
