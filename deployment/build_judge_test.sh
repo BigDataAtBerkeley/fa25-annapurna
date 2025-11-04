@@ -1,39 +1,40 @@
 #!/bin/bash
 set -e
 
-# === Configuration ===
-FUNCTION_NAME="PaperJudgeTest"          # Lambda function name
-ZIP_FILE="judge_test.zip"                # Output zip file name
-JUDGE_DIR="../judge_lambda_test"         # Directory containing Lambda code
-DEPLOY_DIR="../deploy"                   # Deployment output directory
-REQ_FILE="$DEPLOY_DIR/requirements_judge.txt"
+# Build and deploy Judge Test Lambda function
+FUNCTION_NAME="PaperJudgeTest"
+ZIP_FILE="judge_test.zip"
 
-echo "📦 Packaging and deploying $FUNCTION_NAME..."
+echo "📦 Packaging $FUNCTION_NAME..."
 
-# === Step 1: Clean old zip ===
-echo "🧹 Cleaning old build files..."
-rm -f $DEPLOY_DIR/$ZIP_FILE
+# Navigate to project root
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+# Move into judge_test directory
+cd judge_lambda_test
+
+# Clean old zip files
+rm -f ../deployment/$ZIP_FILE
 rm -f $ZIP_FILE
 
-# === Step 2: Move into judge Lambda directory ===
-cd $JUDGE_DIR
-
-# === Step 3: Install dependencies locally ===
+# Install dependencies into a local folder
 echo "📥 Installing dependencies..."
-pip install -r $REQ_FILE -t .
+pip install -r requirements.txt -t .
 
-# === Step 4: Zip everything (excluding cache & logs) ===
+# Zip everything (excluding cache & logs)
 echo "🗜️ Creating deployment package..."
-zip -r9 $DEPLOY_DIR/$ZIP_FILE . -x "*.log" "logs/*" "__pycache__/*" "*.pyc" "*.zip"
+zip -r9 ../deployment/$ZIP_FILE . -x "*.log" "logs/*" "__pycache__/*" "*.pyc" "*.zip"
 
-# === Step 5: Cleanup build artifacts ===
+# Clean up installed deps
 echo "🧹 Cleaning up temporary files..."
-find . -type d -name "__pycache__" -exec rm -rf {} + >/dev/null 2>&1
-rm -rf boto3* opensearch_py*
+find . -type d -name "__pycache__" -exec rm -rf {} + >/dev/null 2>&1 || true
+rm -rf boto3* opensearch_py* requests* certifi* botocore* s3transfer* urllib3* charset_normalizer* idna* six* python_dateutil* Events* jmespath* requests_aws4auth* || true
 
-# === Step 6: Deploy to AWS Lambda ===
-cd $DEPLOY_DIR
-echo "🚀 Deploying $FUNCTION_NAME to AWS Lambda..."
+cd ../deployment
+
+echo "🚀 Updating $FUNCTION_NAME in AWS..."
 aws lambda update-function-code \
   --function-name $FUNCTION_NAME \
   --zip-file fileb://$ZIP_FILE

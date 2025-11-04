@@ -1,58 +1,68 @@
 #!/bin/bash
-
-# Lambda deployment script for code testing system
-# This script packages the test_lambda for AWS Lambda deployment
-
 set -e
 
+# Build and deploy Code Testing Lambda function
+FUNCTION_NAME="PapersCodeTester"
+ZIP_FILE="code_test_lambda.zip"
+
+echo "📦 Packaging $FUNCTION_NAME..."
+
 # Navigate to project root
-cd "$(dirname "$0")/.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
 
-echo "Packaging Code Testing Lambda Function..."
-
-# Create deployment directory
+# Create temporary deployment directory
 DEPLOY_DIR="lambda_test_deploy"
-PACKAGE_NAME="code_test_lambda.zip"
 
 # Clean up previous builds
 rm -rf $DEPLOY_DIR
-rm -f $PACKAGE_NAME
+rm -f deployment/$ZIP_FILE
+rm -f $ZIP_FILE
 
 # Create deployment directory
 mkdir -p $DEPLOY_DIR
 
 # Copy the lambda function
+echo "📥 Copying test_lambda files..."
 cp test_lambda/lambda_function.py $DEPLOY_DIR/
 cp test_lambda/requirements.txt $DEPLOY_DIR/
 
 # Install dependencies
-echo "Installing dependencies..."
+echo "📥 Installing dependencies..."
 pip install -r test_lambda/requirements.txt -t $DEPLOY_DIR/
 
 # Create deployment package
-echo "Creating deployment package..."
+echo "🗜️ Creating deployment package..."
 cd $DEPLOY_DIR
-zip -r ../$PACKAGE_NAME . -x "*.pyc" "*/__pycache__/*" "*/tests/*" "*/test_*"
+zip -r9 ../deployment/$ZIP_FILE . -x "*.pyc" "*/__pycache__/*" "*/tests/*" "*/test_*"
 cd ..
 
-echo "Package created: $PACKAGE_NAME"
-echo "Package size: $(du -h $PACKAGE_NAME | cut -f1)"
-
 # Clean up
+echo "🧹 Cleaning up temporary files..."
 rm -rf $DEPLOY_DIR
 
-echo "Lambda package ready for deployment!"
+echo "Package created: deployment/$ZIP_FILE"
+echo "Package size: $(du -h deployment/$ZIP_FILE | cut -f1)"
+
+cd deployment
+
+echo "🚀 Updating $FUNCTION_NAME in AWS..."
+aws lambda update-function-code \
+  --function-name $FUNCTION_NAME \
+  --zip-file fileb://$ZIP_FILE
+
+echo "✅ $FUNCTION_NAME deployed successfully."
 echo ""
-echo "Next steps:"
-echo "1. Upload $PACKAGE_NAME to AWS Lambda"
-echo "2. Set handler to: lambda_function.lambda_handler"
-echo "3. Set timeout to at least 15 minutes (900 seconds)"
-echo "4. Set memory to at least 512 MB"
-echo "5. Configure environment variables:"
-echo "   - OPENSEARCH_ENDPOINT"
-echo "   - OPENSEARCH_INDEX=research-papers-v2"
-echo "   - OUTPUTS_BUCKET=papers-test-outputs"
-echo "   - TRAINIUM_ENDPOINT (e.g., http://10.0.1.50:8000)"
-echo "   - TRAINIUM_INSTANCE_ID (EC2 instance ID)"
-echo "   - BATCH_SIZE=10"
-echo "   - TRAINIUM_TIMEOUT=600"
+echo "📋 Configuration:"
+echo "  Handler: lambda_function.lambda_handler"
+echo "  Timeout: 900 seconds (15 minutes)"
+echo "  Memory: 512 MB"
+echo "  Environment Variables:"
+echo "    - OPENSEARCH_ENDPOINT"
+echo "    - OPENSEARCH_INDEX=research-papers-v2"
+echo "    - OUTPUTS_BUCKET=papers-test-outputs"
+echo "    - TRAINIUM_ENDPOINT"
+echo "    - TRAINIUM_INSTANCE_ID"
+echo "    - BATCH_SIZE=10"
+echo "    - TRAINIUM_TIMEOUT=600"

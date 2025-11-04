@@ -37,10 +37,13 @@ S3 (papers-test-outputs) + OpenSearch (test results) --> execution results from 
 ### **Lambda Functions**
 1. **PaperScraper_ICLR** - Scrapes ICLR papers
 2. **PaperScraper_ICML** - Scrapes ICML papers
-3. **PaperScraper_ArXiv** - Scrapes ArXiv papers
-4. **PapersJudge** - Evaluates paper relevance
-5. **PapersCodeGenerator** - Generates PyTorch code from papers
-6. **PapersCodeTester** - Batches code (10 at a time) and dispatches to Trainium instance for execution
+3. **PaperScraper_arxiv** - Scrapes ArXiv papers
+4. **PaperScraper_NEURIPS** - Scrapes NeurIPS papers
+5. **PaperScraper_MLSYS** - Scrapes MLSys papers
+6. **PapersJudge** - Evaluates paper relevance
+7. **PapersCodeGenerator** - Generates PyTorch code from papers
+8. **PapersCodeTester** - Batches code (10 at a time) and dispatches to Trainium instance for execution
+9. **LogCleanupLambda** - Cleans up Lambda logs (optional)
 
 ### **Compute Resources**
 - **Trainium Instance (trn1.2xlarge)** - AWS Neuron-powered instance for executing PyTorch code with hardware acceleration
@@ -62,9 +65,21 @@ S3 (papers-test-outputs) + OpenSearch (test results) --> execution results from 
 
 ## Quick Start
 
-### Deploy All Functions
+### Initial Setup (First Time)
 ```bash
+# Make all scripts executable
 chmod +x deployment/*.sh
+
+# 1. Setup infrastructure (SQS queues, S3 buckets, IAM policies)
+./deployment/setup_sqs_queues.sh
+./deployment/setup_pipeline.sh
+
+# 2. Deploy all Lambda functions
+./deployment/deploy_all.sh
+```
+
+### Deploy All Functions (After Initial Setup)
+```bash
 ./deployment/deploy_all.sh
 ```
 
@@ -73,6 +88,9 @@ chmod +x deployment/*.sh
 # Scrapers
 ./deployment/build_scraper.sh PaperScraper_ICLR
 ./deployment/build_scraper.sh PaperScraper_ICML
+./deployment/build_scraper.sh PaperScraper_arxiv
+./deployment/build_scraper.sh PaperScraper_NEURIPS
+./deployment/build_scraper.sh PaperScraper_MLSYS
 
 # Judge
 ./deployment/build_judge.sh
@@ -82,6 +100,9 @@ chmod +x deployment/*.sh
 
 # Code Tester
 ./deployment/build_test_lambda.sh
+
+# Cleanup Lambda (optional)
+./deployment/build_cleanup.sh
 ```
 
 ---
@@ -91,11 +112,6 @@ chmod +x deployment/*.sh
 ### Trigger Scrapers Manually
 
 ```bash
-
-
-**"ICLR" IS USED AS AN EXAMPLE. TO TEST OTHER LAMBDA FUNCTIONS, REPLACE "ICLR" WITH "ICML", "arxiv", "MLSYS", or "NEURIPS".**
-
-
 # Scrape ICLR papers
 aws lambda invoke \
   --function-name PaperScraper_ICLR \
@@ -103,10 +119,28 @@ aws lambda invoke \
   --cli-binary-format raw-in-base64-out \
   scraper_output.json
 
-# Scrape ICML papers by topic
+# Scrape other conferences
 aws lambda invoke \
-  --function-name PapersScraper \
-  --payload '{"CONFERENCE": "ICML", "topic_filter": "Deep Learning->Large Language Models"}' \
+  --function-name PaperScraper_ICML \
+  --payload '{"MAX_PAPERS": "5"}' \
+  --cli-binary-format raw-in-base64-out \
+  scraper_output.json
+
+aws lambda invoke \
+  --function-name PaperScraper_arxiv \
+  --payload '{"MAX_PAPERS": "5"}' \
+  --cli-binary-format raw-in-base64-out \
+  scraper_output.json
+
+aws lambda invoke \
+  --function-name PaperScraper_NEURIPS \
+  --payload '{"MAX_PAPERS": "5"}' \
+  --cli-binary-format raw-in-base64-out \
+  scraper_output.json
+
+aws lambda invoke \
+  --function-name PaperScraper_MLSYS \
+  --payload '{"MAX_PAPERS": "5"}' \
   --cli-binary-format raw-in-base64-out \
   scraper_output.json
 ```
@@ -208,8 +242,11 @@ python -m code_gen.main_handler generate_recent --max-papers 5
 # Scraper logs
 aws logs tail /aws/lambda/PaperScraper_ICLR --since 5m --follow
 aws logs tail /aws/lambda/PaperScraper_ICML --since 5m --follow
+aws logs tail /aws/lambda/PaperScraper_arxiv --since 5m --follow
+aws logs tail /aws/lambda/PaperScraper_NEURIPS --since 5m --follow
+aws logs tail /aws/lambda/PaperScraper_MLSYS --since 5m --follow
 
-2. Judge logs
+# Judge logs
 aws logs tail /aws/lambda/PapersJudge --since 15m --follow
 
 # Code Generator logs
@@ -241,7 +278,7 @@ python check_opensearch.py
 
 # Clear OpenSearch (DO NOT RUN UNLESS ASKING DAN FIRST (anyways this file is gitignored))
 python clear_opensearch.py
-
+```
 
 ### Setup Queues (First Time Only)
 
@@ -251,17 +288,20 @@ chmod +x deployment/setup_sqs_queues.sh
 ./deployment/setup_sqs_queues.sh
 ```
 
-python check_opensearch.py
-```
-
+### Initial Setup
 
 ```bash
-# Get queue URL
-CODE_EVAL_QUEUE=$(aws sqs get-queue-url --queue-name code-evaluation.fifo --query 'QueueUrl' --output text)
+# 1. Setup SQS queues and infrastructure
+./deployment/setup_sqs_queues.sh
 
+# 2. Setup pipeline (S3 buckets, IAM policies)
+./deployment/setup_pipeline.sh
 
-# Watch code generation logs
-aws logs tail /aws/lambda/PapersCodeGenerator --follow
+# 3. Deploy all Lambda functions
+./deployment/deploy_all.sh
+
+# 4. Setup Trainium instance (if needed)
+./deployment/deploy_trainium.sh /path/to/your-key.pem
 ```
 
 ### Check Pipeline Status
@@ -337,7 +377,17 @@ aws ec2 run-instances \
   --key-name <YOUR_KEY_NAME> \
   --security-group-ids <YOUR_SG_ID> \
   --subnet-id <YOUR_SUBNET_ID> \
-  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=PapersCodeTester-Trainium}]'
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=PapersCodeTester-Trainium},{Key=Purpose,Value=PapersCodeTester}]'
+```
+
+### Deploy Trainium Executor
+
+```bash
+# Deploy Flask app to Trainium instance (from local machine)
+./deployment/deploy_trainium.sh /path/to/your-key.pem
+
+# OR setup on the Trainium instance directly (SSH into instance first)
+./deployment/setup_trainium_remote.sh
 ```
 ---
 
