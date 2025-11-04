@@ -134,16 +134,37 @@ def search_similar_papers_rag(abstract: str, size: int = 5) -> List[Dict]:
         except Exception:
             pass
 
-        query = {
+        try:
+            mapping = os_client.indices.get_mapping(index=OPENSEARCH_INDEX)
+            props = mapping.get(OPENSEARCH_INDEX, {}).get("mappings", {}).get("properties", {})
+            dim = int(props.get("abstract_embedding", {}).get("dimension", len(embedding)))
+        except Exception:
+            dim = len(embedding)
+        if len(embedding) > dim:
+            embedding = embedding[:dim]
+        elif len(embedding) < dim:
+            embedding = embedding + [0.0] * (dim - len(embedding))
+
+        query_primary = {
             "knn": {
                 "abstract_embedding": {
                     "vector": embedding,
-                    "k": size,
-                    "num_candidates": 100
+                    "k": size
                 }
             }
         }
-        res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query, "size": size})
+        try:
+            res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query_primary, "size": size})
+        except Exception as e1:
+            logger.warning(f"Primary kNN query failed, retrying with field/query_vector: {e1}")
+            query_fallback = {
+                "knn": {
+                    "field": "abstract_embedding",
+                    "query_vector": embedding,
+                    "k": size
+                }
+            }
+            res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query_fallback, "size": size})
         out = []
         for hit in res.get('hits', {}).get('hits', []):
             src = hit.get('_source', {})
