@@ -123,14 +123,43 @@ Full Paper Content:
         base_prompt += """
 Please generate a complete PyTorch implementation that includes:
 
-1. **Dataset Acquisition**: 
-   - If the paper uses a public dataset (e.g., CIFAR-10, ImageNet, MNIST, etc.), include code to automatically download it using torchvision.datasets or other standard libraries
-   - If the paper uses a custom dataset, generate synthetic data that matches the paper's data characteristics
-   - Include a function that downloads/generates the dataset and saves it to a local directory
-   - Handle cases where the dataset already exists locally
+1. **Dataset Selection and Loading** (CRITICAL - READ CAREFULLY):
+   You MUST use our standardized dataset loader which provides pre-cached datasets from S3.
+   
+   At the START of your code, import and use the dataset loader:
+   ```python
+   from dataset_loader import load_dataset
+   
+   # Select the appropriate dataset based on paper type:
+   # - Computer Vision / Image tasks → use 'cifar10' or 'mnist'
+   # - NLP / Text tasks → use 'imdb' or 'wikitext2'
+   # - Quick testing / Simple models → use 'synthetic'
+   
+   # Example for vision:
+   train_loader, test_loader = load_dataset('cifar10', batch_size=128)
+   
+   # Example for NLP:
+   train_data, test_data = load_dataset('imdb')
+   ```
+   
+   Available datasets:
+   - 'cifar10': 60K 32x32 color images, 10 classes (for CNNs, image classification)
+   - 'cifar100': 60K 32x32 color images, 100 classes (harder classification)
+   - 'mnist': 70K 28x28 grayscale digits (simple baselines)
+   - 'fashion_mnist': 70K 28x28 grayscale fashion items
+   - 'imdb': 50K movie reviews (sentiment analysis, NLP)
+   - 'wikitext2': Language modeling dataset (transformers, LLMs)
+   - 'synthetic': Generated data for quick testing
+   
+   **YOU MUST select the most appropriate dataset based on the paper's domain.**
+   - If paper is about vision/images/CNNs → use cifar10 or mnist
+   - If paper is about NLP/text/language → use imdb or wikitext2
+   - If paper is domain-agnostic → use synthetic
+   
+   DO NOT use torchvision.datasets or generate your own data. Use ONLY the dataset_loader.
 
-2. **Data Loading and Preprocessing**: 
-   - Create appropriate data loaders and preprocessing pipelines
+2. **Data Preprocessing**: 
+   - Create any additional preprocessing needed beyond what dataset_loader provides
    - Include data augmentation if mentioned in the paper
 
 3. **Model Architecture**: Implement the main model/algorithm described in the paper
@@ -144,13 +173,16 @@ Please generate a complete PyTorch implementation that includes:
 7. **Documentation**: Add comprehensive comments explaining each component
 
 CRITICAL REQUIREMENTS FOR DATASETS:
-- The code MUST be runnable immediately after downloading dependencies
-- Include a `download_dataset()` or `prepare_dataset()` function that runs automatically
-- For public datasets: Use torchvision.datasets, HuggingFace datasets, or other standard libraries
-- For custom datasets: Generate synthetic data with similar characteristics (same dimensions, data types, etc.)
-- Save datasets to a 'data/' directory that the code creates automatically
-- Include error handling for network issues during downloads
-- Print progress messages during dataset preparation
+- **ALWAYS use `from dataset_loader import load_dataset` at the top of your code**
+- **SELECT the appropriate dataset based on paper type**:
+  * Vision papers (CNN, ResNet, attention for images) → 'cifar10' or 'mnist'
+  * NLP papers (transformers, language models, text) → 'imdb' or 'wikitext2'  
+  * Generic/testing → 'synthetic'
+- **DO NOT use torchvision.datasets, HuggingFace datasets, or generate synthetic data**
+- **DO NOT create download_dataset() or prepare_dataset() functions**
+- The dataset_loader handles all downloading and caching automatically
+- Example: `train_loader, test_loader = load_dataset('cifar10', batch_size=128)`
+- Print which dataset you're using: `print(f"Using dataset: cifar10")`
 
 Requirements:
 - Use modern PyTorch practices (PyTorch 2.0+ features when applicable)
@@ -181,7 +213,7 @@ Please structure your response as follows:
 [Example of how to use the code - should just work when run]
 
 ### Dataset Information
-[Explain which dataset is used and how it's obtained]
+[Specify which dataset from dataset_loader you selected and WHY it matches this paper's requirements]
 
 ### Key Features
 [List of main features implemented]

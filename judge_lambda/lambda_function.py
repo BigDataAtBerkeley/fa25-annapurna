@@ -76,6 +76,7 @@ def ensure_index():
                 "s3_key": {"type": "keyword"},
                 "sha_abstract": {"type": "keyword"},
                 "decision": {"type": "keyword"},
+                "rejected_by": {"type": "keyword"},
                 "reason": {"type": "text"},
                 "relevance": {"type": "keyword"},
                 "novelty": {"type": "keyword"},
@@ -84,6 +85,30 @@ def ensure_index():
         }
         os_client.indices.create(index=OPENSEARCH_INDEX, body=body)
         logger.info("Created vector-enabled index")
+    else:
+        # Best-effort ensure required fields exist
+        try:
+            mapping = os_client.indices.get_mapping(index=OPENSEARCH_INDEX)
+            props = mapping.get(OPENSEARCH_INDEX, {}).get("mappings", {}).get("properties", {})
+            missing_updates = {}
+            if "abstract_embedding" not in props:
+                missing_updates.setdefault("properties", {})["abstract_embedding"] = {
+                    "type": "knn_vector",
+                    "dimension": 1536,
+                    "method": {
+                        "name": "hnsw",
+                        "space_type": "cosinesimil",
+                        "engine": "nmslib",
+                        "parameters": {"ef_construction": 128, "m": 24}
+                    }
+                }
+            if "rejected_by" not in props:
+                missing_updates.setdefault("properties", {})["rejected_by"] = {"type": "keyword"}
+            if missing_updates:
+                os_client.indices.put_mapping(index=OPENSEARCH_INDEX, body=missing_updates)
+                logger.info("Updated index mapping with missing fields")
+        except Exception as e:
+            logger.warning(f"Failed to ensure index mapping: {e}")
 
 def generate_embedding(text: str) -> List[float]:
     try:
@@ -104,15 +129,42 @@ def search_similar_papers_rag(abstract: str, size: int = 5) -> List[Dict]:
         embedding = generate_embedding(abstract)
         if not embedding:
             return []
-        query = {
+        try:
+            embedding = [float(x) for x in embedding]
+        except Exception:
+            pass
+
+        try:
+            mapping = os_client.indices.get_mapping(index=OPENSEARCH_INDEX)
+            props = mapping.get(OPENSEARCH_INDEX, {}).get("mappings", {}).get("properties", {})
+            dim = int(props.get("abstract_embedding", {}).get("dimension", len(embedding)))
+        except Exception:
+            dim = len(embedding)
+        if len(embedding) > dim:
+            embedding = embedding[:dim]
+        elif len(embedding) < dim:
+            embedding = embedding + [0.0] * (dim - len(embedding))
+
+        query_primary = {
             "knn": {
-                "field": "abstract_embedding",
-                "query_vector": embedding,
-                "k": size,
-                "num_candidates": 100
+                "abstract_embedding": {
+                    "vector": embedding,
+                    "k": size
+                }
             }
         }
-        res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query, "size": size})
+        try:
+            res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query_primary, "size": size})
+        except Exception as e1:
+            logger.warning(f"Primary kNN query failed, retrying with field/query_vector: {e1}")
+            query_fallback = {
+                "knn": {
+                    "field": "abstract_embedding",
+                    "query_vector": embedding,
+                    "k": size
+                }
+            }
+            res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query_fallback, "size": size})
         out = []
         for hit in res.get('hits', {}).get('hits', []):
             src = hit.get('_source', {})
@@ -136,6 +188,14 @@ def is_paper_redundant_rag(title: str, abstract: str) -> Dict[str, any]:
         "max_similarity": max_sim,
         "most_similar_paper": most_similar.get('title', 'Unknown')
     }
+
+def index_paper_document(doc: Dict) -> str:
+    try:
+        result = os_client.index(index=OPENSEARCH_INDEX, body=doc, refresh=True)
+        return result.get('_id', '')
+    except Exception as e:
+        logger.error(f"Failed to index document: {e}")
+        return ""
 
 def write_discard_record(rejected_by: str, reason: str, original: Dict, msg_id: str) -> None:
     try:
@@ -191,6 +251,7 @@ Keep it short.
 """
     try:
         body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
             "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
             "max_tokens": 200,
             "temperature": 0.3
@@ -262,12 +323,60 @@ def lambda_handler(event, context):
 
             title_norm = normalize_title(title)
             sha_abs = sha256_text(abstract)
+            # Precompute embedding for indexing (used for RAG storage and future searches)
+            precomputed_embedding = generate_embedding(abstract)
             
+            # Exact duplicate pre-check
+            if is_duplicate(title_norm, sha_abs):
+                reason = "Exact duplicate by title_normalized or sha_abstract"
+                write_discard_record("exact_duplicate", reason, body, msg_id)
+                reject_doc = {
+                    "title": title,
+                    "title_normalized": title_norm,
+                    "authors": authors,
+                    "abstract": abstract,
+                    "date": date.replace("/", "-") if date else None,
+                    "s3_bucket": s3_bucket,
+                    "s3_key": s3_key,
+                    "sha_abstract": sha_abs,
+                    "decision": "reject",
+                    "rejected_by": "exact_duplicate",
+                    "reason": reason,
+                    "relevance": "unknown",
+                    "novelty": "unknown",
+                    "ingested_at": int(time.time() * 1000)
+                }
+                if precomputed_embedding:
+                    reject_doc["abstract_embedding"] = precomputed_embedding
+                index_paper_document(reject_doc)
+                logger.info(f"Skipped (exact duplicate) | {title} | {reason}")
+                continue
+
             # RAG redundancy pre-check
             redundancy = is_paper_redundant_rag(title, abstract)
             if redundancy.get("is_redundant"):
-                write_discard_record("rag", redundancy.get("reason", "RAG redundancy"), body, msg_id)
-                logger.info(f"Rejected by RAG | {title} | {redundancy.get('reason')}")
+                reason = redundancy.get("reason", "RAG redundancy")
+                write_discard_record("rag", reason, body, msg_id)
+                reject_doc = {
+                    "title": title,
+                    "title_normalized": title_norm,
+                    "authors": authors,
+                    "abstract": abstract,
+                    "date": date.replace("/", "-") if date else None,
+                    "s3_bucket": s3_bucket,
+                    "s3_key": s3_key,
+                    "sha_abstract": sha_abs,
+                    "decision": "reject",
+                    "rejected_by": "rag",
+                    "reason": reason,
+                    "relevance": "unknown",
+                    "novelty": "unknown",
+                    "ingested_at": int(time.time() * 1000)
+                }
+                if precomputed_embedding:
+                    reject_doc["abstract_embedding"] = precomputed_embedding
+                index_paper_document(reject_doc)
+                logger.info(f"Rejected by RAG | {title} | {reason}")
                 continue
 
             # Evaluate with Claude (Bedrock)
@@ -294,12 +403,10 @@ def lambda_handler(event, context):
                     "ingested_at": int(time.time() * 1000)
                 }
                 # Add embedding for accepted docs
-                emb = generate_embedding(abstract)
-                if emb:
-                    doc["abstract_embedding"] = emb
+                if precomputed_embedding:
+                    doc["abstract_embedding"] = precomputed_embedding
                 # Index in OpenSearch
-                result = os_client.index(index=OPENSEARCH_INDEX, body=doc, refresh=True)
-                paper_id = result['_id']
+                paper_id = index_paper_document(doc)
                 logger.info(f"Indexed | {title} | ID: {paper_id}")
                 
                 # Send to code-evaluation queue (will trigger code gen when 10 accumulate)
@@ -307,6 +414,25 @@ def lambda_handler(event, context):
                 
             else:
                 write_discard_record("claude", reason, body, msg_id)
+                reject_doc = {
+                    "title": title,
+                    "title_normalized": title_norm,
+                    "authors": authors,
+                    "abstract": abstract,
+                    "date": date.replace("/", "-") if date else None,
+                    "s3_bucket": s3_bucket,
+                    "s3_key": s3_key,
+                    "sha_abstract": sha_abs,
+                    "decision": "reject",
+                    "rejected_by": "claude",
+                    "reason": reason,
+                    "relevance": relevance,
+                    "novelty": novelty,
+                    "ingested_at": int(time.time() * 1000)
+                }
+                if precomputed_embedding:
+                    reject_doc["abstract_embedding"] = precomputed_embedding
+                index_paper_document(reject_doc)
                 logger.info(f"Skipped (irrelevant or not novel) | {title} | {reason}")
 
         except Exception as e:

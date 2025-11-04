@@ -1,94 +1,59 @@
 #!/bin/bash
-
-# Lambda deployment script for code generation system
-# This script packages the code_gen module for AWS Lambda deployment
-
 set -e
 
+# Build and deploy Code Generation Lambda function
+FUNCTION_NAME="PapersCodeGenerator"
+ZIP_FILE="code_gen_lambda.zip"
+
+echo "📦 Packaging $FUNCTION_NAME..."
+
 # Navigate to project root
-cd "$(dirname "$0")/.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
 
-echo "Packaging Code Generation Lambda Function..."
-
-# Create deployment directory
+# Create temporary deployment directory
 DEPLOY_DIR="lambda_deploy"
-PACKAGE_NAME="code_gen_lambda.zip"
 
 # Clean up previous builds
 rm -rf $DEPLOY_DIR
-rm -f $PACKAGE_NAME
+rm -f deployment/$ZIP_FILE
+rm -f $ZIP_FILE
 
 # Create deployment directory
 mkdir -p $DEPLOY_DIR
 
-# Copy all Python files from code_gen to root (so imports work)
-echo "Copying code_gen files..."
+# Copy all Python files from code_gen
+echo "📥 Copying code_gen files..."
 cp code_gen/*.py $DEPLOY_DIR/
 
 # Install dependencies
-echo "Installing dependencies..."
+echo "📥 Installing dependencies..."
 pip install -r code_gen/requirements.txt -t $DEPLOY_DIR/
 
-# Don't need to create it, comment out the cat command
-: << 'SKIP'
-"""
-AWS Lambda handler for the code generation system.
-"""
-
-import json
-import logging
-from code_gen.lambda_handler import lambda_handler as code_gen_handler
-
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-def lambda_handler(event, context):
-    """
-    AWS Lambda entry point for code generation.
-    
-    Args:
-        event: Lambda event (dict)
-        context: Lambda context
-        
-    Returns:
-        Response dictionary
-    """
-    try:
-        logger.info(f"Received event: {json.dumps(event)}")
-        
-        # Call the main code generation handler
-        result = code_gen_handler(event, context)
-        
-        logger.info(f"Code generation result: {result.get('success', False)}")
-        return result
-        
-    except Exception as e:
-        logger.error(f"Lambda error: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Lambda error: {str(e)}",
-            "event": event
-        }
-SKIP
-
 # Create deployment package
-echo "Creating deployment package..."
+echo "🗜️ Creating deployment package..."
 cd $DEPLOY_DIR
-zip -r ../$PACKAGE_NAME . -x "*.pyc" "*/__pycache__/*" "*/tests/*" "*/test_*"
+zip -r9 ../deployment/$ZIP_FILE . -x "*.pyc" "*/__pycache__/*" "*/tests/*" "*/test_*"
 cd ..
 
-echo "Package created: $PACKAGE_NAME"
-echo "Package size: $(du -h $PACKAGE_NAME | cut -f1)"
-
 # Clean up
+echo "🧹 Cleaning up temporary files..."
 rm -rf $DEPLOY_DIR
 
-echo "Lambda package ready for deployment!"
+echo "Package created: deployment/$ZIP_FILE"
+echo "Package size: $(du -h deployment/$ZIP_FILE | cut -f1)"
+
+cd deployment
+
+echo "🚀 Updating $FUNCTION_NAME in AWS..."
+aws lambda update-function-code \
+  --function-name $FUNCTION_NAME \
+  --zip-file fileb://$ZIP_FILE
+
+echo "✅ $FUNCTION_NAME deployed successfully."
 echo ""
-echo "Next steps:"
-echo "1. Upload $PACKAGE_NAME to AWS Lambda"
-echo "2. Set handler to: lambda_handler.lambda_handler"
-echo "3. Set timeout to at least 5 minutes"
-echo "4. Set memory to at least 1024 MB"
-echo "5. Configure environment variables"
+echo "📋 Configuration:"
+echo "  Handler: lambda_handler.lambda_handler"
+echo "  Timeout: 300 seconds (5 minutes)"
+echo "  Memory: 1024 MB"
