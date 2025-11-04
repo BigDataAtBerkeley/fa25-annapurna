@@ -47,7 +47,7 @@ for idx in indices:
 # === 3. Fetch and print sample documents ===
 print(f"\nDocuments from '{index_name}':")
 try:
-    res = os_client.search(index=index_name, body={"query": {"match_all": {}}, "size": 30})
+    res = os_client.search(index=index_name, body={"query": {"match_all": {}}, "size": 300})
     hits = res["hits"]["hits"]
     if not hits:
         print("No documents found in this index yet.")
