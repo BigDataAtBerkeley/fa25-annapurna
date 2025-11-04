@@ -1,4 +1,4 @@
-# This is a simlation version of the judge lambda that does not modify any data in OpenSearch.
+# This is a simulation version of the judge lambda that does not modify any data in OpenSearch.
 # Requests are sent using setup_test.py and require existing documents in OpenSearch.
 
 import boto3
@@ -75,21 +75,44 @@ def search_similar_papers_rag(abstract: str, exclude_id: str = None, size: int =
         embedding = generate_embedding(abstract)
         if not embedding:
             return []
-        
-        # Build query with optional exclusion filter
-        query_body = {
-            "query": {
-                "knn": {
-                    "abstract_embedding": {
-                        "vector": embedding,
-                        "k": size + 1 if exclude_id else size  # Request extra if filtering
-                    }
+        try:
+            embedding = [float(x) for x in embedding]
+        except Exception:
+            pass
+
+        try:
+            mapping = os_client.indices.get_mapping(index=OPENSEARCH_INDEX)
+            props = mapping.get(OPENSEARCH_INDEX, {}).get("mappings", {}).get("properties", {})
+            dim = int(props.get("abstract_embedding", {}).get("dimension", len(embedding)))
+        except Exception:
+            dim = len(embedding)
+        if len(embedding) > dim:
+            embedding = embedding[:dim]
+        elif len(embedding) < dim:
+            embedding = embedding + [0.0] * (dim - len(embedding))
+
+        query_primary = {
+            "knn": {
+                "abstract_embedding": {
+                    "vector": embedding,
+                    "k": size + 1 if exclude_id else size  # Request extra if filtering
                 }
-            },
-            "size": size + 1 if exclude_id else size
+            }
         }
         
-        res = os_client.search(index=OPENSEARCH_INDEX, body=query_body)
+        try:
+            res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query_primary, "size": size + 1 if exclude_id else size})
+        except Exception as e1:
+            logger.warning(f"Primary kNN query failed, retrying with field/query_vector: {e1}")
+            query_fallback = {
+                "knn": {
+                    "field": "abstract_embedding",
+                    "query_vector": embedding,
+                    "k": size + 1 if exclude_id else size
+                }
+            }
+            res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query_fallback, "size": size + 1 if exclude_id else size})
+        
         out = []
         for hit in res.get('hits', {}).get('hits', []):
             doc_id = hit.get('_id')
@@ -241,18 +264,34 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
         "evaluated_at": datetime.utcnow().isoformat()
     }
     
+    # Exact duplicate pre-check (excluding self)
+    if is_duplicate(title_norm, sha_abs, exclude_id=paper_id):
+        reason = "Exact duplicate by title_normalized or sha_abstract"
+        result.update({
+            "decision": "reject",
+            "rejected_by": "exact_duplicate",
+            "reason": reason,
+            "relevance": "unknown",
+            "novelty": "unknown"
+        })
+        logger.info(f"[SIMULATION] Skipped (exact duplicate) | {title} | {reason}")
+        return result
+    
     # RAG redundancy pre-check (excluding self)
     redundancy = is_paper_redundant_rag(title, abstract, exclude_id=paper_id)
     if redundancy.get("is_redundant"):
+        reason = redundancy.get("reason", "RAG redundancy")
         result.update({
             "decision": "reject",
             "rejected_by": "rag",
-            "reason": redundancy.get("reason", "RAG redundancy"),
+            "reason": reason,
             "max_similarity": redundancy.get("max_similarity"),
             "most_similar_paper": redundancy.get("most_similar_paper"),
-            "most_similar_id": redundancy.get("most_similar_id")
+            "most_similar_id": redundancy.get("most_similar_id"),
+            "relevance": "unknown",
+            "novelty": "unknown"
         })
-        logger.info(f"[SIMULATION] Rejected by RAG | {title} | {redundancy.get('reason')}")
+        logger.info(f"[SIMULATION] Rejected by RAG | {title} | {reason}")
         return result
     
     # Evaluate with Claude (Bedrock)
