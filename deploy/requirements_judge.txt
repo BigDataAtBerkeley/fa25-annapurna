@@ -1,2 +1,4 @@
 boto3
-opensearch-py
+opensearch-py<3
+requests-aws4auth
+certifi

@@ -52,7 +52,6 @@ class SnapshotClient(NamespacedClient):
     )
     async def create(
         self,
-        *,
         repository: Any,
         snapshot: Any,
         body: Any = None,
@@ -60,19 +59,15 @@ class SnapshotClient(NamespacedClient):
         headers: Any = None,
     ) -> Any:
         """
-        Creates a snapshot within an existing repository.
+        Creates a snapshot in a repository.
 
 
-        :arg repository: The name of the repository where the snapshot
-            will be stored.
-        :arg snapshot: The name of the snapshot. Must be unique in the
+        :arg repository: Repository for the snapshot.
+        :arg snapshot: Name of the snapshot. Must be unique in the
             repository.
-        :arg body: The snapshot definition.
-        :arg cluster_manager_timeout: The amount of time to wait for a
-            response from the cluster manager node. For more information about
-            supported time units, see [Common
-            parameters](https://opensearch.org/docs/latest/api-reference/common-
-            parameters/#time-units).
+        :arg body: The snapshot definition
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -89,9 +84,9 @@ class SnapshotClient(NamespacedClient):
             response. Default is false.
         :arg source: The URL-encoded request definition. Useful for
             libraries that do not accept a request body for non-POST requests.
-        :arg wait_for_completion: When `true`, the request returns a
-            response when the snapshot is complete. When `false`, the request
-            returns a response when the snapshot initializes. Default is false.
+        :arg wait_for_completion: If `true`, the request returns a
+            response when the snapshot is complete. If `false`, the request returns
+            a response when the snapshot initializes. Default is false.
         """
         for param in (repository, snapshot):
             if param in SKIP_IN_PATH:
@@ -116,7 +111,6 @@ class SnapshotClient(NamespacedClient):
     )
     async def delete(
         self,
-        *,
         repository: Any,
         snapshot: Any,
         params: Any = None,
@@ -126,14 +120,10 @@ class SnapshotClient(NamespacedClient):
         Deletes a snapshot.
 
 
-        :arg repository: The name of the snapshot repository to delete.
-        :arg snapshot: A comma-separated list of snapshot names to
-            delete from the repository.
-        :arg cluster_manager_timeout: The amount of time to wait for a
-            response from the cluster manager node. For more information about
-            supported time units, see [Common
-            parameters](https://opensearch.org/docs/latest/api-reference/common-
-            parameters/#time-units).
+        :arg repository: A repository name
+        :arg snapshot: A comma-separated list of snapshot names
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -174,7 +164,6 @@ class SnapshotClient(NamespacedClient):
     )
     async def get(
         self,
-        *,
         repository: Any,
         snapshot: Any,
         params: Any = None,
@@ -184,18 +173,15 @@ class SnapshotClient(NamespacedClient):
         Returns information about a snapshot.
 
 
-        :arg repository: A comma-separated list of snapshot repository
+        :arg repository: Comma-separated list of snapshot repository
             names used to limit the request. Wildcard (*) expressions are supported.
-        :arg snapshot: A comma-separated list of snapshot names to
-            retrieve. Also accepts wildcard expressions. (`*`). To get information
-            about all snapshots in a registered repository, use a wildcard (`*`) or
-            `_all`. To get information about any snapshots that are currently
-            running, use `_current`.
-        :arg cluster_manager_timeout: The amount of time to wait for a
-            response from the cluster manager node. For more information about
-            supported time units, see [Common
-            parameters](https://opensearch.org/docs/latest/api-reference/common-
-            parameters/#time-units).
+        :arg snapshot: Comma-separated list of snapshot names to
+            retrieve. Also accepts wildcards (`*`). - To get information about all
+            snapshots in a registered repository, use a wildcard (`*`) or `_all`. -
+            To get information about any snapshots that are currently running, use
+            `_current`.
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -204,7 +190,7 @@ class SnapshotClient(NamespacedClient):
             with "-".
         :arg human: Whether to return human readable values for
             statistics. Default is True.
-        :arg ignore_unavailable: When `false`, the request returns an
+        :arg ignore_unavailable: If `false`, the request returns an
             error for any snapshots that are unavailable. Default is false.
         :arg master_timeout (Deprecated: To promote inclusive language,
             use `cluster_manager_timeout` instead.): Period to wait for a connection
@@ -214,10 +200,10 @@ class SnapshotClient(NamespacedClient):
             response. Default is false.
         :arg source: The URL-encoded request definition. Useful for
             libraries that do not accept a request body for non-POST requests.
-        :arg verbose: When `true`, returns additional information about
+        :arg verbose: If `true`, returns additional information about
             each snapshot such as the version of OpenSearch which took the snapshot,
             the start and end times of the snapshot, and the number of shards
-            contained in the snapshot.
+            snapshotted.
         """
         for param in (repository, snapshot):
             if param in SKIP_IN_PATH:
@@ -242,22 +228,18 @@ class SnapshotClient(NamespacedClient):
     )
     async def delete_repository(
         self,
-        *,
         repository: Any,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Deletes a snapshot repository.
+        Deletes a repository.
 
 
-        :arg repository: The name of the snapshot repository to
-            unregister. Wildcard (`*`) patterns are supported.
-        :arg cluster_manager_timeout: The amount of time to wait for a
-            response from the cluster manager node. For more information about
-            supported time units, see [Common
-            parameters](https://opensearch.org/docs/latest/api-reference/common-
-            parameters/#time-units).
+        :arg repository: Name of the snapshot repository to unregister.
+            Wildcard (`*`) patterns are supported.
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -273,7 +255,7 @@ class SnapshotClient(NamespacedClient):
             response. Default is false.
         :arg source: The URL-encoded request definition. Useful for
             libraries that do not accept a request body for non-POST requests.
-        :arg timeout: The amount of time to wait for a response.
+        :arg timeout: Explicit operation timeout
         """
         if repository in SKIP_IN_PATH:
             raise ValueError("Empty value passed for a required argument 'repository'.")
@@ -297,21 +279,17 @@ class SnapshotClient(NamespacedClient):
     )
     async def get_repository(
         self,
-        *,
         repository: Any = None,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Returns information about a snapshot repository.
+        Returns information about a repository.
 
 
-        :arg repository: A comma-separated list of repository names.
-        :arg cluster_manager_timeout: The amount of time to wait for a
-            response from the cluster manager node. For more information about
-            supported time units, see [Common
-            parameters](https://opensearch.org/docs/latest/api-reference/common-
-            parameters/#time-units).
+        :arg repository: A comma-separated list of repository names
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -320,8 +298,8 @@ class SnapshotClient(NamespacedClient):
             with "-".
         :arg human: Whether to return human readable values for
             statistics. Default is True.
-        :arg local: Whether to get information from the local node.
-            Default is false.
+        :arg local: Return local information, do not retrieve the state
+            from cluster-manager node. Default is false.
         :arg master_timeout (Deprecated: To promote inclusive language,
             use `cluster_manager_timeout` instead.): Explicit operation timeout for
             connection to cluster-manager node
@@ -347,23 +325,19 @@ class SnapshotClient(NamespacedClient):
     )
     async def create_repository(
         self,
-        *,
         repository: Any,
         body: Any,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Creates a snapshot repository.
+        Creates a repository.
 
 
-        :arg repository: The name for the newly registered repository.
-        :arg body: The repository definition.
-        :arg cluster_manager_timeout: The amount of time to wait for a
-            response from the cluster manager node. For more information about
-            supported time units, see [Common
-            parameters](https://opensearch.org/docs/latest/api-reference/common-
-            parameters/#time-units).
+        :arg repository: A repository name
+        :arg body: The repository definition
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -379,9 +353,8 @@ class SnapshotClient(NamespacedClient):
             response. Default is false.
         :arg source: The URL-encoded request definition. Useful for
             libraries that do not accept a request body for non-POST requests.
-        :arg timeout: The amount of time to wait for a response.
-        :arg verify: When `true`, verifies the creation of the snapshot
-            repository.
+        :arg timeout: Explicit operation timeout
+        :arg verify: Whether to verify the repository after creation
         """
         for param in (repository, body):
             if param in SKIP_IN_PATH:
@@ -407,7 +380,6 @@ class SnapshotClient(NamespacedClient):
     )
     async def restore(
         self,
-        *,
         repository: Any,
         snapshot: Any,
         body: Any = None,
@@ -418,16 +390,11 @@ class SnapshotClient(NamespacedClient):
         Restores a snapshot.
 
 
-        :arg repository: The name of the repository containing the
-            snapshot
-        :arg snapshot: The name of the snapshot to restore.
-        :arg body: Determines which settings and indexes to restore when
-            restoring a snapshot
-        :arg cluster_manager_timeout: The amount of time to wait for a
-            response from the cluster manager node. For more information about
-            supported time units, see [Common
-            parameters](https://opensearch.org/docs/latest/api-reference/common-
-            parameters/#time-units).
+        :arg repository: A repository name
+        :arg snapshot: A snapshot name
+        :arg body: Details of what to restore
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -443,11 +410,8 @@ class SnapshotClient(NamespacedClient):
             response. Default is false.
         :arg source: The URL-encoded request definition. Useful for
             libraries that do not accept a request body for non-POST requests.
-        :arg wait_for_completion: Whether to return a response after the
-            restore operation has completed. When `false`, the request returns a
-            response when the restore operation initializes. When `true`, the
-            request returns a response when the restore operation completes. Default
-            is false.
+        :arg wait_for_completion: Should this request wait until the
+            operation has completed before returning Default is false.
         """
         for param in (repository, snapshot):
             if param in SKIP_IN_PATH:
@@ -473,7 +437,6 @@ class SnapshotClient(NamespacedClient):
     )
     async def status(
         self,
-        *,
         repository: Any = None,
         snapshot: Any = None,
         params: Any = None,
@@ -483,14 +446,10 @@ class SnapshotClient(NamespacedClient):
         Returns information about the status of a snapshot.
 
 
-        :arg repository: The name of the repository containing the
-            snapshot.
-        :arg snapshot: A comma-separated list of snapshot names.
-        :arg cluster_manager_timeout: The amount of time to wait for a
-            response from the cluster manager node. For more information about
-            supported time units, see [Common
-            parameters](https://opensearch.org/docs/latest/api-reference/common-
-            parameters/#time-units).
+        :arg repository: A repository name
+        :arg snapshot: A comma-separated list of snapshot names
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -499,9 +458,9 @@ class SnapshotClient(NamespacedClient):
             with "-".
         :arg human: Whether to return human readable values for
             statistics. Default is True.
-        :arg ignore_unavailable: Whether to ignore any unavailable
-            snapshots, When `false`, a `SnapshotMissingException` is thrown. Default
-            is false.
+        :arg ignore_unavailable: Whether to ignore unavailable
+            snapshots, defaults to `false` which means a SnapshotMissingException is
+            thrown Default is false.
         :arg master_timeout (Deprecated: To promote inclusive language,
             use `cluster_manager_timeout` instead.): Explicit operation timeout for
             connection to cluster-manager node
@@ -529,7 +488,6 @@ class SnapshotClient(NamespacedClient):
     )
     async def verify_repository(
         self,
-        *,
         repository: Any,
         params: Any = None,
         headers: Any = None,
@@ -538,13 +496,9 @@ class SnapshotClient(NamespacedClient):
         Verifies a repository.
 
 
-        :arg repository: The name of the repository containing the
-            snapshot.
-        :arg cluster_manager_timeout: The amount of time to wait for a
-            response from the cluster manager node. For more information about
-            supported time units, see [Common
-            parameters](https://opensearch.org/docs/latest/api-reference/common-
-            parameters/#time-units).
+        :arg repository: A repository name
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -560,7 +514,7 @@ class SnapshotClient(NamespacedClient):
             response. Default is false.
         :arg source: The URL-encoded request definition. Useful for
             libraries that do not accept a request body for non-POST requests.
-        :arg timeout: The amount of time to wait for a response.
+        :arg timeout: Explicit operation timeout
         """
         if repository in SKIP_IN_PATH:
             raise ValueError("Empty value passed for a required argument 'repository'.")
@@ -584,21 +538,17 @@ class SnapshotClient(NamespacedClient):
     )
     async def cleanup_repository(
         self,
-        *,
         repository: Any,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Removes any stale data from a snapshot repository.
+        Removes stale data from repository.
 
 
         :arg repository: Snapshot repository to clean up.
-        :arg cluster_manager_timeout: The amount of time to wait for a
-            response from the cluster manager node. For more information about
-            supported time units, see [Common
-            parameters](https://opensearch.org/docs/latest/api-reference/common-
-            parameters/#time-units).
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -614,7 +564,7 @@ class SnapshotClient(NamespacedClient):
             response. Default is false.
         :arg source: The URL-encoded request definition. Useful for
             libraries that do not accept a request body for non-POST requests.
-        :arg timeout: The amount of time to wait for a response.
+        :arg timeout: Period to wait for a response.
         """
         if repository in SKIP_IN_PATH:
             raise ValueError("Empty value passed for a required argument 'repository'.")
@@ -637,7 +587,6 @@ class SnapshotClient(NamespacedClient):
     )
     async def clone(
         self,
-        *,
         repository: Any,
         snapshot: Any,
         target_snapshot: Any,
@@ -646,20 +595,15 @@ class SnapshotClient(NamespacedClient):
         headers: Any = None,
     ) -> Any:
         """
-        Creates a clone of all or part of a snapshot in the same repository as the
-        original snapshot.
+        Clones indexes from one snapshot into another snapshot in the same repository.
 
 
-        :arg repository: The name of repository which will contain the
-            snapshots clone.
-        :arg snapshot: The name of the original snapshot.
-        :arg target_snapshot: The name of the cloned snapshot.
-        :arg body: The snapshot clone definition.
-        :arg cluster_manager_timeout: The amount of time to wait for a
-            response from the cluster manager node. For more information about
-            supported time units, see [Common
-            parameters](https://opensearch.org/docs/latest/api-reference/common-
-            parameters/#time-units).
+        :arg repository: A repository name
+        :arg snapshot: The name of the snapshot to clone from
+        :arg target_snapshot: The name of the cloned snapshot to create
+        :arg body: The snapshot clone definition
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter

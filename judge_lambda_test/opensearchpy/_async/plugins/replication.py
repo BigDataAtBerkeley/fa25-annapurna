@@ -25,12 +25,11 @@ class ReplicationClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def autofollow_stats(
         self,
-        *,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Retrieves information about any auto-follow activity and any replication rules
+        Gets information about auto-follow activity and any replication rules
         configured on the specified cluster.
 
 
@@ -57,13 +56,12 @@ class ReplicationClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def create_replication_rule(
         self,
-        *,
         body: Any,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Automatically starts the replication on indexes matching a specified pattern.
+        Automatically starts replication on indexes matching a specified pattern.
 
 
         :arg error_trace: Whether to include the stack trace of returned
@@ -93,7 +91,6 @@ class ReplicationClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def delete_replication_rule(
         self,
-        *,
         body: Any,
         params: Any = None,
         headers: Any = None,
@@ -129,13 +126,11 @@ class ReplicationClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def follower_stats(
         self,
-        *,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Retrieves information about any follower (syncing) indexes on a specified
-        cluster.
+        Gets information about follower (syncing) indexes on a specified cluster.
 
 
         :arg error_trace: Whether to include the stack trace of returned
@@ -161,13 +156,11 @@ class ReplicationClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def leader_stats(
         self,
-        *,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Retrieves information about any replicated leader indexes on a specified
-        cluster.
+        Gets information about replicated leader indexes on a specified cluster.
 
 
         :arg error_trace: Whether to include the stack trace of returned
@@ -190,18 +183,17 @@ class ReplicationClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def pause(
         self,
-        *,
         index: Any,
         body: Any,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Pauses the replication of the leader index.
+        Pauses replication of the leader index.
 
 
-        :arg index: The name of the data stream, index, or index alias
-            to perform bulk actions on.
+        :arg index: Name of the data stream, index, or index alias to
+            perform bulk actions on.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -230,7 +222,6 @@ class ReplicationClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def resume(
         self,
-        *,
         index: Any,
         body: Any,
         params: Any = None,
@@ -240,8 +231,8 @@ class ReplicationClient(NamespacedClient):
         Resumes replication of the leader index.
 
 
-        :arg index: The name of the data stream, index, or index alias
-            to perform bulk actions on.
+        :arg index: Name of the data stream, index, or index alias to
+            perform bulk actions on.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -270,19 +261,18 @@ class ReplicationClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def start(
         self,
-        *,
         index: Any,
         body: Any,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Initiates the replication of an index from the leader cluster to the follower
+        Initiate replication of an index from the leader cluster to the follower
         cluster.
 
 
-        :arg index: The name of the data stream, index, or index alias
-            to perform bulk actions on.
+        :arg index: Name of the data stream, index, or index alias to
+            perform bulk actions on.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -311,17 +301,16 @@ class ReplicationClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def status(
         self,
-        *,
         index: Any,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Retrieves the the status of an index replication.
+        Gets the status of index replication.
 
 
-        :arg index: The name of the data stream, index, or index alias
-            to perform bulk actions on.
+        :arg index: Name of the data stream, index, or index alias to
+            perform bulk actions on.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -348,18 +337,17 @@ class ReplicationClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def stop(
         self,
-        *,
         index: Any,
         body: Any,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Terminates the replication and converts the follower index to a standard index.
+        Terminates replication and converts the follower index to a standard index.
 
 
-        :arg index: The name of the data stream, index, or index alias
-            to perform bulk actions on.
+        :arg index: Name of the data stream, index, or index alias to
+            perform bulk actions on.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -388,18 +376,17 @@ class ReplicationClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def update_settings(
         self,
-        *,
         index: Any,
         body: Any,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Updates any settings on the follower index.
+        Updates settings on the follower index.
 
 
-        :arg index: The name of the data stream, index, or index alias
-            to perform bulk actions on.
+        :arg index: Name of the data stream, index, or index alias to
+            perform bulk actions on.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter

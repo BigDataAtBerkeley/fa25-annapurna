@@ -17,7 +17,7 @@ logger.info("Judge Lambda started")
 # Environment variables
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 OPENSEARCH_ENDPOINT = os.getenv("OPENSEARCH_ENDPOINT")
-OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "research-papers")
+OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "research-paperswait ")
 CODE_EVAL_QUEUE_URL = os.getenv("CODE_EVAL_QUEUE_URL")  # SQS queue for code generation
 DISCARDED_BUCKET = os.getenv("DISCARDED_BUCKET", "discarded-papers")
 SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.85"))

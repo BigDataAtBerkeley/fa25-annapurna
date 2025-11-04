@@ -1,4 +1,4 @@
-#!/opt/homebrew/opt/python@3.11/bin/python3.11
+#!/Users/tarunshah/Desktop/Venv VS/Annapurna Fall 2025/WebScraping Engine/fa25-annapurna/.venv/bin/python3.13
 
 import sys
 import json

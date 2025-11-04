@@ -25,7 +25,6 @@ class WlmClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def create_query_group(
         self,
-        *,
         body: Any,
         params: Any = None,
         headers: Any = None,
@@ -57,7 +56,6 @@ class WlmClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def delete_query_group(
         self,
-        *,
         name: Any,
         params: Any = None,
         headers: Any = None,
@@ -93,7 +91,6 @@ class WlmClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def get_query_group(
         self,
-        *,
         name: Any = None,
         params: Any = None,
         headers: Any = None,
@@ -127,7 +124,6 @@ class WlmClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def update_query_group(
         self,
-        *,
         name: Any,
         body: Any,
         params: Any = None,

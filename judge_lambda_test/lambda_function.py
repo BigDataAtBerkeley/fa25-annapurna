@@ -7,9 +7,14 @@ import os
 import time
 import hashlib
 import logging
+import certifi
+import ssl
 from typing import List, Dict
 from datetime import datetime
 from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
+
+os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+os.environ['AWS_CA_BUNDLE'] = certifi.where()
 
 # Logging setup
 logger = logging.getLogger(__name__)
@@ -177,6 +182,7 @@ Keep it short.
 """
     try:
         body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
             "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
             "max_tokens": 200,
             "temperature": 0.3

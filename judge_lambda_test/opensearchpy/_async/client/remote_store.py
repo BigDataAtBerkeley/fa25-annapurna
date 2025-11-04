@@ -33,7 +33,6 @@ class RemoteStoreClient(NamespacedClient):
     )
     async def restore(
         self,
-        *,
         body: Any,
         params: Any = None,
         headers: Any = None,

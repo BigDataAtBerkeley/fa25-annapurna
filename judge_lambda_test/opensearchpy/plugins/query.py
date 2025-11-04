@@ -25,16 +25,15 @@ class QueryClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     def datasource_delete(
         self,
-        *,
         datasource_name: Any,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Deletes a specific data source by name.
+        Deletes specific datasource specified by name.
 
 
-        :arg datasource_name: The name of the data source to delete.
+        :arg datasource_name: The Name of the DataSource to delete.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -63,16 +62,15 @@ class QueryClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     def datasource_retrieve(
         self,
-        *,
         datasource_name: Any,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Retrieves a specific data source by name.
+        Retrieves specific datasource specified by name.
 
 
-        :arg datasource_name: The name of the data source to retrieve.
+        :arg datasource_name: The Name of the DataSource to retrieve.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -101,13 +99,12 @@ class QueryClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     def datasources_create(
         self,
-        *,
         body: Any = None,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Creates a new query data source.
+        Creates a new query datasource.
 
 
         :arg error_trace: Whether to include the stack trace of returned
@@ -134,12 +131,11 @@ class QueryClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     def datasources_list(
         self,
-        *,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Retrieves a list of all available data sources.
+        Retrieves list of all datasources.
 
 
         :arg error_trace: Whether to include the stack trace of returned
@@ -162,13 +158,12 @@ class QueryClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     def datasources_update(
         self,
-        *,
         body: Any = None,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Updates an existing query data source.
+        Updates an existing query datasource.
 
 
         :arg error_trace: Whether to include the stack trace of returned

@@ -135,7 +135,7 @@ print(f"\n✅ Done! Received {len(received_ids)}/{sample_size} results.")
 # === 5. Save results to CSV ===
 output_file = "paper_results.csv"
 with open(output_file, mode="w", newline="", encoding="utf-8") as f:
-    writer = csv.DictWriter(f, fieldnames=["paper_id", "title", "score", "judgment", "notes"])
+    writer = csv.DictWriter(f, fieldnames=["paper_id", "title", "decision", "reason", "similarity", "similar_paper"])
     writer.writeheader()
     for r in results:
         writer.writerow({

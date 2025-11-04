@@ -51,20 +51,19 @@ class IngestClient(NamespacedClient):
     )
     async def get_pipeline(
         self,
-        *,
         id: Any = None,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Returns an ingest pipeline.
+        Returns a pipeline.
 
 
-        :arg id: A comma-separated list of pipeline IDs to retrieve.
+        :arg id: Comma-separated list of pipeline IDs to retrieve.
             Wildcard (`*`) expressions are supported. To get all ingest pipelines,
             omit this parameter or use `*`.
-        :arg cluster_manager_timeout: The amount of time allowed to
-            establish a connection to the cluster manager node.
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -98,20 +97,19 @@ class IngestClient(NamespacedClient):
     )
     async def put_pipeline(
         self,
-        *,
         id: Any,
         body: Any,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Creates or updates an ingest pipeline.
+        Creates or updates a pipeline.
 
 
-        :arg id: The ID of the ingest pipeline.
-        :arg body: The ingest definition.
-        :arg cluster_manager_timeout: The amount of time allowed to
-            establish a connection to the cluster manager node.
+        :arg id: ID of the ingest pipeline to create or update.
+        :arg body: The ingest definition
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -128,7 +126,9 @@ class IngestClient(NamespacedClient):
             response. Default is false.
         :arg source: The URL-encoded request definition. Useful for
             libraries that do not accept a request body for non-POST requests.
-        :arg timeout: The amount of time to wait for a response.
+        :arg timeout: Period to wait for a response. If no response is
+            received before the timeout expires, the request fails and returns an
+            error.
         """
         for param in (id, body):
             if param in SKIP_IN_PATH:
@@ -154,20 +154,19 @@ class IngestClient(NamespacedClient):
     )
     async def delete_pipeline(
         self,
-        *,
         id: Any,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Deletes an ingest pipeline.
+        Deletes a pipeline.
 
 
-        :arg id: The pipeline ID or wildcard expression of pipeline IDs
-            used to limit the request. To delete all ingest pipelines in a cluster,
-            use a value of `*`.
-        :arg cluster_manager_timeout: The amount of time allowed to
-            establish a connection to the cluster manager node.
+        :arg id: Pipeline ID or wildcard expression of pipeline IDs used
+            to limit the request. To delete all ingest pipelines in a cluster, use a
+            value of `*`.
+        :arg cluster_manager_timeout: Operation timeout for connection
+            to cluster-manager node.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -184,7 +183,9 @@ class IngestClient(NamespacedClient):
             response. Default is false.
         :arg source: The URL-encoded request definition. Useful for
             libraries that do not accept a request body for non-POST requests.
-        :arg timeout: The amount of time to wait for a response.
+        :arg timeout: Period to wait for a response. If no response is
+            received before the timeout expires, the request fails and returns an
+            error.
         """
         if id in SKIP_IN_PATH:
             raise ValueError("Empty value passed for a required argument 'id'.")
@@ -199,19 +200,18 @@ class IngestClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source", "verbose")
     async def simulate(
         self,
-        *,
         body: Any,
         id: Any = None,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Simulates an ingest pipeline with example documents.
+        Allows to simulate a pipeline with example documents.
 
 
         :arg body: The simulate definition
-        :arg id: The pipeline to test. If you don't specify a `pipeline`
-            in the request body, this parameter is required.
+        :arg id: Pipeline to test. If you don't specify a `pipeline` in
+            the request body, this parameter is required.
         :arg error_trace: Whether to include the stack trace of returned
             errors. Default is false.
         :arg filter_path: Used to reduce the response. This parameter
@@ -224,8 +224,8 @@ class IngestClient(NamespacedClient):
             response. Default is false.
         :arg source: The URL-encoded request definition. Useful for
             libraries that do not accept a request body for non-POST requests.
-        :arg verbose: When `true`, the response includes output data for
-            each processor in the pipeline Default is false.
+        :arg verbose: If `true`, the response includes output data for
+            each processor in the executed pipeline. Default is false.
         """
         if body in SKIP_IN_PATH:
             raise ValueError("Empty value passed for a required argument 'body'.")
@@ -241,12 +241,11 @@ class IngestClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "s", "source")
     async def processor_grok(
         self,
-        *,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
         """
-        Returns a list of built-in grok patterns.
+        Returns a list of the built-in patterns.
 
 
         :arg error_trace: Whether to include the stack trace of returned
@@ -259,8 +258,7 @@ class IngestClient(NamespacedClient):
             statistics. Default is True.
         :arg pretty: Whether to pretty format the returned JSON
             response. Default is false.
-        :arg s: Determines how to sort returned grok patterns by key
-            name. Default is false.
+        :arg s: Sort returned patterns by key name. Default is false.
         :arg source: The URL-encoded request definition. Useful for
             libraries that do not accept a request body for non-POST requests.
         """

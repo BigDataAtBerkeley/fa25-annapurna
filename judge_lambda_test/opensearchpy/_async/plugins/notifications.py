@@ -25,7 +25,6 @@ class NotificationsClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def create_config(
         self,
-        *,
         body: Any,
         params: Any = None,
         headers: Any = None,
@@ -61,7 +60,6 @@ class NotificationsClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def delete_config(
         self,
-        *,
         config_id: Any,
         params: Any = None,
         headers: Any = None,
@@ -105,7 +103,6 @@ class NotificationsClient(NamespacedClient):
     )
     async def delete_configs(
         self,
-        *,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
@@ -136,7 +133,6 @@ class NotificationsClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def get_config(
         self,
-        *,
         config_id: Any,
         params: Any = None,
         headers: Any = None,
@@ -217,7 +213,6 @@ class NotificationsClient(NamespacedClient):
     )
     async def get_configs(
         self,
-        *,
         body: Any = None,
         params: Any = None,
         headers: Any = None,
@@ -255,7 +250,6 @@ class NotificationsClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def list_features(
         self,
-        *,
         params: Any = None,
         headers: Any = None,
     ) -> Any:
@@ -283,7 +277,6 @@ class NotificationsClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def send_test(
         self,
-        *,
         config_id: Any,
         params: Any = None,
         headers: Any = None,
@@ -318,7 +311,6 @@ class NotificationsClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def update_config(
         self,
-        *,
         config_id: Any,
         body: Any,
         params: Any = None,
@@ -356,7 +348,6 @@ class NotificationsClient(NamespacedClient):
     @query_params("error_trace", "filter_path", "human", "pretty", "source")
     async def list_channels(
         self,
-        *,
         params: Any = None,
         headers: Any = None,
     ) -> Any:

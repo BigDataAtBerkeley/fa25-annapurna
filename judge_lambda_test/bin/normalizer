@@ -1,4 +1,6 @@
-#!/opt/homebrew/opt/python@3.11/bin/python3.11
+#!/bin/sh
+'''exec' "/Users/tarunshah/Desktop/Venv VS/Annapurna Fall 2025/WebScraping Engine/fa25-annapurna/.venv/bin/python3.13" "$0" "$@"
+' '''
 # -*- coding: utf-8 -*-
 import re
 import sys

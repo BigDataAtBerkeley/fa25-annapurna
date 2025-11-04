@@ -32,7 +32,6 @@ class SearchPipelineClient(NamespacedClient):
     )
     async def get(
         self,
-        *,
         id: Any = None,
         params: Any = None,
         headers: Any = None,
@@ -73,7 +72,6 @@ class SearchPipelineClient(NamespacedClient):
     )
     async def delete(
         self,
-        *,
         id: Any,
         params: Any = None,
         headers: Any = None,
@@ -120,7 +118,6 @@ class SearchPipelineClient(NamespacedClient):
     )
     async def put(
         self,
-        *,
         id: Any,
         body: Any,
         params: Any = None,
