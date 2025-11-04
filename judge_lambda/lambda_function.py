@@ -224,6 +224,7 @@ Keep it short.
 """
     try:
         body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
             "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
             "max_tokens": 200,
             "temperature": 0.3

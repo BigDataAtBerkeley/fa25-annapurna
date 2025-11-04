@@ -300,6 +300,9 @@ chmod +x deployment/setup_sqs_queues.sh
 # 3. Deploy all Lambda functions
 ./deployment/deploy_all.sh
 
+#4. Deploy indiviudal lambda
+./deployment/build_judge.sh
+
 # 4. Setup Trainium instance (if needed)
 ./deployment/deploy_trainium.sh /path/to/your-key.pem
 ```
