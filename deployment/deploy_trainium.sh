@@ -1,14 +1,47 @@
 #!/bin/bash
 set -e
 
-# Configuration
-TRAINIUM_IP="3.19.105.192"
-TRAINIUM_USER="ec2-user"
-SSH_KEY="${1:-$HOME/.ssh/your-key.pem}"  # Pass SSH key as first argument
+# Load .env if it exists
+if [ -f .env ]; then
+    set -a
+    source .env
+    set +a
+fi
 
-if [ ! -f "$SSH_KEY" ]; then
-    echo "❌ SSH key not found: $SSH_KEY"
-    echo "Usage: ./deploy_to_trainium.sh /path/to/your-key.pem"
+# Configuration
+TRAINIUM_IP="${TRAINIUM_ENDPOINT:-http://3.134.87.226:8000}"
+TRAINIUM_IP=$(echo $TRAINIUM_IP | sed 's|http://||; s|https://||; s|:8000||')
+TRAINIUM_USER="ec2-user"
+SSH_KEY="${1:-$SSH_KEY}"
+
+# Try to find SSH key automatically
+if [ -z "$SSH_KEY" ] || [ ! -f "$SSH_KEY" ]; then
+    # Try common locations
+    for path in ~/.ssh/test-trn-instance.pem ~/.ssh/id_rsa ~/.ssh/trainium-key.pem; do
+        if [ -f "$path" ]; then
+            SSH_KEY="$path"
+            break
+        fi
+    done
+fi
+
+if [ -z "$SSH_KEY" ] || [ ! -f "$SSH_KEY" ]; then
+    echo "❌ SSH key not found"
+    echo ""
+    echo "The key pair 'test-trn-instance' exists in AWS, but we need the private .pem file locally."
+    echo ""
+    echo "Options:"
+    echo "1. If you have the key file, provide the path:"
+    echo "   ./deployment/deploy_trainium.sh /path/to/test-trn-instance.pem"
+    echo ""
+    echo "2. Or set SSH_KEY in your .env file:"
+    echo "   SSH_KEY=/path/to/test-trn-instance.pem"
+    echo ""
+    echo "3. If you don't have the key, you'll need to:"
+    echo "   - Create a new key pair in AWS Console"
+    echo "   - Download the .pem file"
+    echo "   - Or use AWS Systems Manager (requires IAM role setup)"
+    echo ""
     exit 1
 fi
 
@@ -17,7 +50,8 @@ echo ""
 
 # Step 1: Upload files
 echo "📦 Step 1: Uploading app files..."
-scp -i "$SSH_KEY" app.py requirements.txt "$TRAINIUM_USER@$TRAINIUM_IP:~/"
+cd "$(dirname "$0")/../trainium_executor" || exit 1
+scp -i "$SSH_KEY" app.py requirements.txt sagemaker_metrics.py dataset_loader.py "$TRAINIUM_USER@$TRAINIUM_IP:~/"
 echo "✅ Files uploaded"
 echo ""
 
@@ -34,14 +68,20 @@ ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" << 'EOF'
     pip3 install --upgrade pip
     pip3 install torch-neuronx neuronx-cc --extra-index-url=https://pip.repos.neuron.amazonaws.com
     
+    # Install torchvision (needed for dataset loaders)
+    echo "Installing torchvision..."
+    pip3 install torchvision
+    
     # Install Flask dependencies
     echo "Installing Flask dependencies..."
     pip3 install -r requirements.txt
     
     # Create working directory
     mkdir -p ~/trainium-executor
-    mv ~/app.py ~/trainium-executor/
-    mv ~/requirements.txt ~/trainium-executor/
+    mv ~/app.py ~/trainium-executor/ 2>/dev/null || true
+    mv ~/requirements.txt ~/trainium-executor/ 2>/dev/null || true
+    mv ~/sagemaker_metrics.py ~/trainium-executor/ 2>/dev/null || true
+    mv ~/dataset_loader.py ~/trainium-executor/ 2>/dev/null || true
     
     echo "✅ Installation complete"
 EOF
@@ -93,8 +133,7 @@ echo ""
 echo "============================================================"
 echo "📋 Next Steps:"
 echo "============================================================"
-echo "1. Configure security group to allow port 8000:"
-echo "   aws ec2 describe-instances --region us-east-2 --instance-ids i-07f2dceab59b6b44e --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' --output text"
+echo "1. Security group should already allow port 8000"
 echo ""
 echo "2. Add inbound rule:"
 echo "   aws ec2 authorize-security-group-ingress --region us-east-2 \\"
