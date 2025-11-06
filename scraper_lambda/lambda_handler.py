@@ -25,7 +25,7 @@ def lambda_handler(event, context):
     elif source == "arxiv":
         result = extract_papers_arxiv(limit=max_papers)
     elif source == 'icml':
-        result = extract_papers_icml(limit=max_papers, year=2025, topic_filter="llm")
+        result = extract_papers_icml(year, limit=max_papers)
     else:
         raise ValueError(f"Unknown source: {source}. Supported: iclr, arxiv")
 

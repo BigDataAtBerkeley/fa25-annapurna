@@ -1,17 +1,12 @@
-"""
-ICML (International Conference on Machine Learning) Scraper
-
-Scrapes ICML virtual conference papers, extracts metadata,
-downloads PDFs, uploads them to S3, and sends metadata to SQS.
-"""
-
 from utils.logging_utils import setup_logger
-from utils.request_utils import get_soup, safe_filename
+from utils.request_utils import get_soup, safe_filename, _fetch_openreview_details, extract_papers_function
 from utils.aws_utils import upload_pdf_to_s3, send_to_sqs
 import requests
-from bs4 import BeautifulSoup
-import urllib.parse
 
+logger = setup_logger("icml_scraper")
+extract_papers_icml = extract_papers_function("icml", logger)
+
+"""
 logger = setup_logger("icml_scraper")
 
 HEADERS = {
@@ -24,7 +19,6 @@ HEADERS = {
 
 
 def _fetch_icml_details(icml_url: str):
-    """Fetch authors, abstract, date, and PDF link from an ICML paper page."""
     logger.info(f"Fetching ICML details: {icml_url}")
     r = requests.get(icml_url, headers=HEADERS, timeout=30)
     r.raise_for_status()
@@ -70,7 +64,6 @@ def _fetch_icml_details(icml_url: str):
 
 
 def extract_papers_icml(year: int, limit: int = 10, topic_filter: str = None):
-    """Scrape ICML website for papers and upload to AWS."""
     if topic_filter:
         encoded = urllib.parse.quote(topic_filter)
         base = f"https://icml.cc/virtual/{year}/papers.html?filter=topic&search={encoded}"
@@ -127,3 +120,4 @@ def extract_papers_icml(year: int, limit: int = 10, topic_filter: str = None):
     except Exception as e:
         logger.exception(f"Failed to scrape ICML {year}: {e}")
         return {"uploaded": 0, "found": 0}
+"""

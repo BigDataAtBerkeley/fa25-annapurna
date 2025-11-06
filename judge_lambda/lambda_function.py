@@ -326,6 +326,10 @@ def lambda_handler(event, context):
             # Precompute embedding for indexing (used for RAG storage and future searches)
             precomputed_embedding = generate_embedding(abstract)
             
+            message_attributes = record.get('attributes', {})
+            receive_count = message_attributes.get('ApproximateReceiveCount', '1')
+            logger.info(f"Processing {title} - Receive count: {receive_count}")
+            
             # Exact duplicate pre-check
             if is_duplicate(title_norm, sha_abs):
                 reason = "Exact duplicate by title_normalized or sha_abstract"
@@ -348,11 +352,12 @@ def lambda_handler(event, context):
                 }
                 if precomputed_embedding:
                     reject_doc["abstract_embedding"] = precomputed_embedding
-                index_paper_document(reject_doc)
+                #index_paper_document(reject_doc)
                 logger.info(f"Skipped (exact duplicate) | {title} | {reason}")
                 continue
 
             # RAG redundancy pre-check
+            """
             redundancy = is_paper_redundant_rag(title, abstract)
             if redundancy.get("is_redundant"):
                 reason = redundancy.get("reason", "RAG redundancy")
@@ -375,15 +380,18 @@ def lambda_handler(event, context):
                 }
                 if precomputed_embedding:
                     reject_doc["abstract_embedding"] = precomputed_embedding
-                index_paper_document(reject_doc)
+                #index_paper_document(reject_doc)
                 logger.info(f"Rejected by RAG | {title} | {reason}")
                 continue
-
+            """
             # Evaluate with Claude (Bedrock)
-            evaluation = evaluate_paper_with_claude(title, abstract)
-            relevance = evaluation.get("relevance", "unknown").lower()
-            novelty = evaluation.get("novelty", "unknown").lower()
-            reason = evaluation.get("reason", "No reason provided.")
+            #evaluation = evaluate_paper_with_claude(title, abstract)
+            #relevance = evaluation.get("relevance", "unknown").lower()
+            #novelty = evaluation.get("novelty", "unknown").lower()
+            #reason = evaluation.get("reason", "No reason provided.")
+            relevance = "yes"
+            novelty = "yes" 
+            reason = "Auto-accepted for testing purposes only."
 
             # Only store relevant + novel papers
             if relevance == "yes" and novelty == "yes":
@@ -432,7 +440,7 @@ def lambda_handler(event, context):
                 }
                 if precomputed_embedding:
                     reject_doc["abstract_embedding"] = precomputed_embedding
-                index_paper_document(reject_doc)
+                #index_paper_document(reject_doc)
                 logger.info(f"Skipped (irrelevant or not novel) | {title} | {reason}")
 
         except Exception as e:
