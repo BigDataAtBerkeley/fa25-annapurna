@@ -266,6 +266,10 @@ class CodeGenHandler:
             if not code_result.get('success'):
                 return result
             
+            if code_result.get('already_generated') is True:
+                logger.info(f"Skipping AWS integrations: code already generated for paper {code_result.get('paper_id')}")
+                return result
+            
             # Extract details
             paper_id = code_result.get('paper_id')
             paper_title = code_result.get('paper_title')
