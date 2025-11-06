@@ -12,7 +12,8 @@ HEADERS = {
 URL_PREFIXES = {
         "neurips": "https://neurips.cc",
         "mlsys": "https://mlsys.org",
-        "iclr": "https://iclr.cc"
+        "iclr": "https://iclr.cc",
+        "icml": "https://icml.cc"
 }
 
 def get_soup(url: str):
