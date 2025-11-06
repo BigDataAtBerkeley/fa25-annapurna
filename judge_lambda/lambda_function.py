@@ -201,8 +201,7 @@ def write_discard_record(rejected_by: str, reason: str, original: Dict, msg_id: 
     try:
         now = datetime.utcnow()
         key = (
-            f"rejected/{now.year:04d}/{now.month:02d}/{now.day:02d}/"
-            f"{normalize_title(original.get('title','unknown'))}_{int(time.time()*1000)}.json"
+            f"rejected/{normalize_title(original.get('title','unknown'))}_{int(time.time()*1000)}.json"
         )
         record = {
             "decision": "reject",
