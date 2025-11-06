@@ -49,6 +49,19 @@ class PyTorchCodeGenerator:
                     "paper_id": paper_id
                 }
             
+            # Guard: Skip if code already generated for this paper
+            if paper.get("code_generated") is True or (
+                paper.get("code_s3_bucket") and paper.get("code_s3_key")
+            ):
+                return {
+                    "success": True,
+                    "already_generated": True,
+                    "paper_id": paper_id,
+                    "paper_title": paper.get('title', 'Unknown'),
+                    "paper_authors": paper.get('authors', []),
+                    "generated_at": datetime.now().isoformat()
+                }
+            
             # Get paper summary
             paper_summary = self.opensearch_client.get_paper_summary(paper)
             
