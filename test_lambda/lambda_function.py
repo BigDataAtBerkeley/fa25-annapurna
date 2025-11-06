@@ -38,6 +38,7 @@ TRAINIUM_ENDPOINT = os.getenv('TRAINIUM_ENDPOINT')
 TRAINIUM_INSTANCE_ID = os.getenv('TRAINIUM_INSTANCE_ID')
 BATCH_SIZE = int(os.getenv('BATCH_SIZE', '10'))
 TRAINIUM_TIMEOUT = int(os.getenv('TRAINIUM_TIMEOUT', '600'))
+CODE_TEST_QUEUE_URL = os.getenv('CODE_TEST_QUEUE_URL')
 
 creds = session.get_credentials().get_frozen_credentials()
 auth = AWSV4SignerAuth(creds, AWS_REGION, "es")
@@ -387,6 +388,36 @@ def lambda_handler(event, context):
         # Process and save results
         process_batch_results(batch_data, trainium_results)
         
+        # After processing the batch: stop the Trainium instance if queue depth is 0
+        try:
+            if TRAINIUM_INSTANCE_ID and CODE_TEST_QUEUE_URL:
+                attrs = sqs_client.get_queue_attributes(
+                    QueueUrl=CODE_TEST_QUEUE_URL,
+                    AttributeNames=['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']
+                )
+                num_visible = int(attrs['Attributes'].get('ApproximateNumberOfMessages', '0'))
+                num_inflight = int(attrs['Attributes'].get('ApproximateNumberOfMessagesNotVisible', '0'))
+                total_pending = num_visible + num_inflight
+                logger.info(f"code-testing queue depth after batch: visible={num_visible}, inflight={num_inflight}")
+                if total_pending == 0:
+                    try:
+                        response = ec2_client.describe_instances(InstanceIds=[TRAINIUM_INSTANCE_ID])
+                        state = response['Reservations'][0]['Instances'][0]['State']['Name']
+                        if state == 'running':
+                            logger.info(f"No pending tests. Stopping Trainium instance {TRAINIUM_INSTANCE_ID}...")
+                            ec2_client.stop_instances(InstanceIds=[TRAINIUM_INSTANCE_ID])
+                        else:
+                            logger.info(f"Instance {TRAINIUM_INSTANCE_ID} not running (state={state}); skip stop")
+                    except Exception as stop_err:
+                        logger.warning(f"Failed to stop Trainium instance: {stop_err}")
+            else:
+                if not TRAINIUM_INSTANCE_ID:
+                    logger.info("TRAINIUM_INSTANCE_ID not set; skipping auto-stop")
+                if not CODE_TEST_QUEUE_URL:
+                    logger.info("CODE_TEST_QUEUE_URL not set; skipping queue-depth check and auto-stop")
+        except Exception as q_err:
+            logger.warning(f"Queue depth check/auto-stop step failed: {q_err}")
+
         return {
             "statusCode": 200,
             "body": json.dumps({

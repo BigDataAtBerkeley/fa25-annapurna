@@ -201,8 +201,47 @@ python test_code_on_trainium.py --paper-id 6-j63JkBP8oloYi_8CJH
 
 **Requirements:**
 - Trainium instance running (script will auto-start if stopped)
-- Dataset loader deployed on Trainium (`./deployment/deploy_trainium.sh`)
-- TRAINIUM_ENDPOINT and TRAINIUM_INSTANCE_ID in .env
+- Flask app deployed on Trainium (`./deployment/deploy_trainium.sh`)
+- `TRAINIUM_ENDPOINT` in `.env` (and optionally `TRAINIUM_INSTANCE_ID` for auto-start)
+
+### Test Code and View SageMaker Metrics
+
+Test code on Trainium and automatically view metrics logged to CloudWatch:
+
+```bash
+# Test code and view metrics (by paper ID from S3)
+python test_and_view_metrics.py --paper-id 6-j63JkBP8oloYi_8CJH
+
+# Test local code file and view metrics
+python test_and_view_metrics.py --file generated_code/TurboAttention_MODIFIED_with_dataset_loader.py --paper-id 6-j63JkBP8oloYi_8CJH
+
+# View existing metrics without re-running (skip execution)
+python test_and_view_metrics.py --paper-id 6-j63JkBP8oloYi_8CJH --skip-execution
+```
+
+**What it does:**
+- Executes code on Trainium (same as `test_code_on_trainium.py`)
+- Automatically logs training metrics to CloudWatch (namespace: `Trainium/Training`)
+- Waits for metrics to appear and displays summary
+- Shows CloudWatch console link and CLI commands
+
+**View metrics in CloudWatch:**
+```bash
+# List all metrics for a paper
+aws cloudwatch list-metrics --namespace "Trainium/Training" --dimensions Name=PaperId,Value=<PAPER_ID>
+
+# Get statistics for a metric
+aws cloudwatch get-metric-statistics \
+  --namespace "Trainium/Training" \
+  --metric-name training_loss \
+  --dimensions Name=PaperId,Value=<PAPER_ID> \
+  --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
+  --period 300 \
+  --statistics Average,Maximum,Minimum
+```
+
+**CloudWatch Console:** Navigate to Metrics → `Trainium/Training` → Filter by PaperId
 
 ### Grabbing code locally from S3
 
@@ -383,7 +422,7 @@ aws ec2 run-instances \
   --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=PapersCodeTester-Trainium},{Key=Purpose,Value=PapersCodeTester}]'
 ```
 
-### Deploy Trainium Executor
+### Deploy Trainium Executor (Ask Dan how to do this)
 
 ```bash
 # Deploy Flask app to Trainium instance (from local machine)
@@ -392,6 +431,66 @@ aws ec2 run-instances \
 # OR setup on the Trainium instance directly (SSH into instance first)
 ./deployment/setup_trainium_remote.sh
 ```
+
+### Trainium Instance Configuration
+
+**Required `.env` variables:**
+```bash
+ASK DAN 
+```
+
+**To find our instance ID (can also just check console or ask Dan, but if needed...):**
+```bash
+aws ec2 describe-instances \
+  --region us-east-2 \
+  --filters "Name=instance-type,Values=trn1.2xlarge" \
+  --query 'Reservations[*].Instances[*].[InstanceId,State.Name,PublicIpAddress]' \
+  --output table
+
+# via AWS Console: EC2 → Select your region → Instances → Find your Trainium instance → Copy Instance ID
+```
+
+### View Trainium Execution Logs (Real-time)
+
+**Quick helper script** (automatically finds SSH key):
+```bash
+# Tail all logs (auto-detects SSH key from instance)
+./tail_trainium_logs.sh
+
+# Tail logs filtered for specific paper
+./tail_trainium_logs.sh 6-j63JkBP8oloYi_8CJH
+```
+
+**What to look for in logs:**
+- `"Executing code for paper <paper_id>"` - Execution started
+- `"Paper <paper_id> executed successfully"` - Execution completed
+- `"Logged metrics to CloudWatch"` - Metrics were sent
+- `"Failed to"` or `"Error"` - Issues to investigate
+- `METRICS:` lines - Training metrics being extracted
+
+### SageMaker Metrics Tracking
+
+Training metrics from Trainium executions are automatically logged to **CloudWatch Metrics** (SageMaker-compatible). This enables:
+
+- Viewing training metrics in CloudWatch Console
+- Visualizing metrics in SageMaker Studio
+- Setting up CloudWatch alarms
+- Tracking training progress across papers
+
+**How it works:**
+1. Generated code outputs metrics in format: `print(f"METRICS: {json.dumps({'training_loss': 0.023})}")`
+2. Trainium executor automatically extracts and logs metrics to CloudWatch
+3. Metrics are stored in namespace `Trainium/Training` with dimensions (PaperId, TrainingJobName, InstanceType)
+
+**Viewing Metrics:**
+- **CloudWatch Console**: Navigate to Metrics → Trainium/Training
+- **SageMaker Studio**: Metrics appear in Experiments/Training Jobs dashboard
+- **AWS CLI**: Use `aws cloudwatch list-metrics --namespace "Trainium/Training"`
+
+**Configuration:**
+- Enable/disable: Set `SAGEMAKER_METRICS_ENABLED=true` (default: enabled)
+- IAM required: Trainium instance needs `cloudwatch:PutMetricData` permission
+
 ---
 
 ## Cost Estimate (per 100 papers)
@@ -405,5 +504,16 @@ aws ec2 run-instances \
 **Total**: ~$4.46 per 100 papers
 
 **Note**: Trainium costs assume batching of 10 papers reduces total execution time. On-demand pricing: trn1.2xlarge = $1.34/hour.
+
+```bash
+# Stop instance (can be restarted later)
+aws ec2 stop-instances --region us-east-2 --instance-ids i-0f0bf0de25aa4fd57
+
+# Start instance when needed
+aws ec2 start-instances --region us-east-2 --instance-ids i-0f0bf0de25aa4fd57
+
+# Terminate instance (permanent - cannot be restarted)
+aws ec2 terminate-instances --region us-east-2 --instance-ids i-0f0bf0de25aa4fd57
+```
 
 ---

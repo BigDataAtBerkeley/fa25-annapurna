@@ -189,20 +189,23 @@ def is_paper_redundant_rag(title: str, abstract: str) -> Dict[str, any]:
         "most_similar_paper": most_similar.get('title', 'Unknown')
     }
 
-def index_paper_document(doc: Dict) -> str:
+def index_paper_document(doc_id: str, doc: Dict) -> str:
     try:
-        result = os_client.index(index=OPENSEARCH_INDEX, body=doc, refresh=True)
-        return result.get('_id', '')
+        result = os_client.index(index=OPENSEARCH_INDEX, id=doc_id, body=doc, refresh=True)
+        return result.get('_id', doc_id)
     except Exception as e:
         logger.error(f"Failed to index document: {e}")
-        return ""
+        return doc_id
 
-def write_discard_record(rejected_by: str, reason: str, original: Dict, msg_id: str) -> None:
+def write_discard_record(doc_id: str, rejected_by: str, reason: str, original: Dict, msg_id: str) -> None:
     try:
         now = datetime.utcnow()
-        key = (
-            f"rejected/{normalize_title(original.get('title','unknown'))}_{int(time.time()*1000)}.json"
-        )
+        key = f"rejected/{doc_id}.json"
+        try:
+            s3_client.head_object(Bucket=DISCARDED_BUCKET, Key=key)
+            return
+        except s3_client.exceptions.ClientError:
+            pass
         record = {
             "decision": "reject",
             "rejected_by": rejected_by,
@@ -324,11 +327,12 @@ def lambda_handler(event, context):
             sha_abs = sha256_text(abstract)
             # Precompute embedding for indexing (used for RAG storage and future searches)
             precomputed_embedding = generate_embedding(abstract)
+            doc_id = sha256_text(f"{title_norm}:{sha_abs}")
             
             # Exact duplicate pre-check
             if is_duplicate(title_norm, sha_abs):
                 reason = "Exact duplicate by title_normalized or sha_abstract"
-                write_discard_record("exact_duplicate", reason, body, msg_id)
+                write_discard_record(doc_id, "exact_duplicate", reason, body, msg_id)
                 reject_doc = {
                     "title": title,
                     "title_normalized": title_norm,
@@ -347,7 +351,7 @@ def lambda_handler(event, context):
                 }
                 if precomputed_embedding:
                     reject_doc["abstract_embedding"] = precomputed_embedding
-                index_paper_document(reject_doc)
+                index_paper_document(doc_id, reject_doc)
                 logger.info(f"Skipped (exact duplicate) | {title} | {reason}")
                 continue
 
@@ -355,7 +359,7 @@ def lambda_handler(event, context):
             redundancy = is_paper_redundant_rag(title, abstract)
             if redundancy.get("is_redundant"):
                 reason = redundancy.get("reason", "RAG redundancy")
-                write_discard_record("rag", reason, body, msg_id)
+                write_discard_record(doc_id, "rag", reason, body, msg_id)
                 reject_doc = {
                     "title": title,
                     "title_normalized": title_norm,
@@ -374,7 +378,7 @@ def lambda_handler(event, context):
                 }
                 if precomputed_embedding:
                     reject_doc["abstract_embedding"] = precomputed_embedding
-                index_paper_document(reject_doc)
+                index_paper_document(doc_id, reject_doc)
                 logger.info(f"Rejected by RAG | {title} | {reason}")
                 continue
 
@@ -405,14 +409,14 @@ def lambda_handler(event, context):
                 if precomputed_embedding:
                     doc["abstract_embedding"] = precomputed_embedding
                 # Index in OpenSearch
-                paper_id = index_paper_document(doc)
+                paper_id = index_paper_document(doc_id, doc)
                 logger.info(f"Indexed | {title} | ID: {paper_id}")
                 
                 # Send to code-evaluation queue (will trigger code gen when 10 accumulate)
                 send_to_code_eval_queue(paper_id, doc)
                 
             else:
-                write_discard_record("claude", reason, body, msg_id)
+                write_discard_record(doc_id, "claude", reason, body, msg_id)
                 reject_doc = {
                     "title": title,
                     "title_normalized": title_norm,
@@ -431,7 +435,7 @@ def lambda_handler(event, context):
                 }
                 if precomputed_embedding:
                     reject_doc["abstract_embedding"] = precomputed_embedding
-                index_paper_document(reject_doc)
+                index_paper_document(doc_id, reject_doc)
                 logger.info(f"Skipped (irrelevant or not novel) | {title} | {reason}")
 
         except Exception as e:

@@ -17,14 +17,14 @@ import logging
 import json
 import traceback
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import resource
 import psutil
 import shutil
 
 app = Flask(__name__)
 
-# Configure logging
+# Configure logging first
 log_dir = os.path.join(os.path.expanduser('~'), 'trainium-executor', 'logs')
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, 'trainium-executor.log')
@@ -38,6 +38,14 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Import SageMaker metrics logger (after logger is configured)
+try:
+    from sagemaker_metrics import SageMakerMetricsLogger, create_metrics_logger
+    SAGEMAKER_METRICS_ENABLED = os.getenv('SAGEMAKER_METRICS_ENABLED', 'true').lower() == 'true'
+except ImportError:
+    SAGEMAKER_METRICS_ENABLED = False
+    logger.warning("sagemaker_metrics module not found. Metrics logging to CloudWatch will be disabled.")
 
 MAX_EXECUTION_TIME = int(os.getenv('MAX_EXECUTION_TIME', '600'))  # 10 minutes
 WORKING_DIR = os.getenv('WORKING_DIR', '/tmp/trainium_jobs')
@@ -82,7 +90,7 @@ def setup_dataset_loader(job_dir: str):
     else:
         logger.warning("dataset_loader.py not found, generated code won't have dataset utilities")
 
-def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME) -> Dict[str, Any]:
+def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME, paper_title: Optional[str] = None) -> Dict[str, Any]:
     """
     Execute Python code in isolated environment with Neuron support.
     
@@ -90,6 +98,7 @@ def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME) ->
         paper_id: Unique paper identifier
         code: Python code to execute
         timeout: Maximum execution time in seconds
+        paper_title: Paper title (optional, for metrics logging)
         
     Returns:
         Dictionary with execution results
@@ -101,6 +110,20 @@ def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME) ->
     setup_dataset_loader(job_dir)
     
     code_file = os.path.join(job_dir, 'main.py')
+    
+    # Initialize SageMaker metrics logger if enabled
+    metrics_logger = None
+    if SAGEMAKER_METRICS_ENABLED:
+        try:
+            instance_type = os.getenv('TRAINIUM_INSTANCE_TYPE', 'trn1.2xlarge')
+            metrics_logger = create_metrics_logger(
+                paper_id=paper_id,
+                paper_title=paper_title,
+                instance_type=instance_type
+            )
+            logger.info(f"Initialized SageMaker metrics logger for {paper_id}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize SageMaker metrics logger: {e}")
     
     try:
         with open(code_file, 'w') as f:
@@ -132,6 +155,27 @@ def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME) ->
         success = result.returncode == 0
         
         metrics = extract_metrics_from_output(result.stdout)
+        
+        # Log metrics to SageMaker/CloudWatch if enabled
+        if metrics_logger:
+            try:
+                # Extract and log training metrics from stdout
+                metrics_logger.extract_and_log_metrics_from_output(result.stdout)
+                
+                # Log execution-level metrics
+                additional_metrics = {k: v for k, v in metrics.items() 
+                                    if k not in ['training_loss', 'accuracy', 'validation_accuracy', 
+                                                'test_accuracy', 'epoch', 'step']}
+                
+                metrics_logger.log_execution_metrics(
+                    execution_time=execution_time,
+                    success=success,
+                    peak_memory_mb=resources_after.get("peak_memory_mb"),
+                    additional_metrics=additional_metrics
+                )
+                logger.info(f"Logged metrics to CloudWatch for {paper_id}")
+            except Exception as e:
+                logger.warning(f"Failed to log metrics to CloudWatch: {e}")
         
         execution_result = {
             "success": success,
@@ -305,7 +349,7 @@ def execute_batch():
  
             code_analysis = analyze_code(code)
    
-            exec_result = execute_code(paper_id, code, timeout)
+            exec_result = execute_code(paper_id, code, timeout, paper_title=paper_title)
 
             exec_result.update(code_analysis)
             
