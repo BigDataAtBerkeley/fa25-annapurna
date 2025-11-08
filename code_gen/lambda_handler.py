@@ -91,7 +91,9 @@ def save_to_s3(paper_id: str, code: str, code_result: Dict[str, Any]) -> Dict[st
         "explanation": code_result.get("explanation"),  # Contains key info about metrics/improvements
         "generated_at": code_result.get("generated_at"),
         "model_used": code_result.get("model_used"),
-        "s3_code_location": f"s3://{CODE_BUCKET}/{code_key}"
+        "s3_code_location": f"s3://{CODE_BUCKET}/{code_key}",
+        "recommended_dataset": code_result.get("recommended_dataset"),
+        "dataset_recommendations": code_result.get("dataset_recommendations")
     }
     
     # Save metadata
@@ -111,24 +113,31 @@ def save_to_s3(paper_id: str, code: str, code_result: Dict[str, Any]) -> Dict[st
         "metadata_key": metadata_key
     }
 
-def update_opensearch(paper_id: str, code_info: Dict[str, Any]):
+def update_opensearch(paper_id: str, code_info: Dict[str, Any], dataset_info: Optional[Dict[str, Any]] = None):
     """Update OpenSearch document with code generation status"""
     if os_client is None:
         logger.warning("OpenSearch client not initialized, skipping update")
         return
     
     try:
+        doc_update = {
+            "code_generated": True,
+            "code_s3_bucket": code_info["s3_bucket"],
+            "code_s3_key": code_info["code_key"],
+            "code_generated_at": datetime.now().isoformat(),
+            "code_metadata_s3_key": code_info["metadata_key"]
+        }
+        
+        # Add dataset information if available
+        if dataset_info:
+            doc_update["recommended_dataset"] = dataset_info.get("recommended_dataset")
+            doc_update["dataset_recommendations"] = dataset_info.get("dataset_recommendations", {})
+        
         os_client.update(
             index=OPENSEARCH_INDEX,
             id=paper_id,
             body={
-                "doc": {
-                    "code_generated": True,
-                    "code_s3_bucket": code_info["s3_bucket"],
-                    "code_s3_key": code_info["code_key"],
-                    "code_generated_at": datetime.now().isoformat(),
-                    "code_metadata_s3_key": code_info["metadata_key"]
-                }
+                "doc": doc_update
             }
         )
         logger.info(f"Updated OpenSearch document {paper_id} with code generation status")
@@ -278,8 +287,14 @@ class CodeGenHandler:
             # Save to S3
             s3_info = save_to_s3(paper_id, code, code_result)
             
+            # Prepare dataset info for OpenSearch update
+            dataset_info = {
+                "recommended_dataset": code_result.get("recommended_dataset"),
+                "dataset_recommendations": code_result.get("dataset_recommendations")
+            }
+            
             # Update OpenSearch
-            update_opensearch(paper_id, s3_info)
+            update_opensearch(paper_id, s3_info, dataset_info)
             
             # Send to code-testing queue for Trainium testing
             send_to_testing_queue(paper_id, paper_title, s3_info)

@@ -27,20 +27,22 @@ class BedrockClient:
         
         logger.info(f"Bedrock client initialized with model: {self.model_id}")
     
-    def generate_pytorch_code(self, paper_summary: str, paper_content: Optional[str] = None) -> Dict[str, Any]:
+    def generate_pytorch_code(self, paper_summary: str, paper_content: Optional[str] = None,
+                             dataset_recommendations: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Generate PyTorch code based on a research paper.
         
         Args:
             paper_summary: Summary of the paper (title, authors, abstract)
             paper_content: Full paper content (optional)
+            dataset_recommendations: Optional dataset recommendations dictionary
             
         Returns:
             Dictionary containing the generated code and metadata
         """
         try:
             # Prepare the prompt for Claude
-            prompt = self._create_pytorch_prompt(paper_summary, paper_content)
+            prompt = self._create_pytorch_prompt(paper_summary, paper_content, dataset_recommendations)
             
             # Prepare the request body
             body = {
@@ -94,13 +96,15 @@ class BedrockClient:
                 "explanation": None
             }
     
-    def _create_pytorch_prompt(self, paper_summary: str, paper_content: Optional[str] = None) -> str:
+    def _create_pytorch_prompt(self, paper_summary: str, paper_content: Optional[str] = None,
+                               dataset_recommendations: Optional[Dict[str, Any]] = None) -> str:
         """
         ACTUAL PROMPT SENT TO BEDROCK TO GENERATE CODE
         
         Args:
             paper_summary: Summary of the paper
             paper_content: Full paper content (optional)
+            dataset_recommendations: Optional dataset recommendations dictionary
             
         Returns:
             Formatted prompt string
@@ -120,26 +124,50 @@ Full Paper Content:
 
 """
 
-        base_prompt += """
+        # Add dataset recommendations if available
+        if dataset_recommendations:
+            recommended_datasets = dataset_recommendations.get("recommended_datasets", [])
+            primary_dataset = dataset_recommendations.get("primary_dataset", "synthetic")
+            domain = dataset_recommendations.get("domain", "general")
+            explicitly_mentioned = dataset_recommendations.get("explicitly_mentioned", [])
+            reasoning = dataset_recommendations.get("llm_reasoning") or dataset_recommendations.get("reasoning", "")
+            
+            base_prompt += f"""
+DATASET RECOMMENDATIONS (IMPORTANT - USE THESE):
+Based on analysis of this paper, the following datasets are recommended:
+
+PRIMARY DATASET: {primary_dataset}
+RECOMMENDED DATASETS: {', '.join(recommended_datasets) if recommended_datasets else 'synthetic'}
+INFERRED DOMAIN: {domain}
+"""
+            
+            if explicitly_mentioned:
+                base_prompt += f"EXPLICITLY MENTIONED IN PAPER: {', '.join(explicitly_mentioned)}\n"
+            
+            if reasoning:
+                base_prompt += f"REASONING: {reasoning}\n"
+            
+            base_prompt += "\n"
+
+        # Get primary dataset name for use in prompt
+        primary_dataset = "synthetic"
+        if dataset_recommendations:
+            primary_dataset = dataset_recommendations.get("primary_dataset", "synthetic")
+
+        base_prompt += f"""
 Please generate a complete PyTorch implementation that includes:
 
 1. **Dataset Selection and Loading** (CRITICAL - READ CAREFULLY):
    You MUST use our standardized dataset loader which provides pre-cached datasets from S3.
    
+   **IMPORTANT: Use the PRIMARY DATASET recommended above ({primary_dataset}).**
+   
    At the START of your code, import and use the dataset loader:
    ```python
    from dataset_loader import load_dataset
    
-   # Select the appropriate dataset based on paper type:
-   # - Computer Vision / Image tasks → use 'cifar10' or 'mnist'
-   # - NLP / Text tasks → use 'imdb' or 'wikitext2'
-   # - Quick testing / Simple models → use 'synthetic'
-   
-   # Example for vision:
-   train_loader, test_loader = load_dataset('cifar10', batch_size=128)
-   
-   # Example for NLP:
-   train_data, test_data = load_dataset('imdb')
+   # Use the recommended primary dataset: {primary_dataset}
+   train_loader, test_loader = load_dataset('{primary_dataset}', batch_size=128)
    ```
    
    Available datasets:
@@ -151,10 +179,7 @@ Please generate a complete PyTorch implementation that includes:
    - 'wikitext2': Language modeling dataset (transformers, LLMs)
    - 'synthetic': Generated data for quick testing
    
-   **YOU MUST select the most appropriate dataset based on the paper's domain.**
-   - If paper is about vision/images/CNNs → use cifar10 or mnist
-   - If paper is about NLP/text/language → use imdb or wikitext2
-   - If paper is domain-agnostic → use synthetic
+   **USE THE RECOMMENDED PRIMARY DATASET unless there's a strong reason to use an alternative.**
    
    DO NOT use torchvision.datasets or generate your own data. Use ONLY the dataset_loader.
 
@@ -174,15 +199,12 @@ Please generate a complete PyTorch implementation that includes:
 
 CRITICAL REQUIREMENTS FOR DATASETS:
 - **ALWAYS use `from dataset_loader import load_dataset` at the top of your code**
-- **SELECT the appropriate dataset based on paper type**:
-  * Vision papers (CNN, ResNet, attention for images) → 'cifar10' or 'mnist'
-  * NLP papers (transformers, language models, text) → 'imdb' or 'wikitext2'  
-  * Generic/testing → 'synthetic'
+- **USE THE RECOMMENDED PRIMARY DATASET: '{primary_dataset}'**
 - **DO NOT use torchvision.datasets, HuggingFace datasets, or generate synthetic data**
 - **DO NOT create download_dataset() or prepare_dataset() functions**
 - The dataset_loader handles all downloading and caching automatically
-- Example: `train_loader, test_loader = load_dataset('cifar10', batch_size=128)`
-- Print which dataset you're using: `print(f"Using dataset: cifar10")`
+- Example: `train_loader, test_loader = load_dataset('{primary_dataset}', batch_size=128)`
+- Print which dataset you're using: `print(f"Using recommended dataset: {primary_dataset}")`
 
 Requirements:
 - Use modern PyTorch practices (PyTorch 2.0+ features when applicable)
