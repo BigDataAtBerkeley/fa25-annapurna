@@ -336,57 +336,91 @@ def lambda_handler(event, context):
         
         # Build batch data from SQS messages
         batch_data = []
+        batch_item_failures = []  # For SQS partial batch failure handling
         
         for record in event['Records']:
-            message_body = json.loads(record['body'])
-            
-            paper_id = message_body['paper_id']
-            paper_title = message_body['paper_title']
-            s3_bucket = message_body['s3_bucket']
-            s3_code_key = message_body['s3_code_key']
-            
-            logger.info(f"Processing paper: {paper_title} ({paper_id})")
-            
-            # Download code from S3
             try:
-                code = download_code_from_s3(s3_bucket, s3_code_key)
+                message_body = json.loads(record['body'])
                 
-                batch_data.append({
-                    "paper_id": paper_id,
-                    "paper_title": paper_title,
-                    "code": code,
-                    "s3_bucket": s3_bucket,
-                    "s3_code_key": s3_code_key
-                })
-            except Exception as e:
-                logger.error(f"Error downloading code for {paper_id}: {e}")
+                paper_id = message_body['paper_id']
+                paper_title = message_body.get('paper_title', 'Unknown')
+                s3_bucket = message_body['s3_bucket']
+                s3_code_key = message_body['s3_code_key']
+                
+                logger.info(f"Processing paper: {paper_title} ({paper_id})")
+                
+                # Download code from S3
                 try:
-                    update_opensearch(paper_id, {
-                        "tested": True,
-                        "tested_at": datetime.now().isoformat(),
-                        "success": False,
-                        "error_message": f"Failed to download code from S3: {str(e)}",
-                        "error_type": "download_error"
+                    code = download_code_from_s3(s3_bucket, s3_code_key)
+                    
+                    batch_data.append({
+                        "paper_id": paper_id,
+                        "paper_title": paper_title,
+                        "code": code,
+                        "s3_bucket": s3_bucket,
+                        "s3_code_key": s3_code_key
                     })
-                except Exception as update_error:
-                    logger.error(f"Failed to update OpenSearch for {paper_id}: {update_error}")
+                except Exception as e:
+                    logger.error(f"Error downloading code for {paper_id}: {e}")
+                    # Mark this record as failed for SQS partial batch failure handling
+                    batch_item_failures.append({
+                        "itemIdentifier": record.get('messageId', record.get('receiptHandle', ''))
+                    })
+                    # Update OpenSearch with error
+                    try:
+                        update_opensearch(paper_id, {
+                            "tested": True,
+                            "tested_at": datetime.now().isoformat(),
+                            "test_success": False,
+                            "error_message": f"Failed to download code from S3: {str(e)}",
+                            "error_type": "download_error"
+                        })
+                    except Exception as update_error:
+                        logger.error(f"Failed to update OpenSearch for {paper_id}: {update_error}")
+                        
+            except Exception as e:
+                logger.error(f"Error processing SQS record: {e}")
+                # Mark this record as failed
+                batch_item_failures.append({
+                    "itemIdentifier": record.get('messageId', record.get('receiptHandle', ''))
+                })
         
         if not batch_data:
-            logger.warning("No valid code files to process")
+            logger.warning("No valid code files to process after downloading from S3")
             return {
                 "statusCode": 200,
                 "body": json.dumps({
-                    "message": "No valid code files to process"
+                    "message": "No valid code files to process",
+                    "batchItemFailures": batch_item_failures
                 })
             }
         
         logger.info(f"Sending batch of {len(batch_data)} papers to Trainium instance")
         
         # Send batch to Trainium for execution
-        trainium_results = send_batch_to_trainium(batch_data)
-        
-        # Process and save results
-        process_batch_results(batch_data, trainium_results)
+        try:
+            trainium_results = send_batch_to_trainium(batch_data)
+            
+            # Process and save results
+            process_batch_results(batch_data, trainium_results)
+        except Exception as e:
+            logger.error(f"Error executing batch on Trainium: {e}")
+            # Mark all batch items as failed
+            for item in batch_data:
+                batch_item_failures.append({
+                    "itemIdentifier": item.get('paper_id')  # Use paper_id as identifier
+                })
+                # Update OpenSearch with error
+                try:
+                    update_opensearch(item['paper_id'], {
+                        "tested": True,
+                        "tested_at": datetime.now().isoformat(),
+                        "test_success": False,
+                        "error_message": f"Batch execution error: {str(e)}",
+                        "error_type": "batch_execution_error"
+                    })
+                except Exception as update_error:
+                    logger.error(f"Failed to update OpenSearch for {item['paper_id']}: {update_error}")
         
         # After processing the batch: stop the Trainium instance if queue depth is 0
         try:
@@ -423,7 +457,8 @@ def lambda_handler(event, context):
             "body": json.dumps({
                 "message": f"Processed {len(batch_data)} papers",
                 "papers_processed": len(batch_data),
-                "executed_on": "trainium"
+                "executed_on": "trainium",
+                "batchItemFailures": batch_item_failures if batch_item_failures else []
             })
         }
         

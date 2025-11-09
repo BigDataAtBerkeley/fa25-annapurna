@@ -448,17 +448,35 @@ def execute_batch():
         for item in batch:
             paper_id = item['paper_id']
             paper_title = item.get('paper_title', 'Unknown')
-            code = item['code']
+            code = item.get('code', '')
             
             logger.info(f"Executing: {paper_title} ({paper_id})")
- 
-            code_analysis = analyze_code(code)
-   
-            exec_result = execute_code(paper_id, code, timeout, paper_title=paper_title)
-
-            exec_result.update(code_analysis)
             
-            results[paper_id] = exec_result
+            # Wrap each paper execution in try-except to prevent one failure from breaking the batch
+            try:
+                if not code:
+                    raise ValueError("Code is empty or missing")
+                
+                code_analysis = analyze_code(code)
+                exec_result = execute_code(paper_id, code, timeout, paper_title=paper_title)
+                exec_result.update(code_analysis)
+                
+                results[paper_id] = exec_result
+                
+            except Exception as e:
+                logger.error(f"Error executing paper {paper_id}: {e}")
+                logger.error(traceback.format_exc())
+                # Return error result for this paper, but continue with others
+                results[paper_id] = {
+                    "success": False,
+                    "execution_time": 0,
+                    "return_code": -1,
+                    "stdout": "",
+                    "stderr": str(e),
+                    "error_message": f"Execution error: {str(e)}",
+                    "error_type": "execution_error",
+                    "timeout": False
+                }
 
         successful = sum(1 for r in results.values() if r['success'])
         failed = len(results) - successful
