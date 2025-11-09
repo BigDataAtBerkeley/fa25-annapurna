@@ -47,7 +47,7 @@ except ImportError:
     SAGEMAKER_METRICS_ENABLED = False
     logger.warning("sagemaker_metrics module not found. Metrics logging to CloudWatch will be disabled.")
 
-MAX_EXECUTION_TIME = int(os.getenv('MAX_EXECUTION_TIME', '600'))  # 10 minutes
+MAX_EXECUTION_TIME = int(os.getenv('MAX_EXECUTION_TIME', '1800'))  # 30 minutes (increased for Neuron compilation)
 WORKING_DIR = os.getenv('WORKING_DIR', '/tmp/trainium_jobs')
 DATASET_CACHE_DIR = os.getenv('DATASET_CACHE_DIR', '/tmp/datasets')
 
@@ -249,6 +249,14 @@ sys.path.append('{exec_dir}')
             logger.info(f"Paper {paper_id} executed successfully in {execution_time:.1f}s")
         else:
             logger.warning(f"Paper {paper_id} failed with return code {result.returncode}")
+            # Log detailed error information
+            if result.stderr:
+                logger.error(f"STDERR for {paper_id}:\n{result.stderr}")
+            if result.stdout:
+                # Log last 50 lines of stdout for context
+                stdout_lines = result.stdout.split('\n')
+                last_lines = '\n'.join(stdout_lines[-50:])
+                logger.error(f"Last 50 lines of STDOUT for {paper_id}:\n{last_lines}")
         
         return execution_result
         

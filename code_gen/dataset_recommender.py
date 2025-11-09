@@ -24,10 +24,10 @@ DATASET_KNOWLEDGE_BASE = {
     "semantic_segmentation": ["cityscapes", "pascal_voc"],
     
 
-    "nlp": ["mnist", "cifar10"],  # Fallback to vision datasets
-    "text_classification": ["mnist", "cifar10"],  # Use vision datasets
-    "sentiment_analysis": ["mnist", "cifar10"],  # Use vision datasets
-    "language_modeling": ["mnist", "cifar10"],  # Use vision datasets
+    "nlp": ["imdb", "wikitext2", "mnist"],  # NLP datasets now available
+    "text_classification": ["imdb", "mnist"],  # Use proper NLP datasets
+    "sentiment_analysis": ["imdb", "mnist"],  # Use proper NLP datasets
+    "language_modeling": ["wikitext2", "mnist"],  # Use proper NLP datasets
     "question_answering": ["squad", "squad2"],
     "machine_translation": ["wmt", "iwslt"],
     
@@ -91,10 +91,10 @@ DATASET_NAME_MAP = {
 }
 
 # Available datasets in our system (from dataset_loader)
-# Vision datasets use .pt files
-# Note: imdb and wikitext2 are NOT available due to _lzma module limitations in Neuron venv
+# Vision datasets use .pt files, NLP datasets use HuggingFace Arrow format
+# All datasets are now available - _lzma issue has been resolved
 AVAILABLE_DATASETS = {
-    "cifar10", "cifar100", "mnist", "fashion_mnist"
+    "cifar10", "cifar100", "mnist", "fashion_mnist", "imdb", "wikitext2", "synthetic"
 }
 
 
@@ -279,12 +279,11 @@ Available Datasets (ONLY THESE ARE AVAILABLE ON TRAINIUM):
 - cifar100: 60K 32x32 color images, 100 classes (computer vision, fine-grained classification) - ✅ AVAILABLE
 - mnist: 70K 28x28 grayscale digits (simple vision tasks, baselines) - ✅ AVAILABLE
 - fashion_mnist: 70K 28x28 grayscale fashion items (computer vision) - ✅ AVAILABLE
+- imdb: 50K movie reviews for sentiment classification (NLP, text classification) - ✅ AVAILABLE
+- wikitext2: 36K Wikipedia articles for language modeling (NLP, language modeling) - ✅ AVAILABLE
+- synthetic: 16K synthetic samples for quick testing (various types: vision, tabular) - ✅ AVAILABLE
 
-❌ UNAVAILABLE DATASETS (DO NOT RECOMMEND):
-- imdb: NOT AVAILABLE - requires _lzma module which is not available in Neuron venv
-- wikitext2: NOT AVAILABLE - requires _lzma module which is not available in Neuron venv
-
-IMPORTANT: For NLP tasks, recommend vision datasets (mnist, cifar10, etc.) instead.
+IMPORTANT: For NLP tasks, use proper NLP datasets (imdb, wikitext2) instead of vision datasets.
 
 Based on the paper's domain, task type, and requirements, recommend 1-3 datasets from the available list above.
 

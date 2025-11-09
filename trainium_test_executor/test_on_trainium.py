@@ -49,7 +49,7 @@ def safe_getenv(key: str, default: str = None, type_func=str):
 TRAINIUM_ENDPOINT = safe_getenv('TRAINIUM_ENDPOINT')
 TRAINIUM_INSTANCE_ID = safe_getenv('TRAINIUM_INSTANCE_ID')
 TRAINIUM_REGION = safe_getenv('TRAINIUM_REGION', 'us-east-2')
-TRAINIUM_TIMEOUT = safe_getenv('TRAINIUM_TIMEOUT', '600', int)
+TRAINIUM_TIMEOUT = safe_getenv('TRAINIUM_TIMEOUT', '1800', int)  # 30 minutes (increased for Neuron compilation)
 GENERATED_CODE_DIR = safe_getenv('GENERATED_CODE_DIR', 'generated_code')
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), 'trainium_test_results')
 
@@ -438,6 +438,20 @@ def test_code_file(file_path: Path, timeout: int) -> Dict[str, Any]:
         
         if not exec_result.get('success'):
             logger.error(f"Error: {exec_result.get('error_message', 'Unknown error')}")
+            # Show detailed error output
+            if exec_result.get('stderr'):
+                logger.error(f"\n{'='*80}")
+                logger.error("STDERR OUTPUT:")
+                logger.error(f"{'='*80}")
+                logger.error(exec_result.get('stderr'))
+            if exec_result.get('stdout'):
+                # Show last 30 lines of stdout for context
+                stdout_lines = exec_result.get('stdout', '').split('\n')
+                last_lines = '\n'.join(stdout_lines[-30:])
+                logger.error(f"\n{'='*80}")
+                logger.error("LAST 30 LINES OF STDOUT:")
+                logger.error(f"{'='*80}")
+                logger.error(last_lines)
         
         return {
             "file": str(file_path),

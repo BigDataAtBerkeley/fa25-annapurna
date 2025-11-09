@@ -37,7 +37,7 @@ AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
 TRAINIUM_ENDPOINT = os.getenv('TRAINIUM_ENDPOINT')  
 TRAINIUM_INSTANCE_ID = os.getenv('TRAINIUM_INSTANCE_ID')
 BATCH_SIZE = int(os.getenv('BATCH_SIZE', '10'))
-TRAINIUM_TIMEOUT = int(os.getenv('TRAINIUM_TIMEOUT', '600'))
+TRAINIUM_TIMEOUT = int(os.getenv('TRAINIUM_TIMEOUT', '1800'))  # 30 minutes (increased for Neuron compilation)
 CODE_TEST_QUEUE_URL = os.getenv('CODE_TEST_QUEUE_URL')
 
 creds = session.get_credentials().get_frozen_credentials()
