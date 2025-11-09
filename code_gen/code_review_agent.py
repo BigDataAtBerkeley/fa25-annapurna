@@ -1,0 +1,468 @@
+#!/usr/bin/env python3
+"""
+Code Review Agent for Generated PyTorch Code
+
+This agent analyzes generated code and iteratively fixes common issues
+before the code is tested on Trainium. It uses Claude to identify and fix
+problems like missing tokenization, incorrect device handling, etc.
+"""
+
+import logging
+import re
+import json
+import time
+from typing import Dict, Any, Optional, List, Tuple
+from bedrock_client import BedrockClient
+from botocore.exceptions import ClientError
+
+logger = logging.getLogger(__name__)
+
+
+class CodeReviewAgent:
+    """
+    Agent that reviews and fixes generated PyTorch code iteratively.
+    """
+    
+    def __init__(self, bedrock_client: Optional[BedrockClient] = None):
+        """
+        Initialize the code review agent.
+        
+        Args:
+            bedrock_client: BedrockClient instance (creates new one if None)
+        """
+        self.bedrock_client = bedrock_client or BedrockClient()
+        self.max_iterations = 1  # Run code review only once (no iterations)
+        self.fix_history = []  # Track fixes applied
+    
+    def review_and_fix_code(self, code: str, dataset_name: str = None) -> Dict[str, Any]:
+        """
+        Review code and iteratively fix issues.
+        
+        Args:
+            code: Generated PyTorch code to review
+            dataset_name: Name of dataset being used (e.g., 'imdb', 'cifar10')
+            
+        Returns:
+            Dictionary with:
+            - 'code': Fixed code
+            - 'fixes_applied': List of fixes made
+            - 'iterations': Number of fix iterations
+            - 'success': Whether code was successfully fixed
+        """
+        logger.info("Starting code review and fix process...")
+        
+        current_code = code
+        fixes_applied = []
+        iteration = 0
+        
+        # Quick static checks first (fast, but limited)
+        static_issues = self._check_static_issues(current_code, dataset_name)
+        if static_issues:
+            logger.info(f"Found {len(static_issues)} static issues, applying quick fixes...")
+            current_code, quick_fixes = self._apply_quick_fixes(current_code, static_issues, dataset_name)
+            fixes_applied.extend(quick_fixes)
+        
+        # AI-powered comprehensive analysis and fixes
+        # This will catch issues beyond what static checks can find
+        while iteration < self.max_iterations:
+            iteration += 1
+            logger.info(f"Code review iteration {iteration}/{self.max_iterations}")
+            
+            # Analyze code for issues
+            issues = self._analyze_code_with_ai(current_code, dataset_name, fixes_applied)
+            
+            if not issues or issues.get('no_issues', False):
+                logger.info("✅ No issues found - code is ready!")
+                break
+            
+            # Fix issues
+            fixed_code = self._fix_code_with_ai(current_code, issues, dataset_name)
+            
+            if fixed_code and fixed_code != current_code:
+                fixes_applied.append({
+                    'iteration': iteration,
+                    'issues_found': issues.get('issues', []),
+                    'fixes': issues.get('fixes', [])
+                })
+                current_code = fixed_code
+                logger.info(f"✅ Applied fixes in iteration {iteration}")
+            else:
+                logger.warning(f"⚠️ No changes made in iteration {iteration}, stopping")
+                break
+        
+        return {
+            'code': current_code,
+            'fixes_applied': fixes_applied,
+            'iterations': iteration,
+            'success': len(fixes_applied) > 0 or iteration == 1
+        }
+    
+    def _check_static_issues(self, code: str, dataset_name: str = None) -> List[str]:
+        """
+        Quick static analysis for common issues.
+        
+        Returns:
+            List of issue descriptions
+        """
+        issues = []
+        
+        # Check for IMDB dataset without tokenization
+        if dataset_name == 'imdb' or 'imdb' in code.lower():
+            if 'load_dataset' in code and 'imdb' in code.lower():
+                # Check if tokenization is present
+                has_tokenizer = 'AutoTokenizer' in code or 'tokenizer' in code.lower()
+                has_tokenization_in_loop = 'tokenizer(' in code and 'train_loader' in code
+                
+                if has_tokenizer and not has_tokenization_in_loop:
+                    issues.append("IMDB dataset requires tokenization in training loop but tokenization code is missing")
+                elif not has_tokenizer:
+                    issues.append("IMDB dataset requires AutoTokenizer import and tokenization")
+        
+        # Check for model output tuple handling
+        if 'return_bias_scores' in code or 'return_attention' in code:
+            if 'isinstance(model_output, tuple)' not in code and 'isinstance(outputs, tuple)' not in code:
+                issues.append("Model may return tuple but code doesn't handle tuple outputs")
+        
+        # Check for XLA device usage
+        if 'xm.xla_device()' in code:
+            if 'xm.optimizer_step' not in code:
+                issues.append("XLA device used but xm.optimizer_step() missing in training loop")
+            if 'xm.mark_step' not in code:
+                issues.append("XLA device used but xm.mark_step() missing in training loop")
+            
+            # Check for XLA tensor size issues (common bug: using tensor.size(0) directly as int)
+            if '.size(0)' in code or '.shape[0]' in code:
+                # Check if there are patterns like "count += inputs.size(0)" or "batch_size = inputs.size(0)"
+                # that don't convert to int
+                size_patterns = [
+                    r'count\s*\+=\s*\w+\.size\(0\)',
+                    r'batch_size\s*=\s*\w+\.size\(0\)',
+                    r'count\s*\+=\s*\w+\.shape\[0\]',
+                    r'batch_size\s*=\s*\w+\.shape\[0\]',
+                ]
+                for pattern in size_patterns:
+                    matches = re.findall(pattern, code)
+                    for match in matches:
+                        # Check if int() conversion is nearby (within 5 lines)
+                        match_line = code.find(match)
+                        context = code[max(0, match_line-200):match_line+200]
+                        if 'int(' not in context and 'int(' not in match:
+                            issues.append(f"XLA tensor size used without int() conversion: {match.strip()} - in XLA, tensor.size(0) returns a tensor, not Python int")
+                            break
+        
+        # Check for missing imports
+        if 'math.' in code and 'import math' not in code:
+            issues.append("Missing import: math")
+        if 'random.' in code and 'import random' not in code:
+            issues.append("Missing import: random")
+        if 'collections.' in code and 'from collections' not in code:
+            issues.append("Missing import: collections")
+        
+        return issues
+    
+    def _apply_quick_fixes(self, code: str, issues: List[str], dataset_name: str = None) -> Tuple[str, List[str]]:
+        """
+        Apply quick fixes that don't require AI.
+        
+        Returns:
+            Tuple of (fixed_code, list_of_fixes_applied)
+        """
+        fixed_code = code
+        fixes_applied = []
+        
+        # Add missing imports
+        if any('Missing import' in issue for issue in issues):
+            imports_to_add = []
+            if 'Missing import: math' in str(issues):
+                imports_to_add.append('import math')
+            if 'Missing import: random' in str(issues):
+                imports_to_add.append('import random')
+            if 'Missing import: collections' in str(issues):
+                imports_to_add.append('from collections import defaultdict')
+            
+            if imports_to_add:
+                # Find first import line and add after it
+                import_pattern = r'(^import torch\n|^from torch import)'
+                match = re.search(import_pattern, fixed_code, re.MULTILINE)
+                if match:
+                    insert_pos = match.end()
+                    new_imports = '\n'.join(imports_to_add) + '\n'
+                    fixed_code = fixed_code[:insert_pos] + new_imports + fixed_code[insert_pos:]
+                    fixes_applied.append(f"Added missing imports: {', '.join(imports_to_add)}")
+        
+        return fixed_code, fixes_applied
+    
+    def _analyze_code_with_ai(self, code: str, dataset_name: str = None, 
+                              previous_fixes: List[Dict] = None) -> Dict[str, Any]:
+        """
+        Use AI to analyze code for issues.
+        
+        Returns:
+            Dictionary with 'issues' list and 'fixes' list
+        """
+        fix_history = ""
+        if previous_fixes:
+            fix_history = "\nPrevious fixes applied:\n"
+            for fix in previous_fixes:
+                fix_history += f"- Iteration {fix['iteration']}: {', '.join(fix.get('fixes', []))}\n"
+        
+        analysis_prompt = f"""You are an expert code reviewer for PyTorch code that will run on AWS Trainium (XLA devices).
+
+Your task: Review this PyTorch code and identify ANY issues that would prevent it from running correctly on Trainium. Look for ALL types of errors, not just common ones.
+
+```python
+{code}
+```
+
+Dataset being used: {dataset_name or 'unknown'}
+
+{fix_history}
+
+COMPREHENSIVE REVIEW CHECKLIST - Check for ALL of these:
+
+1. **XLA/Trainium Compatibility:**
+   - All tensor operations compatible with XLA (no in-place operations on indexed tensors)
+   - Proper use of xm.optimizer_step() and xm.mark_step()
+   - Tensor size operations: tensor.size(0) returns a tensor in XLA, must use int() for arithmetic
+   - No CUDA-specific code (.cuda(), device='cuda')
+
+2. **Data Handling:**
+   - IMDB dataset: Returns (text_strings, labels) - text must be tokenized before use
+   - DataLoader iteration: Handle both (tensor, tensor) and (text_strings, labels) formats
+   - All tensors moved to device before operations
+   - Proper handling of batch data unpacking
+
+3. **Model Output Handling:**
+   - Model may return tuples - check isinstance() before using
+   - Proper unpacking of model outputs
+   - Handle optional return values (e.g., return_bias_scores=True)
+
+4. **Type Errors:**
+   - Mixing tensors with Python ints/floats in arithmetic
+   - Calling methods on wrong types (e.g., .to() on list, .item() on non-scalar)
+   - Indexing issues with XLA tensors
+
+5. **Import Errors:**
+   - All used modules imported (math, random, collections, etc.)
+   - Correct import paths
+
+6. **Logic Errors:**
+   - Division by zero or None
+   - Uninitialized variables
+   - Incorrect tensor shapes/dimensions
+   - Wrong device placement
+
+7. **Runtime Errors:**
+   - AttributeError (calling methods on wrong types)
+   - TypeError (wrong argument types)
+   - ValueError (wrong tensor shapes, dimensions)
+   - IndexError (out of bounds access)
+
+8. **XLA-Specific Gotchas:**
+   - Using tensor.size(0) directly in arithmetic without int() conversion
+   - Using tensor values in Python control flow without .item()
+   - In-place operations that XLA doesn't support
+   - Loss functions not moved to device (they shouldn't be)
+
+IMPORTANT: Be thorough. Look for ANY error that would cause the code to fail, not just the common ones listed above. Think like a compiler/linter - catch everything.
+
+Respond in JSON format:
+{{
+    "no_issues": false,
+    "issues": ["detailed issue description 1", "detailed issue description 2", ...],
+    "fixes_needed": ["specific fix instruction 1", "specific fix instruction 2", ...],
+    "critical": true/false
+}}
+
+If no issues found, set "no_issues": true."""
+
+        try:
+            # Retry logic for Bedrock throttling
+            max_retries = 5
+            base_delay = 2
+            response = None
+            for attempt in range(max_retries):
+                try:
+                    response = self.bedrock_client.client.invoke_model(
+                        modelId=self.bedrock_client.model_id,
+                        body=json.dumps({
+                            "anthropic_version": "bedrock-2023-05-31",
+                            "max_tokens": 4000,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": analysis_prompt
+                                }
+                            ]
+                        }),
+                        contentType="application/json"
+                    )
+                    break  # Success
+                except ClientError as e:
+                    error_code = e.response.get('Error', {}).get('Code', '')
+                    if error_code == 'ThrottlingException' and attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(f"Code review analysis throttled, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        raise
+            
+            if response is None:
+                raise Exception("Failed to get response after retries")
+            
+            response_body = json.loads(response['body'].read())
+            analysis_text = response_body['content'][0]['text']
+            
+            # Try to extract JSON from response
+            # Look for JSON block (may be in code block or plain text)
+            json_patterns = [
+                r'```json\s*(\{.*?\})\s*```',  # JSON in code block
+                r'```\s*(\{.*?"no_issues".*?\})\s*```',  # JSON in generic code block
+                r'(\{[^{}]*"no_issues"[^{}]*\})',  # JSON in text
+            ]
+            
+            analysis_result = None
+            for pattern in json_patterns:
+                json_match = re.search(pattern, analysis_text, re.DOTALL)
+                if json_match:
+                    try:
+                        analysis_result = json.loads(json_match.group(1))
+                        break
+                    except json.JSONDecodeError:
+                        continue
+            
+            if not analysis_result:
+                # Fallback: parse manually from text
+                text_lower = analysis_text.lower()
+                has_issues = any(word in text_lower for word in ['issue', 'problem', 'error', 'bug', 'fix'])
+                no_issues = any(phrase in text_lower for phrase in ['no issues', 'no problems', 'looks good', 'correct'])
+                
+                analysis_result = {
+                    "no_issues": no_issues and not has_issues,
+                    "issues": [],
+                    "fixes_needed": []
+                }
+                
+                # Try to extract issue descriptions
+                if has_issues and not no_issues:
+                    # Look for bullet points or numbered lists
+                    issue_lines = re.findall(r'[-*•]\s*(.+?)(?:\n|$)', analysis_text, re.MULTILINE)
+                    if issue_lines:
+                        analysis_result["issues"] = issue_lines[:5]  # Limit to 5 issues
+                    else:
+                        analysis_result["issues"] = ["Issues detected - see full analysis"]
+            
+            return analysis_result
+            
+        except Exception as e:
+            logger.error(f"Error in AI code analysis: {e}")
+            return {"no_issues": True, "issues": [], "fixes_needed": []}
+    
+    def _fix_code_with_ai(self, code: str, issues: Dict[str, Any], 
+                          dataset_name: str = None) -> Optional[str]:
+        """
+        Use AI to fix code issues.
+        
+        Returns:
+            Fixed code or None if fix failed
+        """
+        issues_list = issues.get('issues', [])
+        fixes_needed = issues.get('fixes_needed', [])
+        
+        if not issues_list and not fixes_needed:
+            return code
+        
+        fix_prompt = f"""Fix the following PyTorch code to work on AWS Trainium (XLA devices).
+
+Issues identified:
+{chr(10).join(f'- {issue}' for issue in issues_list)}
+{chr(10).join(f'- {fix}' for fix in fixes_needed)}
+
+Original code:
+```python
+{code}
+```
+
+Dataset: {dataset_name or 'unknown'}
+
+CRITICAL FIXES NEEDED:
+1. If using IMDB dataset: Add tokenization in training/test loops (IMDB returns text strings, not tokenized tensors)
+2. Handle model tuple outputs: Check if model returns tuple and extract first element
+3. XLA tensor size conversion (CRITICAL - MOST COMMON BUG):
+   - Find ALL uses of tensor.size(0) or tensor.shape[0] in arithmetic operations
+   - WRONG: count += inputs.size(0) or batch_size = inputs.size(0) or scores / count where count came from size(0)
+   - CORRECT: count += int(inputs.size(0)) or batch_size = int(inputs.size(0))
+   - Before division: count = int(count) if hasattr(count, 'item') else int(count) before scores / count
+   - In XLA, tensor.size(0) returns a tensor, NOT a Python int - this causes AttributeError
+4. Ensure all tensors are moved to device before operations
+5. Use xm.optimizer_step() and xm.mark_step() for XLA
+6. Add any missing imports
+
+Return ONLY the complete fixed Python code in a code block. Do not include explanations outside the code block."""
+
+        try:
+            # Retry logic for Bedrock throttling
+            max_retries = 5
+            base_delay = 2
+            response = None
+            for attempt in range(max_retries):
+                try:
+                    response = self.bedrock_client.client.invoke_model(
+                        modelId=self.bedrock_client.model_id,
+                        body=json.dumps({
+                            "anthropic_version": "bedrock-2023-05-31",
+                            "max_tokens": 32000,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": fix_prompt
+                                }
+                            ]
+                        }),
+                        contentType="application/json"
+                    )
+                    break  # Success
+                except ClientError as e:
+                    error_code = e.response.get('Error', {}).get('Code', '')
+                    if error_code == 'ThrottlingException' and attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(f"Code review fix throttled, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        raise
+            
+            if response is None:
+                raise Exception("Failed to get response after retries")
+            
+            response_body = json.loads(response['body'].read())
+            fixed_text = response_body['content'][0]['text']
+            
+            # Extract code from response - try multiple patterns
+            code_patterns = [
+                r'```python\n(.*?)\n```',  # Python code block
+                r'```\n(.*?)\n```',  # Generic code block
+                r'```(.*?)```',  # Code block without newlines
+            ]
+            
+            for pattern in code_patterns:
+                code_match = re.search(pattern, fixed_text, re.DOTALL)
+                if code_match:
+                    extracted_code = code_match.group(1).strip()
+                    # Validate it's actually code (has imports or def/class)
+                    if 'import' in extracted_code or 'def ' in extracted_code or 'class ' in extracted_code:
+                        return extracted_code
+            
+            # Fallback: if no code block found, check if entire response looks like code
+            if 'import' in fixed_text or 'def ' in fixed_text:
+                return fixed_text.strip()
+            
+            # If we can't extract code, return None (fix failed)
+            logger.warning("Could not extract fixed code from AI response")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error in AI code fix: {e}")
+            return None
+

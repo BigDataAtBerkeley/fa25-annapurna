@@ -198,9 +198,26 @@ class OpenSearchClient:
             
             # Download the paper content
             response = s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
-            content = response['Body'].read().decode('utf-8')
+            raw_content = response['Body'].read()
             
-            logger.info(f"Retrieved paper content from s3://{s3_bucket}/{s3_key}")
+            # Try multiple encodings to handle different file formats
+            encodings = ['utf-8', 'utf-16', 'latin-1', 'cp1252', 'iso-8859-1']
+            content = None
+            
+            for encoding in encodings:
+                try:
+                    content = raw_content.decode(encoding)
+                    logger.info(f"Successfully decoded paper content using {encoding}")
+                    break
+                except (UnicodeDecodeError, UnicodeError):
+                    continue
+            
+            # If all encodings fail, use utf-8 with error handling
+            if content is None:
+                logger.warning(f"Could not decode with standard encodings, using utf-8 with error handling")
+                content = raw_content.decode('utf-8', errors='replace')
+            
+            logger.info(f"Retrieved paper content from s3://{s3_bucket}/{s3_key} ({len(content)} chars)")
             return content
             
         except Exception as e:

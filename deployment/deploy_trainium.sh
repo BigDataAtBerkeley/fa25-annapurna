@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Get script directory (absolute path) before any cd commands
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # Load .env if it exists
 if [ -f .env ]; then
     set -a
@@ -14,15 +17,25 @@ TRAINIUM_IP=$(echo $TRAINIUM_IP | sed 's|http://||; s|https://||; s|:8000||')
 TRAINIUM_USER="ec2-user"
 SSH_KEY="${1:-$SSH_KEY}"
 
+# Expand relative paths and ~
+if [ -n "$SSH_KEY" ]; then
+    SSH_KEY=$(eval echo "$SSH_KEY")
+fi
+
 # Try to find SSH key automatically
 if [ -z "$SSH_KEY" ] || [ ! -f "$SSH_KEY" ]; then
     # Try common locations
-    for path in ~/.ssh/test-trn-instance.pem ~/.ssh/id_rsa ~/.ssh/trainium-key.pem; do
+    for path in ~/.ssh/trainium-deploy-key.pem ~/.ssh/test-trn-instance.pem ~/.ssh/id_rsa ~/.ssh/trainium-key.pem; do
         if [ -f "$path" ]; then
             SSH_KEY="$path"
             break
         fi
     done
+fi
+
+# Final check - expand path one more time
+if [ -n "$SSH_KEY" ]; then
+    SSH_KEY=$(eval echo "$SSH_KEY")
 fi
 
 if [ -z "$SSH_KEY" ] || [ ! -f "$SSH_KEY" ]; then
@@ -48,10 +61,42 @@ fi
 echo "🚀 Deploying Flask app to Trainium instance at $TRAINIUM_IP"
 echo ""
 
+# Step 1: Test SSH connection first
+echo "🔌 Testing SSH connection..."
+if ! ssh -i "$SSH_KEY" -o ConnectTimeout=10 -o StrictHostKeyChecking=no "$TRAINIUM_USER@$TRAINIUM_IP" "echo 'Connection successful'" 2>/dev/null; then
+    echo "❌ SSH connection failed!"
+    echo ""
+    echo "Troubleshooting:"
+    echo "1. Check if the instance is running:"
+    echo "   aws ec2 describe-instances --region us-east-2 --instance-ids <INSTANCE_ID>"
+    echo ""
+    echo "2. Verify security group allows SSH (port 22) from your IP"
+    echo ""
+    echo "3. Check SSH key permissions:"
+    echo "   chmod 400 $SSH_KEY"
+    echo ""
+    echo "4. Try with absolute path:"
+    echo "   ./deployment/deploy_trainium.sh ~/.ssh/trainium-deploy-key.pem"
+    echo ""
+    exit 1
+fi
+echo "✅ SSH connection OK"
+echo ""
+
 # Step 1: Upload files
 echo "📦 Step 1: Uploading app files..."
-cd "$(dirname "$0")/../trainium_executor" || exit 1
-scp -i "$SSH_KEY" app.py requirements.txt sagemaker_metrics.py dataset_loader.py "$TRAINIUM_USER@$TRAINIUM_IP:~/"
+cd "$SCRIPT_DIR/../trainium_executor" || exit 1
+
+# Check files exist
+for file in app.py requirements.txt sagemaker_metrics.py dataset_loader.py; do
+    if [ ! -f "$file" ]; then
+        echo "❌ Error: $file not found in trainium_executor/"
+        exit 1
+    fi
+done
+
+echo "  Uploading: app.py, requirements.txt, sagemaker_metrics.py, dataset_loader.py"
+scp -i "$SSH_KEY" -o ConnectTimeout=30 -v app.py requirements.txt sagemaker_metrics.py dataset_loader.py "$TRAINIUM_USER@$TRAINIUM_IP:~/" 2>&1 | grep -E "(Sending|100%)" || true
 echo "✅ Files uploaded"
 echo ""
 
@@ -73,15 +118,7 @@ ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" << 'EOF'
     python3 -c "import torch_xla.core.xla_model as xm; print('✓ torch_xla available')" || \
     echo "⚠️  torch_xla import failed - check Neuron SDK installation"
     
-    # Install torchvision (needed for dataset loaders)
-    echo "Installing torchvision..."
-    pip3 install torchvision
-    
-    # Install Hugging Face datasets and transformers (for NLP datasets)
-    echo "Installing Hugging Face libraries..."
-    pip3 install datasets transformers
-    
-    # Install Flask dependencies
+    # Install Flask dependencies (system Python for Flask app)
     echo "Installing Flask dependencies..."
     pip3 install -r requirements.txt
     
@@ -92,7 +129,27 @@ ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" << 'EOF'
     mv ~/sagemaker_metrics.py ~/trainium-executor/ 2>/dev/null || true
     mv ~/dataset_loader.py ~/trainium-executor/ 2>/dev/null || true
     
-    echo "✅ Installation complete"
+    echo "✅ System installation complete"
+EOF
+
+# Step 2b: Install packages in Neuron venv (for generated code execution)
+echo ""
+echo "📦 Step 2b: Installing packages in Neuron venv for generated code..."
+INSTALL_SCRIPT="$SCRIPT_DIR/install_all_packages_trainium.sh"
+
+if [ ! -f "$INSTALL_SCRIPT" ]; then
+    echo "❌ Error: install_all_packages_trainium.sh not found at $INSTALL_SCRIPT"
+    exit 1
+fi
+
+scp -i "$SSH_KEY" "$INSTALL_SCRIPT" "$TRAINIUM_USER@$TRAINIUM_IP:~/"
+ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" << 'EOF'
+    chmod +x ~/install_all_packages_trainium.sh
+    # Run non-interactively (defaults to yes for tokenizers)
+    SKIP_TOKENIZER_DOWNLOAD=false ~/install_all_packages_trainium.sh || {
+        echo "⚠️  Package installation had issues, but continuing..."
+    }
+    rm ~/install_all_packages_trainium.sh
 EOF
 
 echo ""

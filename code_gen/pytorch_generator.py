@@ -11,10 +11,12 @@ try:
     from opensearch_client import OpenSearchClient
     from bedrock_client import BedrockClient
     from dataset_recommender import DatasetRecommender
+    from code_review_agent import CodeReviewAgent
 except ImportError:
     from .opensearch_client import OpenSearchClient
     from .bedrock_client import BedrockClient
     from .dataset_recommender import DatasetRecommender
+    from .code_review_agent import CodeReviewAgent
 
 logger = logging.getLogger(__name__)
 
@@ -26,16 +28,17 @@ class PyTorchCodeGenerator:
         self.opensearch_client = OpenSearchClient()
         self.bedrock_client = BedrockClient()
         self.dataset_recommender = DatasetRecommender(bedrock_client=self.bedrock_client)
+        self.code_review_agent = CodeReviewAgent(bedrock_client=self.bedrock_client)
         
         logger.info("PyTorch Code Generator initialized")
     
-    def generate_code_for_paper(self, paper_id: str, include_full_content: bool = False) -> Dict[str, Any]:
+    def generate_code_for_paper(self, paper_id: str, include_full_content: bool = True) -> Dict[str, Any]:
         """
         Generate PyTorch code for a single paper by ID.
         
         Args:
             paper_id: OpenSearch document ID of the paper
-            include_full_content: Whether to include full paper content in generation
+            include_full_content: Whether to include full paper content in generation (default: True)
             
         Returns:
             Dictionary containing generated code and metadata
@@ -68,7 +71,7 @@ class PyTorchCodeGenerator:
             # Get paper summary
             paper_summary = self.opensearch_client.get_paper_summary(paper)
             
-            # Optionally get full paper content
+            # Get full paper content (now default behavior for better code generation)
             paper_content = None
             if include_full_content:
                 paper_content = self.opensearch_client.get_paper_content(paper)
@@ -85,6 +88,26 @@ class PyTorchCodeGenerator:
                 paper_content,
                 dataset_recommendations=dataset_recommendations
             )
+            
+            # Review and fix code before returning
+            if result.get("success") and result.get("code"):
+                logger.info("Reviewing and fixing generated code...")
+                primary_dataset = dataset_recommendations.get("primary_dataset", "synthetic")
+                review_result = self.code_review_agent.review_and_fix_code(
+                    result["code"],
+                    dataset_name=primary_dataset
+                )
+                
+                if review_result.get("success"):
+                    result["code"] = review_result["code"]
+                    result["code_review"] = {
+                        "fixes_applied": review_result.get("fixes_applied", []),
+                        "iterations": review_result.get("iterations", 0)
+                    }
+                    logger.info(f"Code review complete: {review_result.get('iterations', 0)} iterations, "
+                              f"{len(review_result.get('fixes_applied', []))} fixes applied")
+                else:
+                    logger.warning("Code review did not apply fixes, using original code")
             
             # Add metadata including dataset recommendations
             result.update({
@@ -108,7 +131,7 @@ class PyTorchCodeGenerator:
                 "paper_id": paper_id
             }
     
-    def generate_code_for_papers(self, paper_ids: List[str], include_full_content: bool = False) -> Dict[str, Any]:
+    def generate_code_for_papers(self, paper_ids: List[str], include_full_content: bool = True) -> Dict[str, Any]:
         """
         Generate PyTorch code for multiple papers.
         
@@ -141,7 +164,7 @@ class PyTorchCodeGenerator:
         return results
     
     def search_and_generate_code(self, search_query: Dict[str, Any], max_papers: int = 5, 
-                               include_full_content: bool = False) -> Dict[str, Any]:
+                               include_full_content: bool = True) -> Dict[str, Any]:
         """
         Search for papers and generate code for the results.
         
@@ -190,7 +213,7 @@ class PyTorchCodeGenerator:
             }
     
     def generate_code_by_title(self, title: str, max_papers: int = 3, 
-                              include_full_content: bool = False) -> Dict[str, Any]:
+                              include_full_content: bool = True) -> Dict[str, Any]:
         """
         Generate code for papers matching a title.
         
@@ -206,7 +229,7 @@ class PyTorchCodeGenerator:
         return self.search_and_generate_code(search_query, max_papers, include_full_content)
     
     def generate_code_by_author(self, author: str, max_papers: int = 5, 
-                              include_full_content: bool = False) -> Dict[str, Any]:
+                              include_full_content: bool = True) -> Dict[str, Any]:
         """
         Generate code for papers by a specific author.
         
@@ -222,7 +245,7 @@ class PyTorchCodeGenerator:
         return self.search_and_generate_code(search_query, max_papers, include_full_content)
     
     def generate_code_by_keywords(self, keywords: str, max_papers: int = 5, 
-                                 include_full_content: bool = False) -> Dict[str, Any]:
+                                 include_full_content: bool = True) -> Dict[str, Any]:
         """
         Generate code for papers matching abstract keywords.
         
@@ -238,7 +261,7 @@ class PyTorchCodeGenerator:
         return self.search_and_generate_code(search_query, max_papers, include_full_content)
     
     def generate_code_for_recent_papers(self, days: int = 30, max_papers: int = 10, 
-                                      include_full_content: bool = False) -> Dict[str, Any]:
+                                      include_full_content: bool = True) -> Dict[str, Any]:
         """
         Generate code for recently ingested papers.
         
