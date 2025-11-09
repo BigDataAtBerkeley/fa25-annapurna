@@ -134,7 +134,7 @@ Paper Information:
 """
 
         if paper_content:
-            # Claude Sonnet 4.5 has 200k token context window, so we can include much more
+            # Claude Sonnet 4.5 has 200k token context window
             base_prompt += f"""
 Full Paper Content:
 {paper_content[:80000]}
@@ -175,7 +175,7 @@ INFERRED DOMAIN: {domain}
 Generate a complete, production-ready PyTorch implementation that demonstrates the paper's key concepts.
 
 ═══════════════════════════════════════════════════════════════════════════════
-🚨 CRITICAL REQUIREMENTS - READ CAREFULLY
+CRITICAL REQUIREMENTS - READ CAREFULLY
 ═══════════════════════════════════════════════════════════════════════════════
 
 1. DATASET LOADING (MANDATORY):
@@ -216,21 +216,21 @@ Generate a complete, production-ready PyTorch implementation that demonstrates t
    - This is the #1 cause of NameError failures
 
 ═══════════════════════════════════════════════════════════════════════════════
-📦 PACKAGES & ENVIRONMENT
+PACKAGES & ENVIRONMENT
 ═══════════════════════════════════════════════════════════════════════════════
 
-✅ AVAILABLE:
+AVAILABLE:
 - torch, torch_xla, torch.nn, torch.optim (PyTorch 2.1.0)
 - transformers (HuggingFace) - for tokenization
 - numpy, standard library (math, random, collections, json, os, sys, etc.)
 - dataset_loader (custom module)
 
-❌ NOT AVAILABLE:
+NOT AVAILABLE:
 - matplotlib, PIL/Pillow, pandas, scipy, sklearn, torchtext
 - torchvision.datasets (use dataset_loader instead)
 
 ═══════════════════════════════════════════════════════════════════════════════
-⚠️ COMMON PITFALLS TO AVOID
+COMMON PITFALLS TO AVOID
 ═══════════════════════════════════════════════════════════════════════════════
 
 1. Transformer API:
@@ -274,7 +274,7 @@ Generate a complete, production-ready PyTorch implementation that demonstrates t
    - For WikiText-2: dataset_loader handles tokenization (vocab_size=10000)
 
 ═══════════════════════════════════════════════════════════════════════════════
-📝 CODE STRUCTURE REQUIREMENTS
+CODE STRUCTURE REQUIREMENTS
 ═══════════════════════════════════════════════════════════════════════════════
 
 Your implementation must include:
@@ -338,7 +338,7 @@ for epoch in range(5):  # 5-10 epochs for testing
 ```
 
 ═══════════════════════════════════════════════════════════════════════════════
-📤 OUTPUT FORMAT
+OUTPUT FORMAT
 ═══════════════════════════════════════════════════════════════════════════════
 
 Structure your response as:

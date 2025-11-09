@@ -15,7 +15,6 @@ from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
-# Common open-source datasets mapping by domain/task
 DATASET_KNOWLEDGE_BASE = {
     # Computer Vision - Image Classification
     "vision": ["cifar10", "cifar100", "mnist", "fashion_mnist", "imagenet"],
@@ -23,11 +22,11 @@ DATASET_KNOWLEDGE_BASE = {
     "object_detection": ["coco", "pascal_voc"],
     "semantic_segmentation": ["cityscapes", "pascal_voc"],
     
-
-    "nlp": ["imdb", "wikitext2", "mnist"],  # NLP datasets now available
-    "text_classification": ["imdb", "mnist"],  # Use proper NLP datasets
-    "sentiment_analysis": ["imdb", "mnist"],  # Use proper NLP datasets
-    "language_modeling": ["wikitext2", "mnist"],  # Use proper NLP datasets
+    # NLP
+    "nlp": ["imdb", "wikitext2", "mnist"],
+    "text_classification": ["imdb", "mnist"],  
+    "sentiment_analysis": ["imdb", "mnist"],  
+    "language_modeling": ["wikitext2", "mnist"], 
     "question_answering": ["squad", "squad2"],
     "machine_translation": ["wmt", "iwslt"],
     
@@ -92,7 +91,6 @@ DATASET_NAME_MAP = {
 
 # Available datasets in our system (from dataset_loader)
 # Vision datasets use .pt files, NLP datasets use HuggingFace Arrow format
-# All datasets are now available - _lzma issue has been resolved
 AVAILABLE_DATASETS = {
     "cifar10", "cifar100", "mnist", "fashion_mnist", "imdb", "wikitext2", "synthetic"
 }
