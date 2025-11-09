@@ -46,7 +46,7 @@ if total_docs == 0:
 print(f"\n✅ Found {total_docs} total documents in '{index_name}'")
 
 # === 2. Randomly select 100 ===
-sample_size = min(45, total_docs)
+sample_size = min(5, total_docs)
 random_offsets = random.sample(range(total_docs), sample_size)
 print(f"📦 Sampling {sample_size} random documents...")
 
@@ -54,6 +54,7 @@ print(f"📦 Sampling {sample_size} random documents...")
 sent_ids = []
 for i, offset in enumerate(random_offsets, start=1):
     try:
+        time.sleep(1.5) # To avoid overwhelming the service
         res = os_client.search(index=index_name, body={"from": offset, "size": 1, "query": {"match_all": {}}})
         hits = res.get("hits", {}).get("hits", [])
         if not hits:
@@ -83,7 +84,7 @@ for i, offset in enumerate(random_offsets, start=1):
     except Exception as e:
         print(f"❌ Error sending doc at offset {offset}: {e}")
 
-print("\n🚀 All 100 documents sent. Now waiting for results...\n")
+print(f"\n🚀 All {sample_size} documents sent. Now waiting for results...\n")
 
 # === 4. Poll results queue ===
 results = []
@@ -119,7 +120,7 @@ while len(received_ids) < sample_size and (time.time() - start_time) < timeout_s
                 elif count % 5 == 0:
                     print(f"📈 Received {count} results so far...")
                 if count == sample_size:
-                    print("🎯 Received all 100 results!")
+                    print(f"🎯 Received all {sample_size} results!")
 
             # Delete processed message
             sqs.delete_message(

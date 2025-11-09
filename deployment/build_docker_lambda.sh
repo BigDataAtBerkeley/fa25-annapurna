@@ -34,7 +34,7 @@ echo "Logged into ECR"
 # Step 3: Build Docker image
 echo ""
 echo "[Step 3/5] Building Docker image (this takes ~5-10 minutes)..."
-docker build --platform linux/amd64 -t $ECR_REPO:$IMAGE_TAG -f test_lambda/Dockerfile .
+docker build --platform linux/amd64 -t $ECR_REPO:$IMAGE_TAG -f trainium_lambda/Dockerfile .
 echo "Docker image built"
 
 # Step 4: Tag and push to ECR

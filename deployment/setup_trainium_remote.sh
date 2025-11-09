@@ -12,10 +12,13 @@ echo "📦 Installing system packages..."
 sudo yum update -y
 sudo yum install -y python3 python3-pip git
 
-# Install PyTorch Neuron SDK
+# Install PyTorch Neuron SDK (includes torch_xla for Trainium)
 echo "🧠 Installing PyTorch Neuron SDK..."
 pip3 install --upgrade pip
 pip3 install torch-neuronx neuronx-cc --extra-index-url=https://pip.repos.neuron.amazonaws.com
+
+# torch_xla is included with torch-neuronx, no separate installation needed
+echo "✓ torch_xla is included with torch-neuronx"
 
 # Create working directory
 echo "📁 Creating working directory..."

@@ -53,6 +53,10 @@ test_*.json
 paper_results.csv
 output*.json
 
+# Test artifacts
+generated_code/
+trainium_test_executor/trainium_test_results/
+
 # --- AWS / config secrets ---
 .aws/
 *.pem

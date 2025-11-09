@@ -63,14 +63,23 @@ ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" << 'EOF'
     sudo yum update -y
     sudo yum install -y python3 python3-pip
     
-    # Install PyTorch Neuron SDK
-    echo "Installing PyTorch Neuron..."
+    # Install PyTorch Neuron SDK (includes torch_xla for Trainium)
+    echo "Installing PyTorch Neuron SDK..."
     pip3 install --upgrade pip
     pip3 install torch-neuronx neuronx-cc --extra-index-url=https://pip.repos.neuron.amazonaws.com
+    
+    # Verify torch_xla is available (it comes with torch-neuronx)
+    echo "Verifying torch_xla installation..."
+    python3 -c "import torch_xla.core.xla_model as xm; print('✓ torch_xla available')" || \
+    echo "⚠️  torch_xla import failed - check Neuron SDK installation"
     
     # Install torchvision (needed for dataset loaders)
     echo "Installing torchvision..."
     pip3 install torchvision
+    
+    # Install Hugging Face datasets and transformers (for NLP datasets)
+    echo "Installing Hugging Face libraries..."
+    pip3 install datasets transformers
     
     # Install Flask dependencies
     echo "Installing Flask dependencies..."

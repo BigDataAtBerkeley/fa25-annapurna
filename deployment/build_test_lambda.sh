@@ -24,13 +24,13 @@ rm -f $ZIP_FILE
 mkdir -p $DEPLOY_DIR
 
 # Copy the lambda function
-echo "📥 Copying test_lambda files..."
-cp test_lambda/lambda_function.py $DEPLOY_DIR/
-cp test_lambda/requirements.txt $DEPLOY_DIR/
+echo "📥 Copying trainium_lambda files..."
+cp trainium_lambda/lambda_function.py $DEPLOY_DIR/
+cp trainium_lambda/requirements.txt $DEPLOY_DIR/
 
 # Install dependencies
 echo "📥 Installing dependencies..."
-pip install -r test_lambda/requirements.txt -t $DEPLOY_DIR/
+pip install -r trainium_lambda/requirements.txt -t $DEPLOY_DIR/
 
 # Create deployment package
 echo "🗜️ Creating deployment package..."
