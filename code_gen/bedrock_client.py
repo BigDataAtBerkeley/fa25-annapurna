@@ -150,9 +150,9 @@ INFERRED DOMAIN: {domain}
             base_prompt += "\n"
 
         # Get primary dataset name for use in prompt
-        primary_dataset = "synthetic"
+        primary_dataset = "mnist"  # Default fallback
         if dataset_recommendations:
-            primary_dataset = dataset_recommendations.get("primary_dataset", "synthetic")
+            primary_dataset = dataset_recommendations.get("primary_dataset", "mnist")
 
         base_prompt += f"""
 Please generate a complete PyTorch implementation that includes:
@@ -170,22 +170,34 @@ Please generate a complete PyTorch implementation that includes:
    train_loader, test_loader = load_dataset('{primary_dataset}', batch_size=128)
    ```
    
-   Available datasets:
-   - 'cifar10': 60K 32x32 color images, 10 classes (for CNNs, image classification)
-   - 'cifar100': 60K 32x32 color images, 100 classes (harder classification)
-   - 'mnist': 70K 28x28 grayscale digits (simple baselines)
-   - 'fashion_mnist': 70K 28x28 grayscale fashion items
-   - 'imdb': 50K movie reviews (sentiment analysis, NLP)
-   - 'wikitext2': Language modeling dataset (transformers, LLMs)
-   - 'synthetic': Generated data for quick testing
+   Available datasets (ONLY THESE WORK ON TRAINIUM):
+   - 'cifar10': 60K 32x32 color images, 10 classes (for CNNs, image classification) - ✅ AVAILABLE
+   - 'cifar100': 60K 32x32 color images, 100 classes (harder classification) - ✅ AVAILABLE
+   - 'mnist': 70K 28x28 grayscale digits (simple baselines) - ✅ AVAILABLE
+   - 'fashion_mnist': 70K 28x28 grayscale fashion items - ✅ AVAILABLE
+   
+   ❌ UNAVAILABLE DATASETS (DO NOT USE - will cause _lzma import errors):
+   - 'imdb': NOT AVAILABLE - requires _lzma module which is not available in Neuron venv
+   - 'wikitext2': NOT AVAILABLE - requires _lzma module which is not available in Neuron venv
+   
+   IMPORTANT: For NLP tasks, use vision datasets (mnist, cifar10, etc.) or adapt the task to work with available datasets.
    
    **USE THE RECOMMENDED PRIMARY DATASET unless there's a strong reason to use an alternative.**
    
    DO NOT use torchvision.datasets or generate your own data. Use ONLY the dataset_loader.
 
 2. **Data Preprocessing**: 
-   - Create any additional preprocessing needed beyond what dataset_loader provides
-   - Include data augmentation if mentioned in the paper
+   - For VISION datasets: The dataset_loader already provides standard transforms (ToTensor, Normalize)
+   - NLP datasets (imdb, wikitext2) are NOT available due to _lzma module limitations. Use vision datasets instead.
+   - Example for NLP:
+     ```python
+     from transformers import AutoTokenizer
+     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')  # or appropriate model
+     # In training loop, tokenize the text:
+     encoded = tokenizer(text_batch, padding=True, truncation=True, return_tensors='pt')
+     ```
+   - DO NOT import torchvision.transforms - it causes import errors
+   - If you need custom data augmentation for vision, create transforms using torch operations
 
 3. **Model Architecture**: Implement the main model/algorithm described in the paper
 
@@ -193,7 +205,11 @@ Please generate a complete PyTorch implementation that includes:
 
 5. **Evaluation**: Add evaluation metrics and testing functionality
 
-6. **Visualization**: Include plotting and visualization code where appropriate
+6. **Visualization**: Print metrics and results to stdout (DO NOT use matplotlib - it's not available)
+   - Use print() statements to display training progress, loss values, accuracy metrics
+   - Format output clearly using f-strings with your actual variable names
+   - DO NOT use plt.plot(), plt.show(), or any matplotlib functions
+   - IMPORTANT: Use your actual variable names in print statements (e.g., if your loop variable is `epoch`, use `epoch` directly)
 
 7. **Documentation**: Add comprehensive comments explaining each component
 
@@ -204,17 +220,116 @@ CRITICAL REQUIREMENTS FOR DATASETS:
 - **DO NOT create download_dataset() or prepare_dataset() functions**
 - The dataset_loader handles all downloading and caching automatically
 - Example: `train_loader, test_loader = load_dataset('{primary_dataset}', batch_size=128)`
-- Print which dataset you're using: `print(f"Using recommended dataset: {primary_dataset}")`
+- Print which dataset you're using (optional): You can add a print statement to show which dataset is being used
+
+CRITICAL - AWS TRAINIUM (NEURON SDK) REQUIREMENTS:
+The code will run on AWS Trainium (trn1.2xlarge) which uses AWS Neuron SDK. You MUST ensure compatibility:
+
+✅ REQUIRED FOR TRAINIUM (NEURON SDK):
+- MUST use PyTorch/XLA (torch_xla) for training to utilize Trainium hardware acceleration
+- Import: `import torch_xla.core.xla_model as xm` (comes from torch-neuronx package)
+- Get device: `device = xm.xla_device()` (this gets the Trainium device)
+- CRITICAL: Move ALL tensors to XLA device BEFORE any operations:
+  * Models: `model = model.to(device)`
+  * Input tensors: `inputs = inputs.to(device)`
+  * Label tensors: `labels = labels.to(device)`
+  * Any intermediate tensors created must also be on XLA device
+  * Example: `tensor = torch.tensor([1, 2, 3]).to(device)` - always add `.to(device)` when creating new tensors
+- CRITICAL: DO NOT move loss functions to device - they are stateless and moving them can cause crashes:
+  * Correct: `criterion = torch.nn.CrossEntropyLoss()` (no .to(device))
+  * Wrong: `criterion = torch.nn.CrossEntropyLoss().to(device)` (will cause segfault)
+- Use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` in training loops
+- Use `xm.mark_step()` after each training step to synchronize with Trainium hardware
+- DO NOT use CUDA-specific operations (no `.cuda()`, no `torch.cuda.is_available()`, no `device='cuda'`)
+- DO NOT use `torch.device('cuda')` - Trainium does not support CUDA, only XLA devices
+- ERROR TO AVOID: "Input tensor is not an XLA tensor" - this means you forgot to move a tensor to the XLA device
+
+✅ ALLOWED PACKAGES:
+- torch (PyTorch 2.1.0) - REQUIRED
+- torch_xla (PyTorch/XLA for Trainium) - REQUIRED for training
+- torch.nn, torch.optim, torch.utils.data - All PyTorch core modules
+- transformers (HuggingFace) - Available for tokenization (use AutoTokenizer)
+- datasets (HuggingFace) - Available for loading NLP datasets (used internally by dataset_loader)
+- numpy - Available
+- json, os, sys, time, logging - Standard library
+- dataset_loader - Custom module (ALWAYS use this for datasets - it handles all dataset loading)
+
+❌ FORBIDDEN PACKAGES (NOT AVAILABLE):
+- torchvision.transforms - NOT AVAILABLE, DO NOT IMPORT (causes lzma error)
+- torchvision.datasets - NOT AVAILABLE, use dataset_loader instead
+- torchtext - NOT AVAILABLE, DO NOT USE
+- matplotlib - NOT AVAILABLE, DO NOT USE
+- PIL/Pillow - NOT AVAILABLE
+- pandas - NOT AVAILABLE
+- scipy - NOT AVAILABLE
+- sklearn - NOT AVAILABLE
+- Any other third-party packages not listed above
+
+IMPORTANT - DATASET LOADING:
+- ALWAYS use `from dataset_loader import load_dataset` - DO NOT import datasets directly
+- The dataset_loader handles all dataset loading (vision from .pt files, NLP from HuggingFace Arrow format)
+- For NLP tasks: The dataset_loader returns text data that you can tokenize using transformers.AutoTokenizer
+- DO NOT import `datasets` from HuggingFace directly - the dataset_loader uses it internally
+
+IMPORTANT:
+- MUST use torch_xla for training to utilize Trainium hardware
+- DO NOT import torchvision.transforms - it causes import errors (lzma module not available)
+- DO NOT import torchtext or use torchtext.datasets
+- DO NOT import matplotlib or use plt.plot/plt.show
+- DO NOT import `datasets` from HuggingFace directly - use dataset_loader instead
+- DO NOT use torchvision.datasets - use dataset_loader instead
+- DO NOT use CUDA operations - Trainium does not support CUDA
+- For visualization: Use print statements or save metrics to files (no plotting)
+- For data transforms: The dataset_loader already provides transforms. If you need custom transforms, create them using torch operations (e.g., torch.nn.functional.normalize, torch.nn.functional.pad, etc.)
+- For text processing: Use torch and standard Python string operations
+- For NLP: Use torch.nn.Embedding and torch-based tokenization, NOT torchtext
+
+TRAINING LOOP PATTERN FOR TRAINIUM:
+```python
+import torch_xla.core.xla_model as xm
+
+device = xm.xla_device()
+model = model.to(device)
+# DO NOT move loss functions to device - they are stateless and don't need device placement
+# Example: criterion = torch.nn.CrossEntropyLoss()  # No .to(device) needed
+
+# Use 5-10 epochs for testing, not 100+ (faster execution, sufficient for testing)
+num_epochs = 5  # Use small number for testing
+
+for epoch in range(num_epochs):
+    epoch_loss = 0.0
+    num_batches = 0
+    
+    for inputs, labels in train_loader:
+        # CRITICAL: Move ALL tensors to device BEFORE any operations
+        inputs = inputs.to(device)
+        labels = labels.to(device)
+        
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        xm.optimizer_step(optimizer)  # Use xm.optimizer_step instead of optimizer.step()
+        xm.mark_step()  # Synchronize after each step
+        
+        epoch_loss += loss.item()
+        num_batches += 1
+    
+    # Print metrics INSIDE the epoch loop (epoch variable is in scope here)
+    avg_loss = epoch_loss / num_batches if num_batches > 0 else 0.0
+    # Print training progress - use your actual variable names
+    # Example: print(f"Epoch completed, average loss: {{avg_loss:.4f}}")
+```
 
 Requirements:
-- Use modern PyTorch practices (PyTorch 2.0+ features when applicable)
+- Use modern PyTorch practices (PyTorch 2.1.0 features)
 - Include proper error handling and logging
 - Make the code modular and reusable
 - Add type hints where appropriate
-- Include example usage and configuration
 - Handle edge cases and provide fallbacks
-- Use appropriate libraries (torch, torchvision, numpy, matplotlib, datasets, etc.)
 - THE CODE MUST BE IMMEDIATELY RUNNABLE - no manual dataset setup required
+- Use ONLY the packages listed in the ALLOWED list above
+- CRITICAL: Ensure ALL tensors are moved to XLA device before any operations to avoid "Input tensor is not an XLA tensor" errors
 
 Please structure your response as follows:
 

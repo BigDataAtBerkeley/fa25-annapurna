@@ -9,12 +9,12 @@ for use by generated PyTorch code on Trainium instances.
 import os
 import boto3
 import torch
+import torch.nn.functional as F
 import json
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any
-import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
+from typing import Optional, Dict, Any, Tuple
+from torch.utils.data import Dataset, DataLoader
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,32 @@ LOCAL_DATA_DIR = os.getenv('DATASET_CACHE_DIR', '/tmp/datasets')
 os.makedirs(LOCAL_DATA_DIR, exist_ok=True)
 
 s3_client = boto3.client('s3')
+
+
+class SimpleImageDataset(Dataset):
+    """Simple PyTorch Dataset for image data without torchvision dependencies"""
+    def __init__(self, images, labels, transform=None):
+        self.images = images
+        self.labels = labels
+        self.transform = transform
+    
+    def __len__(self):
+        return len(self.labels)
+    
+    def __getitem__(self, idx):
+        image = self.images[idx]
+        label = self.labels[idx]
+        
+        # Convert to float and normalize if needed
+        if image.dtype != torch.float32:
+            image = image.float() / 255.0
+        
+        # Apply simple transforms using torch operations
+        if self.transform:
+            image = self.transform(image)
+        
+        return image, label
+
 
 class DatasetManager:
     """Manages dataset downloads and caching from S3"""
@@ -41,9 +67,8 @@ class DatasetManager:
             'cifar100': self._load_cifar100,
             'mnist': self._load_mnist,
             'fashion_mnist': self._load_fashion_mnist,
-            'imdb': self._load_imdb,
-            'wikitext2': self._load_wikitext,
-            'synthetic': self._load_synthetic
+            'imdb': self._load_imdb,  # Uses HuggingFace datasets.load_from_disk
+            'wikitext2': self._load_wikitext  # Uses HuggingFace datasets.load_from_disk
         }
     
     def register_dataset_loader(self, name: str, loader_func):
@@ -172,96 +197,268 @@ class DatasetManager:
         return loader_func(dataset_dir, **kwargs)
     
     def _load_cifar10(self, dataset_dir: str, batch_size: int = 128, **kwargs):
-        """Load CIFAR-10 dataset"""
-        from torchvision.datasets import CIFAR10
+        """Load CIFAR-10 dataset from pre-processed .pt file"""
+        pt_file = os.path.join(dataset_dir, 'cifar10_pytorch.pt')
         
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        ])
+        if not os.path.exists(pt_file):
+            raise FileNotFoundError(f"CIFAR-10 data file not found: {pt_file}. Please download from S3 first.")
         
-        train_dataset = CIFAR10(root=dataset_dir, train=True, transform=transform)
-        test_dataset = CIFAR10(root=dataset_dir, train=False, transform=transform)
+        # Load pre-processed data
+        data = torch.load(pt_file, map_location='cpu')
         
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+        # Extract data from torchvision dataset objects if needed
+        # The .pt file contains the dataset objects, so we need to extract the actual data
+        try:
+            # Try to get data directly if it's stored as tensors
+            if isinstance(data, dict) and 'train_data' in data:
+                train_images = data['train_data']
+                train_labels = data['train_labels']
+                test_images = data['test_data']
+                test_labels = data['test_labels']
+            else:
+                # Extract from dataset objects
+                train_dataset_obj = data.get('train')
+                test_dataset_obj = data.get('test')
+                
+                # Get all data from dataset objects
+                train_images = torch.stack([torch.tensor(train_dataset_obj[i][0]) for i in range(len(train_dataset_obj))])
+                train_labels = torch.tensor([train_dataset_obj[i][1] for i in range(len(train_dataset_obj))])
+                test_images = torch.stack([torch.tensor(test_dataset_obj[i][0]) for i in range(len(test_dataset_obj))])
+                test_labels = torch.tensor([test_dataset_obj[i][1] for i in range(len(test_dataset_obj))])
+        except Exception as e:
+            logger.error(f"Error extracting CIFAR-10 data: {e}")
+            raise
+        
+        # Normalize: (x / 255.0 - 0.5) / 0.5 = (x - 127.5) / 127.5
+        def normalize_transform(img):
+            if img.max() > 1.0:
+                img = img.float() / 255.0
+            return (img - 0.5) / 0.5
+        
+        # Create simple datasets
+        train_dataset = SimpleImageDataset(train_images, train_labels, transform=normalize_transform)
+        test_dataset = SimpleImageDataset(test_images, test_labels, transform=normalize_transform)
+        
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
         
         return train_loader, test_loader
     
     def _load_cifar100(self, dataset_dir: str, batch_size: int = 128, **kwargs):
-        """Load CIFAR-100 dataset"""
-        from torchvision.datasets import CIFAR100
+        """Load CIFAR-100 dataset from pre-processed .pt file"""
+        pt_file = os.path.join(dataset_dir, 'cifar100_pytorch.pt')
         
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        ])
+        if not os.path.exists(pt_file):
+            raise FileNotFoundError(f"CIFAR-100 data file not found: {pt_file}. Please download from S3 first.")
         
-        train_dataset = CIFAR100(root=dataset_dir, train=True, transform=transform)
-        test_dataset = CIFAR100(root=dataset_dir, train=False, transform=transform)
+        data = torch.load(pt_file, map_location='cpu')
         
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+        try:
+            if isinstance(data, dict) and 'train_data' in data:
+                train_images = data['train_data']
+                train_labels = data['train_labels']
+                test_images = data['test_data']
+                test_labels = data['test_labels']
+            else:
+                train_dataset_obj = data.get('train')
+                test_dataset_obj = data.get('test')
+                train_images = torch.stack([torch.tensor(train_dataset_obj[i][0]) for i in range(len(train_dataset_obj))])
+                train_labels = torch.tensor([train_dataset_obj[i][1] for i in range(len(train_dataset_obj))])
+                test_images = torch.stack([torch.tensor(test_dataset_obj[i][0]) for i in range(len(test_dataset_obj))])
+                test_labels = torch.tensor([test_dataset_obj[i][1] for i in range(len(test_dataset_obj))])
+        except Exception as e:
+            logger.error(f"Error extracting CIFAR-100 data: {e}")
+            raise
+        
+        def normalize_transform(img):
+            if img.max() > 1.0:
+                img = img.float() / 255.0
+            return (img - 0.5) / 0.5
+        
+        train_dataset = SimpleImageDataset(train_images, train_labels, transform=normalize_transform)
+        test_dataset = SimpleImageDataset(test_images, test_labels, transform=normalize_transform)
+        
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
         
         return train_loader, test_loader
     
     def _load_mnist(self, dataset_dir: str, batch_size: int = 128, **kwargs):
-        """Load MNIST dataset"""
-        from torchvision.datasets import MNIST
+        """Load MNIST dataset from pre-processed .pt file"""
+        pt_file = os.path.join(dataset_dir, 'mnist_pytorch.pt')
         
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))
-        ])
+        if not os.path.exists(pt_file):
+            raise FileNotFoundError(f"MNIST data file not found: {pt_file}. Please download from S3 first.")
         
-        train_dataset = MNIST(root=dataset_dir, train=True, transform=transform)
-        test_dataset = MNIST(root=dataset_dir, train=False, transform=transform)
+        data = torch.load(pt_file, map_location='cpu')
         
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+        try:
+            if isinstance(data, dict) and 'train_data' in data:
+                train_images = data['train_data']
+                train_labels = data['train_labels']
+                test_images = data['test_data']
+                test_labels = data['test_labels']
+            else:
+                train_dataset_obj = data.get('train')
+                test_dataset_obj = data.get('test')
+                train_images = torch.stack([torch.tensor(train_dataset_obj[i][0]) for i in range(len(train_dataset_obj))])
+                train_labels = torch.tensor([train_dataset_obj[i][1] for i in range(len(train_dataset_obj))])
+                test_images = torch.stack([torch.tensor(test_dataset_obj[i][0]) for i in range(len(test_dataset_obj))])
+                test_labels = torch.tensor([test_dataset_obj[i][1] for i in range(len(test_dataset_obj))])
+        except Exception as e:
+            logger.error(f"Error extracting MNIST data: {e}")
+            raise
+        
+        # MNIST normalization: mean=0.1307, std=0.3081
+        def normalize_transform(img):
+            if img.max() > 1.0:
+                img = img.float() / 255.0
+            return (img - 0.1307) / 0.3081
+        
+        train_dataset = SimpleImageDataset(train_images, train_labels, transform=normalize_transform)
+        test_dataset = SimpleImageDataset(test_images, test_labels, transform=normalize_transform)
+        
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
         
         return train_loader, test_loader
     
     def _load_fashion_mnist(self, dataset_dir: str, batch_size: int = 128, **kwargs):
-        """Load Fashion-MNIST dataset"""
-        from torchvision.datasets import FashionMNIST
+        """Load Fashion-MNIST dataset from pre-processed .pt file"""
+        pt_file = os.path.join(dataset_dir, 'fashion_mnist_pytorch.pt')
         
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5,), (0.5,))
-        ])
+        if not os.path.exists(pt_file):
+            raise FileNotFoundError(f"Fashion-MNIST data file not found: {pt_file}. Please download from S3 first.")
         
-        train_dataset = FashionMNIST(root=dataset_dir, train=True, transform=transform)
-        test_dataset = FashionMNIST(root=dataset_dir, train=False, transform=transform)
+        data = torch.load(pt_file, map_location='cpu')
         
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+        try:
+            if isinstance(data, dict) and 'train_data' in data:
+                train_images = data['train_data']
+                train_labels = data['train_labels']
+                test_images = data['test_data']
+                test_labels = data['test_labels']
+            else:
+                train_dataset_obj = data.get('train')
+                test_dataset_obj = data.get('test')
+                train_images = torch.stack([torch.tensor(train_dataset_obj[i][0]) for i in range(len(train_dataset_obj))])
+                train_labels = torch.tensor([train_dataset_obj[i][1] for i in range(len(train_dataset_obj))])
+                test_images = torch.stack([torch.tensor(test_dataset_obj[i][0]) for i in range(len(test_dataset_obj))])
+                test_labels = torch.tensor([test_dataset_obj[i][1] for i in range(len(test_dataset_obj))])
+        except Exception as e:
+            logger.error(f"Error extracting Fashion-MNIST data: {e}")
+            raise
+        
+        def normalize_transform(img):
+            if img.max() > 1.0:
+                img = img.float() / 255.0
+            return (img - 0.5) / 0.5
+        
+        train_dataset = SimpleImageDataset(train_images, train_labels, transform=normalize_transform)
+        test_dataset = SimpleImageDataset(test_images, test_labels, transform=normalize_transform)
+        
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
         
         return train_loader, test_loader
     
-    def _load_imdb(self, dataset_dir: str, **kwargs):
-        """Load IMDB dataset"""
-        from datasets import load_from_disk
+    def _load_imdb(self, dataset_dir: str, batch_size: int = 128, **kwargs):
+        """Load IMDB dataset from HuggingFace Arrow format (as per AWS Trainium best practices)"""
+        # Check if _lzma is available (required by datasets package)
+        try:
+            import _lzma
+        except ImportError:
+            raise ImportError(
+                "The 'datasets' package requires the '_lzma' module, which is not available "
+                "in the Neuron venv's Python. IMDB dataset cannot be loaded on this system. "
+                "Please use a different dataset (e.g., mnist, cifar10, cifar100, fashion_mnist)."
+            )
         
+        try:
+            from datasets import load_from_disk
+        except Exception as e:
+            raise ImportError(
+                f"HuggingFace 'datasets' package is required for IMDB but failed to import: {e}. "
+                "Please use a different dataset (e.g., mnist, cifar10, cifar100, fashion_mnist)."
+            )
+        
+        # Load from Arrow format (as stored in S3)
         dataset = load_from_disk(dataset_dir)
-        return dataset['train'], dataset['test']
-    
-    def _load_wikitext(self, dataset_dir: str, **kwargs):
-        """Load WikiText-2 dataset"""
-        from datasets import load_from_disk
         
+        # Convert to PyTorch DataLoader
+        # IMDB has 'text' and 'label' columns
+        train_dataset = dataset['train']
+        test_dataset = dataset['test']
+        
+        # Create simple dataset wrapper for DataLoader
+        class IMDBDataset(Dataset):
+            def __init__(self, hf_dataset):
+                self.hf_dataset = hf_dataset
+            
+            def __len__(self):
+                return len(self.hf_dataset)
+            
+            def __getitem__(self, idx):
+                item = self.hf_dataset[idx]
+                # Return text and label - tokenization should be done in the model code
+                return item['text'], item['label']
+        
+        train_pytorch_dataset = IMDBDataset(train_dataset)
+        test_pytorch_dataset = IMDBDataset(test_dataset)
+        
+        train_loader = DataLoader(train_pytorch_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+        test_loader = DataLoader(test_pytorch_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+        
+        return train_loader, test_loader
+    
+    def _load_wikitext(self, dataset_dir: str, batch_size: int = 128, **kwargs):
+        """Load WikiText-2 dataset from HuggingFace Arrow format (as per AWS Trainium best practices)"""
+        # Check if _lzma is available (required by datasets package)
+        try:
+            import _lzma
+        except ImportError:
+            raise ImportError(
+                "The 'datasets' package requires the '_lzma' module, which is not available "
+                "in the Neuron venv's Python. WikiText-2 dataset cannot be loaded on this system. "
+                "Please use a different dataset (e.g., mnist, cifar10, cifar100, fashion_mnist)."
+            )
+        
+        try:
+            from datasets import load_from_disk
+        except Exception as e:
+            raise ImportError(
+                f"HuggingFace 'datasets' package is required for WikiText-2 but failed to import: {e}. "
+                "Please use a different dataset (e.g., mnist, cifar10, cifar100, fashion_mnist)."
+            )
+        
+        # Load from Arrow format (as stored in S3)
         dataset = load_from_disk(dataset_dir)
-        return dataset
-    
-    def _load_synthetic(self, dataset_dir: str, variant: str = 'small', **kwargs):
-        """Load synthetic dataset"""
-        filename = f"synthetic_{variant}.pt"
-        filepath = os.path.join(dataset_dir, filename)
         
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"Synthetic variant '{variant}' not found. Available: small, medium, tabular")
+        # WikiText-2 has 'text' column
+        train_dataset = dataset.get('train', dataset.get('validation'))
         
-        return torch.load(filepath)
+        # Create simple dataset wrapper
+        class WikiTextDataset(Dataset):
+            def __init__(self, hf_dataset):
+                self.hf_dataset = hf_dataset
+                # Filter out empty texts
+                self.valid_indices = [i for i, item in enumerate(hf_dataset) if len(item.get('text', '').strip()) > 0]
+            
+            def __len__(self):
+                return len(self.valid_indices)
+            
+            def __getitem__(self, idx):
+                actual_idx = self.valid_indices[idx]
+                item = self.hf_dataset[actual_idx]
+                return item['text']
+        
+        train_pytorch_dataset = WikiTextDataset(train_dataset)
+        val_pytorch_dataset = WikiTextDataset(dataset.get('validation', train_dataset[:1000]))
+        
+        train_loader = DataLoader(train_pytorch_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+        val_loader = DataLoader(val_pytorch_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+        
+        return train_loader, val_loader
 
 
 # Global dataset manager instance
