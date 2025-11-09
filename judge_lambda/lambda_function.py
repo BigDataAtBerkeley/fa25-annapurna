@@ -365,25 +365,6 @@ def lambda_handler(event, context):
             if redundancy.get("is_redundant"):
                 reason = redundancy.get("reason", "RAG redundancy")
                 write_discard_record(doc_id, "rag", reason, body, msg_id)
-                reject_doc = {
-                    "title": title,
-                    "title_normalized": title_norm,
-                    "authors": authors,
-                    "abstract": abstract,
-                    "date": date.replace("/", "-") if date else None,
-                    "s3_bucket": s3_bucket,
-                    "s3_key": s3_key,
-                    "sha_abstract": sha_abs,
-                    "decision": "reject",
-                    "rejected_by": "rag",
-                    "reason": reason,
-                    "relevance": "unknown",
-                    "novelty": "unknown",
-                    "ingested_at": int(time.time() * 1000)
-                }
-                if precomputed_embedding:
-                    reject_doc["abstract_embedding"] = precomputed_embedding
-                #index_paper_document(reject_doc)
                 logger.info(f"Rejected by RAG | {title} | {reason}")
                 continue
             """
@@ -425,25 +406,6 @@ def lambda_handler(event, context):
                 
             else:
                 write_discard_record(doc_id, "claude", reason, body, msg_id)
-                reject_doc = {
-                    "title": title,
-                    "title_normalized": title_norm,
-                    "authors": authors,
-                    "abstract": abstract,
-                    "date": date.replace("/", "-") if date else None,
-                    "s3_bucket": s3_bucket,
-                    "s3_key": s3_key,
-                    "sha_abstract": sha_abs,
-                    "decision": "reject",
-                    "rejected_by": "claude",
-                    "reason": reason,
-                    "relevance": relevance,
-                    "novelty": novelty,
-                    "ingested_at": int(time.time() * 1000)
-                }
-                if precomputed_embedding:
-                    reject_doc["abstract_embedding"] = precomputed_embedding
-                #index_paper_document(reject_doc)
                 logger.info(f"Skipped (irrelevant or not novel) | {title} | {reason}")
 
         except Exception as e:

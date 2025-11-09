@@ -54,7 +54,6 @@ print(f"📦 Sampling {sample_size} random documents...")
 sent_ids = []
 for i, offset in enumerate(random_offsets, start=1):
     try:
-        time.sleep(1.5) # To avoid overwhelming the service
         res = os_client.search(index=index_name, body={"from": offset, "size": 1, "query": {"match_all": {}}})
         hits = res.get("hits", {}).get("hits", [])
         if not hits:
