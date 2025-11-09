@@ -112,14 +112,30 @@ chmod +x deployment/*.sh
 ### Trigger Scrapers Manually
 
 ```bash
-# Scrape ICLR papers
+
+# Execute Scraping of Conference Papers via MapState. This should be used in production.
+# If it's failing above 10 batches, check concurenncy limit. It's currently set to 10 but can be maxed at 1000.
+aws stepfunctions start-execution \                            
+  --state-machine-arn arn:aws:states:us-east-1:478852001205:stateMachine:conferenceScraper \
+  --name "test-60-papers-$(date +%s)" \
+  --input '{"source": "iclr", "year": 2025, "search_term": "LLM", "batch_size": 30, "test_count": 300}'
+
+# Retrive Batch Sizes for conferences
 aws lambda invoke \
-  --function-name PaperScraper_ICLR \
-  --payload '{"MAX_PAPERS": "5"}' \
+  --function-name conferenceWrapper \
+  --payload '{"source": "iclr", "year": "2025", "batch_size": "30", "search_term": "LLM"}' \
   --cli-binary-format raw-in-base64-out \
   scraper_output.json
 
-# Scrape other conferences
+# Scrape conference papers - replace "iclr" with "neurips", "mlsys", or "icml". 
+# DO NOT CHANGE "PaperScraper_ICLR" - this is scraper lambda for all conferences, the naming convention just hasn't been updated.
+aws lambda invoke \
+  --function-name PaperScraper_ICLR \
+  --payload '{"source": "iclr", "year": "2025", "batch_size": "5", "start_index": "100", "end_index": "105"}' \
+  --cli-binary-format raw-in-base64-out \
+  scraper_output.json
+
+# OLD INVOCATION FUNCTIONS - these are still deployed, but we highley reccomend using the command above.
 aws lambda invoke \
   --function-name PaperScraper_ICML \
   --payload '{"MAX_PAPERS": "5"}' \

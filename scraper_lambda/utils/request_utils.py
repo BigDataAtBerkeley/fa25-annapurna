@@ -37,6 +37,7 @@ def _fetch_openreview_details(url: str):
     pdf_link = "https://openreview.net" + pdf["href"] if pdf and pdf.get("href") else None
     return authors, abstract["content"] if abstract else "", date["content"] if date else "", pdf_link
 
+"""
 def extract_papers_function(source: str, logger, search_term: str = "LLM"):
     # Returns a function to extract papers from a specified source
     def func(year: int, limit: int = 10):
@@ -86,4 +87,64 @@ def extract_papers_function(source: str, logger, search_term: str = "LLM"):
                 continue
         logger.info(f"Done. Uploaded and queued {count} papers.")
         return {"uploaded": count, "found": len(paper_cards)}
+    return func
+"""
+
+def extract_papers_function(source: str, logger):
+    def func(year: int, limit: int = 10, start_index: int = 0, end_index: int = None, search_term: str = "LLM"):
+        if source not in URL_PREFIXES:
+            logger.error(f"Unknown source: {source}")
+            return {"uploaded": 0, "found": 0}
+        
+        prefix = URL_PREFIXES[source]
+        base = f"{prefix}/virtual/{year}/papers.html?search={search_term}"
+        logger.info(f"Scraping {source} papers from {base} (indices {start_index}-{end_index})")
+        bsoup = get_soup(base)
+        cards = bsoup.find_all('li', class_=False)
+        paper_cards = {card.find("a").text.strip(): prefix + card.find("a")['href'] for card in cards if card.find("a") and card.find("a").text and card.find("a")['href']}
+        
+        # Safe end index
+        total_papers = len(paper_cards)
+        actual_end = min(end_index if end_index else total_papers, total_papers)
+        
+        count = 0
+        for i, (title, link) in enumerate(paper_cards.items(), start=1):
+            if i < start_index:
+                continue
+            
+            if i > actual_end:
+                break
+                
+            if count >= limit:
+                break
+                
+            logger.info(f"[{i}] {title}: {link}")
+            count += 1
+            try:
+                psoup = get_soup(link)
+                openreview_link = psoup.find("a", {"title": "OpenReview"})
+                if not openreview_link:
+                    logger.exception(f"Error processing {title}: could not find a link to OpenReview.")
+                    continue
+                url = openreview_link["href"]
+                if url.startswith("/"): 
+                    logger.exception(f"Error processing {title}: OpenReview link references site.")
+                    continue
+
+                authors, abstract, date, pdf_link = _fetch_openreview_details(url)
+                if not pdf_link:
+                    logger.exception(f"Error processing {title}: could not find PDF link on OpenReview.")
+                    continue
+                
+                key = safe_filename(title)
+                with requests.get(pdf_link, stream=True, timeout=60) as r:
+                    r.raise_for_status()
+                    upload_pdf_to_s3(r.raw, key)
+                send_to_sqs(title, authors, date, abstract, key)
+            except Exception as e:
+                logger.exception(f"Error processing {title}: {e}")
+                continue
+                
+        logger.info(f"Done. Uploaded and queued {count} papers from batch {start_index}-{actual_end}.")
+        return {"uploaded": count, "found": total_papers, "batch_start": start_index, "batch_end": actual_end}
     return func
