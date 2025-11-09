@@ -23,17 +23,17 @@ DATASET_KNOWLEDGE_BASE = {
     "object_detection": ["coco", "pascal_voc"],
     "semantic_segmentation": ["cityscapes", "pascal_voc"],
     
-    # Natural Language Processing
-    "nlp": ["imdb", "wikitext2", "squad", "glue"],
-    "text_classification": ["imdb", "ag_news", "yelp"],
-    "sentiment_analysis": ["imdb", "sst2"],
-    "language_modeling": ["wikitext2", "ptb", "bookcorpus"],
+
+    "nlp": ["imdb", "wikitext2", "mnist"],  # NLP datasets now available
+    "text_classification": ["imdb", "mnist"],  # Use proper NLP datasets
+    "sentiment_analysis": ["imdb", "mnist"],  # Use proper NLP datasets
+    "language_modeling": ["wikitext2", "mnist"],  # Use proper NLP datasets
     "question_answering": ["squad", "squad2"],
     "machine_translation": ["wmt", "iwslt"],
     
     # General / Testing
-    "general": ["synthetic"],
-    "testing": ["synthetic", "mnist"]
+    "general": ["mnist"],
+    "testing": ["mnist"]
 }
 
 # Dataset name patterns to extract from paper text
@@ -91,9 +91,10 @@ DATASET_NAME_MAP = {
 }
 
 # Available datasets in our system (from dataset_loader)
+# Vision datasets use .pt files, NLP datasets use HuggingFace Arrow format
+# All datasets are now available - _lzma issue has been resolved
 AVAILABLE_DATASETS = {
-    "cifar10", "cifar100", "mnist", "fashion_mnist", 
-    "imdb", "wikitext2", "synthetic"
+    "cifar10", "cifar100", "mnist", "fashion_mnist", "imdb", "wikitext2", "synthetic"
 }
 
 
@@ -238,9 +239,9 @@ class DatasetRecommender:
                 seen.add(dataset)
     
         
-        # Fallback to synthetic if nothing found
+        # Fallback to mnist if nothing found (simple, universal dataset)
         if not prioritized:
-            prioritized = ["synthetic"]
+            prioritized = ["mnist"]
         
         return prioritized
     
@@ -273,14 +274,16 @@ You are an expert in machine learning datasets. Analyze this research paper and 
 Paper Information:
 {paper_summary}
 
-Available Datasets:
-- cifar10: 60K 32x32 color images, 10 classes (computer vision, image classification)
-- cifar100: 60K 32x32 color images, 100 classes (computer vision, fine-grained classification)
-- mnist: 70K 28x28 grayscale digits (simple vision tasks, baselines)
-- fashion_mnist: 70K 28x28 grayscale fashion items (computer vision)
-- imdb: 50K movie reviews (NLP, sentiment analysis, text classification)
-- wikitext2: Language modeling dataset (NLP, transformers, language models)
-- synthetic: Generated synthetic data (quick testing, debugging)
+Available Datasets (ONLY THESE ARE AVAILABLE ON TRAINIUM):
+- cifar10: 60K 32x32 color images, 10 classes (computer vision, image classification) - ✅ AVAILABLE
+- cifar100: 60K 32x32 color images, 100 classes (computer vision, fine-grained classification) - ✅ AVAILABLE
+- mnist: 70K 28x28 grayscale digits (simple vision tasks, baselines) - ✅ AVAILABLE
+- fashion_mnist: 70K 28x28 grayscale fashion items (computer vision) - ✅ AVAILABLE
+- imdb: 50K movie reviews for sentiment classification (NLP, text classification) - ✅ AVAILABLE
+- wikitext2: 36K Wikipedia articles for language modeling (NLP, language modeling) - ✅ AVAILABLE
+- synthetic: 16K synthetic samples for quick testing (various types: vision, tabular) - ✅ AVAILABLE
+
+IMPORTANT: For NLP tasks, use proper NLP datasets (imdb, wikitext2) instead of vision datasets.
 
 Based on the paper's domain, task type, and requirements, recommend 1-3 datasets from the available list above.
 
@@ -385,15 +388,15 @@ Only use datasets from the available list above. If none are perfect matches, ch
                 "type": "text classification",
                 "samples": "50K",
                 "classes": 2,
-                "size": "Movie reviews",
+                "size": "Movie reviews (HuggingFace Arrow format)",
                 "use_case": "NLP, sentiment analysis, text classification"
             },
             "wikitext2": {
                 "name": "WikiText-2",
                 "type": "language modeling",
-                "samples": "36K",
+                "samples": "10K+",
                 "classes": "N/A",
-                "size": "Wikipedia articles",
+                "size": "Wikipedia articles (HuggingFace Arrow format)",
                 "use_case": "Language modeling, transformers, LLMs"
             },
             "synthetic": {

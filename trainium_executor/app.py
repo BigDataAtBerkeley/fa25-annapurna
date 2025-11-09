@@ -47,7 +47,7 @@ except ImportError:
     SAGEMAKER_METRICS_ENABLED = False
     logger.warning("sagemaker_metrics module not found. Metrics logging to CloudWatch will be disabled.")
 
-MAX_EXECUTION_TIME = int(os.getenv('MAX_EXECUTION_TIME', '600'))  # 10 minutes
+MAX_EXECUTION_TIME = int(os.getenv('MAX_EXECUTION_TIME', '1800'))  # 30 minutes (increased for Neuron compilation)
 WORKING_DIR = os.getenv('WORKING_DIR', '/tmp/trainium_jobs')
 DATASET_CACHE_DIR = os.getenv('DATASET_CACHE_DIR', '/tmp/datasets')
 
@@ -94,6 +94,10 @@ def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME, pa
     """
     Execute Python code in isolated environment with Neuron support.
     
+    NEW APPROACH: Use a completely fresh temporary directory that only contains
+    main.py and dataset_loader.py. Run Python from that directory so it finds
+    dataset_loader.py automatically without needing PYTHONPATH manipulation.
+    
     Args:
         paper_id: Unique paper identifier
         code: Python code to execute
@@ -103,48 +107,100 @@ def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME, pa
     Returns:
         Dictionary with execution results
     """
-    job_dir = os.path.join(WORKING_DIR, paper_id)
-    os.makedirs(job_dir, exist_ok=True)
-    
-    # Copy dataset loader utilities to job directory
-    setup_dataset_loader(job_dir)
-    
-    code_file = os.path.join(job_dir, 'main.py')
-    
-    # Initialize SageMaker metrics logger if enabled
-    metrics_logger = None
-    if SAGEMAKER_METRICS_ENABLED:
-        try:
-            instance_type = os.getenv('TRAINIUM_INSTANCE_TYPE', 'trn1.2xlarge')
-            metrics_logger = create_metrics_logger(
-                paper_id=paper_id,
-                paper_title=paper_title,
-                instance_type=instance_type
-            )
-            logger.info(f"Initialized SageMaker metrics logger for {paper_id}")
-        except Exception as e:
-            logger.warning(f"Failed to initialize SageMaker metrics logger: {e}")
+    # Create a completely fresh temporary directory for this execution
+    # This ensures no torch conflicts or leftover files
+    exec_dir = tempfile.mkdtemp(prefix=f'trainium_exec_{paper_id}_', dir='/tmp')
     
     try:
-        with open(code_file, 'w') as f:
+        # Write main.py to the fresh execution directory
+        main_py_path = os.path.join(exec_dir, 'main.py')
+        with open(main_py_path, 'w') as f:
             f.write(code)
         
-        logger.info(f"Executing code for paper {paper_id} (timeout: {timeout}s)")
+        # Copy dataset_loader.py to the execution directory
+        # This way it's in the same directory as main.py and can be imported normally
+        loader_source = os.path.join(os.path.dirname(__file__), 'dataset_loader.py')
+        loader_dest = os.path.join(exec_dir, 'dataset_loader.py')
+        if os.path.exists(loader_source):
+            shutil.copy2(loader_source, loader_dest)
+        else:
+            logger.warning("dataset_loader.py not found, generated code won't have dataset utilities")
+        
+        # CRITICAL: Check for and remove any torch-related directories/files in exec_dir
+        # Python adds exec_dir to sys.path[0] when running a script, which can cause
+        # PyTorch to find a local torch directory instead of the installed package
+        for item in os.listdir(exec_dir):
+            item_path = os.path.join(exec_dir, item)
+            if item.lower() in ['torch', '_torch', 'torch.py', '_torch.py']:
+                logger.warning(f"Found conflicting {item} in exec_dir, removing it")
+                if os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+                else:
+                    os.remove(item_path)
+        
+        # Initialize SageMaker metrics logger if enabled
+        metrics_logger = None
+        if SAGEMAKER_METRICS_ENABLED:
+            try:
+                instance_type = os.getenv('TRAINIUM_INSTANCE_TYPE', 'trn1.2xlarge')
+                metrics_logger = create_metrics_logger(
+                    paper_id=paper_id,
+                    paper_title=paper_title,
+                    instance_type=instance_type
+                )
+                logger.info(f"Initialized SageMaker metrics logger for {paper_id}")
+            except Exception as e:
+                logger.warning(f"Failed to initialize SageMaker metrics logger: {e}")
+        
+        logger.info(f"Executing code for paper {paper_id} in isolated directory {exec_dir} (timeout: {timeout}s)")
         
         resources_before = measure_resources_before()
         start_time = time.time()
 
+        # Set up environment with Neuron runtime in PATH
+        user_home = os.path.expanduser('~')
+        neuron_bin_paths = [
+            '/opt/aws_neuronx_venv_pytorch_2_8_nxd_training/bin',
+            '/opt/aws_neuronx_venv_pytorch_2_8/bin',
+            '/opt/aws_neuronx_venv_pytorch_2_8_nxd_inference/bin',
+            f'{user_home}/.local/bin',
+            '/opt/aws/neuron/bin',
+            '/usr/local/bin',
+            '/usr/bin',
+            '/bin'
+        ]
+        current_path = os.environ.get('PATH', '')
+        neuron_path = ':'.join(neuron_bin_paths + [current_path])
+        current_pythonpath = os.environ.get('PYTHONPATH', '')
+        pythonpath = current_pythonpath if current_pythonpath else ''
+        neuron_python = '/opt/aws_neuronx_venv_pytorch_2_8_nxd_training/bin/python3'
+        import_code = f"""
+import sys
+# Remove exec_dir from sys.path if it's there (shouldn't be, but just in case)
+if '{exec_dir}' in sys.path:
+    sys.path.remove('{exec_dir}')
+# Add exec_dir to the END of sys.path for dataset_loader imports
+# This ensures venv site-packages (where torch is) are searched first
+sys.path.append('{exec_dir}')
+
+# Now execute the actual code
+{code}
+"""
+        
         result = subprocess.run(
-            ['python3', 'main.py'],
-            cwd=job_dir,
+            [neuron_python, '-c', import_code],  # Use Neuron venv Python explicitly
+            cwd='/tmp',  # Run from /tmp
             capture_output=True,
             text=True,
             timeout=timeout,
             env={
                 **os.environ,
+                'PATH': neuron_path,
+                'PYTHONPATH': pythonpath,  # Keep minimal - venv Python already has correct paths
                 'NEURON_RT_LOG_LEVEL': 'ERROR',  
                 'PYTHONUNBUFFERED': '1',
-                'DATASET_CACHE_DIR': DATASET_CACHE_DIR
+                'DATASET_CACHE_DIR': DATASET_CACHE_DIR,
+                'PYTHONDONTWRITEBYTECODE': '1'
             }
         )
         
@@ -185,13 +241,22 @@ def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME, pa
             "stderr": result.stderr,
             "timeout": False,
             "peak_memory_mb": resources_after.get("peak_memory_mb"),
-            **metrics
+            "detailed_metrics": metrics,  # Store metrics in detailed_metrics for test script
+            **metrics  # Also spread for backward compatibility
         }
         
         if success:
             logger.info(f"Paper {paper_id} executed successfully in {execution_time:.1f}s")
         else:
             logger.warning(f"Paper {paper_id} failed with return code {result.returncode}")
+            # Log detailed error information
+            if result.stderr:
+                logger.error(f"STDERR for {paper_id}:\n{result.stderr}")
+            if result.stdout:
+                # Log last 50 lines of stdout for context
+                stdout_lines = result.stdout.split('\n')
+                last_lines = '\n'.join(stdout_lines[-50:])
+                logger.error(f"Last 50 lines of STDOUT for {paper_id}:\n{last_lines}")
         
         return execution_result
         
@@ -224,19 +289,20 @@ def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME, pa
         }
     
     finally:
-        # Cleanup
+        # Cleanup: Remove the entire temporary execution directory
         try:
-            if os.path.exists(code_file):
-                os.remove(code_file)
+            if os.path.exists(exec_dir):
+                shutil.rmtree(exec_dir)
+                logger.debug(f"Cleaned up execution directory: {exec_dir}")
         except Exception as e:
-            logger.warning(f"Failed to cleanup {code_file}: {e}")
+            logger.warning(f"Failed to cleanup execution directory {exec_dir}: {e}")
 
 def extract_metrics_from_output(stdout: str) -> Dict[str, Any]:
     """
     Extract metrics from code output.
     
     Looks for JSON lines starting with "METRICS:" in stdout.
-    Example: print(f"METRICS: {json.dumps({'training_loss': 0.023, 'accuracy': 0.95})}")
+    Also parses common printed patterns like "Epoch X/Y, Average Loss: X.XXXX" and "Test Accuracy: XX.XX%"
     
     Args:
         stdout: Standard output from code execution
@@ -245,13 +311,52 @@ def extract_metrics_from_output(stdout: str) -> Dict[str, Any]:
         Dictionary of extracted metrics
     """
     metrics = {}
+    import re
     
     try:
+        # First, try to find METRICS: lines (preferred format)
         for line in stdout.split('\n'):
             if line.startswith('METRICS:'):
                 json_str = line.replace('METRICS:', '').strip()
                 parsed_metrics = json.loads(json_str)
                 metrics.update(parsed_metrics)
+        
+        # If no METRICS: lines found, parse common printed patterns
+        if not metrics:
+            # Extract epoch losses: "Epoch X/Y, Average Loss: X.XXXX"
+            epoch_losses = []
+            for line in stdout.split('\n'):
+                match = re.search(r'Epoch\s+\d+/\d+.*?Loss:\s*([\d.]+)', line, re.IGNORECASE)
+                if match:
+                    epoch_losses.append(float(match.group(1)))
+            
+            if epoch_losses:
+                metrics['training_loss'] = epoch_losses[-1]  # Last epoch loss
+                metrics['final_epoch_loss'] = epoch_losses[-1]
+                metrics['initial_epoch_loss'] = epoch_losses[0] if epoch_losses else None
+                metrics['num_epochs'] = len(epoch_losses)
+            
+            # Extract test accuracy: "Test Accuracy: XX.XX%"
+            for line in stdout.split('\n'):
+                match = re.search(r'Test\s+Accuracy:\s*([\d.]+)%', line, re.IGNORECASE)
+                if match:
+                    metrics['test_accuracy'] = float(match.group(1))
+                    break
+            
+            # Extract training accuracy if present
+            for line in stdout.split('\n'):
+                match = re.search(r'Training\s+Accuracy:\s*([\d.]+)%', line, re.IGNORECASE)
+                if match:
+                    metrics['training_accuracy'] = float(match.group(1))
+                    break
+            
+            # Extract validation accuracy if present
+            for line in stdout.split('\n'):
+                match = re.search(r'Validation\s+Accuracy:\s*([\d.]+)%', line, re.IGNORECASE)
+                if match:
+                    metrics['validation_accuracy'] = float(match.group(1))
+                    break
+            
     except Exception as e:
         logger.warning(f"Failed to extract metrics from output: {e}")
     
@@ -343,17 +448,35 @@ def execute_batch():
         for item in batch:
             paper_id = item['paper_id']
             paper_title = item.get('paper_title', 'Unknown')
-            code = item['code']
+            code = item.get('code', '')
             
             logger.info(f"Executing: {paper_title} ({paper_id})")
- 
-            code_analysis = analyze_code(code)
-   
-            exec_result = execute_code(paper_id, code, timeout, paper_title=paper_title)
-
-            exec_result.update(code_analysis)
             
-            results[paper_id] = exec_result
+            # Wrap each paper execution in try-except to prevent one failure from breaking the batch
+            try:
+                if not code:
+                    raise ValueError("Code is empty or missing")
+                
+                code_analysis = analyze_code(code)
+                exec_result = execute_code(paper_id, code, timeout, paper_title=paper_title)
+                exec_result.update(code_analysis)
+                
+                results[paper_id] = exec_result
+                
+            except Exception as e:
+                logger.error(f"Error executing paper {paper_id}: {e}")
+                logger.error(traceback.format_exc())
+                # Return error result for this paper, but continue with others
+                results[paper_id] = {
+                    "success": False,
+                    "execution_time": 0,
+                    "return_code": -1,
+                    "stdout": "",
+                    "stderr": str(e),
+                    "error_message": f"Execution error: {str(e)}",
+                    "error_type": "execution_error",
+                    "timeout": False
+                }
 
         successful = sum(1 for r in results.values() if r['success'])
         failed = len(results) - successful

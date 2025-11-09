@@ -8,3 +8,11 @@ boto3>=1.28.0
 # neuronx-cc
 # torch==2.1.0
 
+# HuggingFace libraries for NLP datasets
+datasets>=2.14.0
+transformers>=4.30.0
+
+# Core ML libraries (should come with torch-neuronx, but listing for clarity)
+# numpy (usually comes with torch)
+# torch (comes with torch-neuronx)
+# torch_xla (comes with torch-neuronx)

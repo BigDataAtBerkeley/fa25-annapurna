@@ -150,9 +150,9 @@ INFERRED DOMAIN: {domain}
             base_prompt += "\n"
 
         # Get primary dataset name for use in prompt
-        primary_dataset = "synthetic"
+        primary_dataset = "mnist"  # Default fallback
         if dataset_recommendations:
-            primary_dataset = dataset_recommendations.get("primary_dataset", "synthetic")
+            primary_dataset = dataset_recommendations.get("primary_dataset", "mnist")
 
         base_prompt += f"""
 Please generate a complete PyTorch implementation that includes:
@@ -170,22 +170,33 @@ Please generate a complete PyTorch implementation that includes:
    train_loader, test_loader = load_dataset('{primary_dataset}', batch_size=128)
    ```
    
-   Available datasets:
-   - 'cifar10': 60K 32x32 color images, 10 classes (for CNNs, image classification)
-   - 'cifar100': 60K 32x32 color images, 100 classes (harder classification)
-   - 'mnist': 70K 28x28 grayscale digits (simple baselines)
-   - 'fashion_mnist': 70K 28x28 grayscale fashion items
-   - 'imdb': 50K movie reviews (sentiment analysis, NLP)
-   - 'wikitext2': Language modeling dataset (transformers, LLMs)
-   - 'synthetic': Generated data for quick testing
+   Available datasets (ONLY THESE WORK ON TRAINIUM):
+   - 'cifar10': 60K 32x32 color images, 10 classes (for CNNs, image classification) - ✅ AVAILABLE
+   - 'cifar100': 60K 32x32 color images, 100 classes (harder classification) - ✅ AVAILABLE
+   - 'mnist': 70K 28x28 grayscale digits (simple baselines) - ✅ AVAILABLE
+   - 'fashion_mnist': 70K 28x28 grayscale fashion items - ✅ AVAILABLE
+   - 'imdb': 50K movie reviews for sentiment classification (NLP, text classification) - ✅ AVAILABLE
+   - 'wikitext2': 36K Wikipedia articles for language modeling (NLP, language modeling) - ✅ AVAILABLE
+   - 'synthetic': 16K synthetic samples for quick testing (various types) - ✅ AVAILABLE
+   
+   IMPORTANT: For NLP tasks, use proper NLP datasets (imdb, wikitext2) instead of vision datasets.
    
    **USE THE RECOMMENDED PRIMARY DATASET unless there's a strong reason to use an alternative.**
    
    DO NOT use torchvision.datasets or generate your own data. Use ONLY the dataset_loader.
+   (Note: torchvision is available but we use dataset_loader for consistency and S3 caching)
 
 2. **Data Preprocessing**: 
-   - Create any additional preprocessing needed beyond what dataset_loader provides
-   - Include data augmentation if mentioned in the paper
+   - For VISION datasets: The dataset_loader already provides standard transforms (ToTensor, Normalize)
+   - For NLP datasets (imdb, wikitext2): The dataset_loader returns text data that you can tokenize
+   - Example for NLP:
+     ```python
+     from transformers import AutoTokenizer
+     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')  # or appropriate model
+     # In training loop, tokenize the text:
+     encoded = tokenizer(text_batch, padding=True, truncation=True, return_tensors='pt')
+     ```
+   - If you need custom data augmentation for vision, create transforms using torch operations
 
 3. **Model Architecture**: Implement the main model/algorithm described in the paper
 
@@ -193,7 +204,11 @@ Please generate a complete PyTorch implementation that includes:
 
 5. **Evaluation**: Add evaluation metrics and testing functionality
 
-6. **Visualization**: Include plotting and visualization code where appropriate
+6. **Visualization**: Print metrics and results to stdout (DO NOT use matplotlib - it's not available)
+   - Use print() statements to display training progress, loss values, accuracy metrics
+   - Format output clearly using f-strings with your actual variable names
+   - DO NOT use plt.plot(), plt.show(), or any matplotlib functions
+   - IMPORTANT: Use your actual variable names in print statements (e.g., if your loop variable is `epoch`, use `epoch` directly)
 
 7. **Documentation**: Add comprehensive comments explaining each component
 
@@ -204,17 +219,177 @@ CRITICAL REQUIREMENTS FOR DATASETS:
 - **DO NOT create download_dataset() or prepare_dataset() functions**
 - The dataset_loader handles all downloading and caching automatically
 - Example: `train_loader, test_loader = load_dataset('{primary_dataset}', batch_size=128)`
-- Print which dataset you're using: `print(f"Using recommended dataset: {primary_dataset}")`
+- Print which dataset you're using (optional): You can add a print statement to show which dataset is being used
+
+CRITICAL - AWS TRAINIUM (NEURON SDK) REQUIREMENTS:
+The code will run on AWS Trainium (trn1.2xlarge) which uses AWS Neuron SDK. You MUST ensure compatibility:
+
+✅ REQUIRED FOR TRAINIUM (NEURON SDK):
+- MUST use PyTorch/XLA (torch_xla) for training to utilize Trainium hardware acceleration
+- Import: `import torch_xla.core.xla_model as xm` (comes from torch-neuronx package)
+- Get device: `device = xm.xla_device()` (this gets the Trainium device)
+- CRITICAL: Move ALL tensors to XLA device BEFORE any operations:
+  * Models: `model = model.to(device)`
+  * Input tensors: `inputs = inputs.to(device)`
+  * Label tensors: `labels = labels.to(device)`
+  * Any intermediate tensors created must also be on XLA device
+  * Example: `tensor = torch.tensor([1, 2, 3]).to(device)` - always add `.to(device)` when creating new tensors
+- CRITICAL: DO NOT move loss functions to device - they are stateless and moving them can cause crashes:
+  * Correct: `criterion = torch.nn.CrossEntropyLoss()` (no .to(device))
+  * Wrong: `criterion = torch.nn.CrossEntropyLoss().to(device)` (will cause segfault)
+- Use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` in training loops
+- Use `xm.mark_step()` after each training step to synchronize with Trainium hardware
+- DO NOT use CUDA-specific operations (no `.cuda()`, no `torch.cuda.is_available()`, no `device='cuda'`)
+- DO NOT use `torch.device('cuda')` - Trainium does not support CUDA, only XLA devices
+- ERROR TO AVOID: "Input tensor is not an XLA tensor" - this means you forgot to move a tensor to the XLA device
+
+NEURON SDK BEST PRACTICES (from AWS Neuron documentation):
+- Memory: Trainium has limited memory - use smaller batch sizes (128 or less) and limit model size
+- Operations: Most PyTorch operations are supported, but some may have limitations
+- Debugging: Use `xm.mark_step()` frequently to catch errors early (after each backward pass)
+- Performance: Keep tensors on XLA device throughout training loop - avoid CPU transfers
+- Compatibility: PyTorch 2.1.0+ with torch-neuronx 2.8+ is required
+- Reference: AWS Neuron SDK docs - https://awsdocs-neuron.readthedocs-hosted.com/
+
+✅ ALLOWED PACKAGES:
+- torch (PyTorch 2.1.0) - REQUIRED
+- torch_xla (PyTorch/XLA for Trainium) - REQUIRED for training
+- torch.nn, torch.optim, torch.utils.data - All PyTorch core modules
+- transformers (HuggingFace) - Available for tokenization (use AutoTokenizer)
+- datasets (HuggingFace) - Available for loading NLP datasets (used internally by dataset_loader)
+- numpy - Available
+- Standard library modules: json, os, sys, time, logging, math, random, collections, etc. - ALL standard library modules are available
+- dataset_loader - Custom module (ALWAYS use this for datasets - it handles all dataset loading)
+
+CRITICAL - IMPORTS REQUIREMENT (MOST COMMON ERROR):
+- ALWAYS include ALL necessary imports at the top of your code - BEFORE any class or function definitions
+- If you use ANY standard library module (math, random, collections, itertools, etc.), you MUST import it
+- If you use torch operations, import torch and torch.nn
+- If you use torch_xla, import torch_xla.core.xla_model as xm
+- If you use transformers, import from transformers
+- COMMON MISTAKE: PositionalEncoding classes often use math.log() - you MUST include `import math` at the top
+- Example: If your code uses math.log(), math.exp(), or math.sqrt(), you MUST include `import math` at the very top
+- Example: If your code uses random operations, you MUST include `import random` at the very top
+- Example of CORRECT imports section:
+  ```python
+  import math  # Required if using math.log(), math.exp(), etc.
+  import torch
+  import torch.nn as nn
+  import torch_xla.core.xla_model as xm
+  from dataset_loader import load_dataset
+  ```
+- DO NOT forget to import standard library modules - this is the #1 cause of NameError failures
+- CHECK YOUR CODE: Before finishing, verify every function/class you use has its import statement
+
+❌ FORBIDDEN PACKAGES (NOT AVAILABLE):
+- torchvision.datasets - Use dataset_loader instead (torchvision is available but we use dataset_loader for S3 caching)
+- torchtext - NOT AVAILABLE, DO NOT USE
+- matplotlib - NOT AVAILABLE, DO NOT USE
+- PIL/Pillow - NOT AVAILABLE
+- pandas - NOT AVAILABLE
+- scipy - NOT AVAILABLE
+- sklearn - NOT AVAILABLE
+- Any other third-party packages not listed above
+
+IMPORTANT - DATASET LOADING:
+- ALWAYS use `from dataset_loader import load_dataset` - DO NOT import datasets directly
+- The dataset_loader handles all dataset loading (vision from .pt files, NLP from HuggingFace Arrow format)
+- For NLP datasets (wikitext2, imdb):
+  * WikiText-2: Returns tokenized (input_ids, labels) pairs for language modeling - vocab_size is 10000 (limited)
+  * IMDB: Returns (text, label) pairs for classification - you may need to tokenize text yourself
+- DO NOT use transformers.AutoTokenizer for WikiText-2 - the dataset_loader handles tokenization internally
+- For WikiText-2 language modeling: Use vocab_size = 10000 (the dataset_loader limits vocabulary to 10k words)
+- DO NOT import `datasets` from HuggingFace directly - the dataset_loader uses it internally
+
+IMPORTANT - PYTORCH TRANSFORMER API (CRITICAL FOR NEURON):
+- When using nn.TransformerDecoder or nn.TransformerEncoder:
+  * DO NOT pass `mask=` as a keyword argument - this will cause TypeError: "TransformerDecoder.forward() got an unexpected keyword argument 'mask'"
+  * For TransformerDecoder: Use `tgt_mask` for causal masking (to prevent looking at future tokens)
+  * For TransformerDecoder: Pass memory as first positional argument if using encoder-decoder, or pass tgt twice for decoder-only
+  * For decoder-only models (like GPT): Create causal mask using torch.triu() and pass as `tgt_mask` parameter
+  * Example for decoder-only: `output = decoder(tgt, tgt, tgt_mask=causal_mask)` where causal_mask is created with `torch.triu(torch.ones(seq_len, seq_len)) == 0`
+  * Or simply: `output = decoder(tgt, tgt)` for default behavior (no mask)
+  * CORRECT: `output = decoder(tgt, tgt, tgt_mask=causal_mask)` or `output = decoder(tgt, tgt)`
+  * WRONG: `output = decoder(tgt, mask=mask)` - will cause TypeError
+- When using nn.TransformerEncoderLayer or nn.TransformerDecoderLayer:
+  * These accept `src_mask` or `tgt_mask` parameters correctly
+  * Use `batch_first=True` for batch-first tensors (recommended)
+- Reference: PyTorch Transformer API - https://pytorch.org/docs/stable/nn.html#transformer-layers
+
+IMPORTANT - TENSOR OPERATIONS (CRITICAL FOR XLA/NEURON):
+- CRITICAL: `torch.dot(a, b)` ONLY works with 1D tensors - will fail with "Expected 1-D argument" if given batched tensors
+- For batched tensors (batch, seq_len, d_model), use element-wise operations or compute along specific dimensions:
+  * WRONG: `torch.dot(a, b)` where a and b are 3D tensors
+  * CORRECT: For batched dot products, use `torch.sum(a * b, dim=-1)` or `torch.bmm()` for matrix multiplication
+  * CORRECT: For cosine similarity on batched tensors: `torch.sum(a * b, dim=-1) / (torch.norm(a, dim=-1) * torch.norm(b, dim=-1))`
+- CRITICAL: XLA tensors (used by Trainium) have LIMITED support for in-place operations
+  * WRONG: `tensor[mask] = value` - in-place indexing assignment may fail on XLA tensors
+  * CORRECT: Use `torch.where()` or `torch.clamp()` for conditional assignments: `torch.where(condition, value_if_true, tensor)`
+  * CORRECT: For avoiding division by zero: `norms = torch.clamp(norms, min=1e-8)` instead of `norms[norms == 0] = 1`
+  * Example: `norms = torch.clamp(torch.norm(vectors, p=2, dim=-1, keepdim=True), min=1e-8)` instead of in-place assignment
+- When working with batched sequences, always consider tensor dimensions:
+  * Input tensors from DataLoader are typically (batch_size, seq_len, features) or (batch_size, features)
+  * Operations must handle these dimensions correctly
+- For spherical linear interpolation (SLERP) with batched tensors, compute element-wise or use vectorized operations, not torch.dot()
+
+IMPORTANT:
+- MUST use torch_xla for training to utilize Trainium hardware
+- DO NOT import torchtext or use torchtext.datasets
+- DO NOT import matplotlib or use plt.plot/plt.show
+- DO NOT import `datasets` from HuggingFace directly - use dataset_loader instead
+- DO NOT use torchvision.datasets - use dataset_loader instead (for S3 caching and consistency)
+- DO NOT use CUDA operations - Trainium does not support CUDA
+- For visualization: Use print statements or save metrics to files (no plotting)
+- For data transforms: The dataset_loader already provides transforms. If you need custom transforms, create them using torch operations (e.g., torch.nn.functional.normalize, torch.nn.functional.pad, etc.)
+- For text processing: Use torch and standard Python string operations
+- For NLP: Use torch.nn.Embedding and torch-based tokenization, NOT torchtext
+
+TRAINING LOOP PATTERN FOR TRAINIUM:
+```python
+import torch_xla.core.xla_model as xm
+
+device = xm.xla_device()
+model = model.to(device)
+# DO NOT move loss functions to device - they are stateless and don't need device placement
+# Example: criterion = torch.nn.CrossEntropyLoss()  # No .to(device) needed
+
+# Use 5-10 epochs for testing, not 100+ (faster execution, sufficient for testing)
+num_epochs = 5  # Use small number for testing
+
+for epoch in range(num_epochs):
+    epoch_loss = 0.0
+    num_batches = 0
+    
+    for inputs, labels in train_loader:
+        # CRITICAL: Move ALL tensors to device BEFORE any operations
+        inputs = inputs.to(device)
+        labels = labels.to(device)
+        
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        xm.optimizer_step(optimizer)  # Use xm.optimizer_step instead of optimizer.step()
+        xm.mark_step()  # Synchronize after each step
+        
+        epoch_loss += loss.item()
+        num_batches += 1
+    
+    # Print metrics INSIDE the epoch loop (epoch variable is in scope here)
+    avg_loss = epoch_loss / num_batches if num_batches > 0 else 0.0
+    # Print training progress - use your actual variable names
+    # Example: print(f"Epoch completed, average loss: {{avg_loss:.4f}}")
+```
 
 Requirements:
-- Use modern PyTorch practices (PyTorch 2.0+ features when applicable)
+- Use modern PyTorch practices (PyTorch 2.1.0 features)
 - Include proper error handling and logging
 - Make the code modular and reusable
 - Add type hints where appropriate
-- Include example usage and configuration
 - Handle edge cases and provide fallbacks
-- Use appropriate libraries (torch, torchvision, numpy, matplotlib, datasets, etc.)
 - THE CODE MUST BE IMMEDIATELY RUNNABLE - no manual dataset setup required
+- Use ONLY the packages listed in the ALLOWED list above
+- CRITICAL: Ensure ALL tensors are moved to XLA device before any operations to avoid "Input tensor is not an XLA tensor" errors
 
 Please structure your response as follows:
 

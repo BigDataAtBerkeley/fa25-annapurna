@@ -37,21 +37,24 @@ def list_tested_papers():
             has_stdout = False
             has_stderr = False
             has_plots = False
+            has_metrics = False
             num_plots = 0
             
             if 'Contents' in objects:
                 for obj in objects['Contents']:
                     key = obj['Key']
-                    if 'stdout.txt' in key:
+                    if 'stdout.log' in key:
                         has_stdout = True
-                    if 'stderr.txt' in key:
+                    if 'stderr.log' in key:
                         has_stderr = True
+                    if 'metrics.json' in key:
+                        has_metrics = True
                     if 'plots/' in key and key.endswith(('.png', '.jpg', '.pdf')):
                         has_plots = True
                         num_plots += 1
             
             print(f"{idx}. Paper ID: {paper_id}")
-            print(f"   Outputs: stdout={has_stdout}, stderr={has_stderr}, plots={num_plots}")
+            print(f"   Outputs: stdout={has_stdout}, stderr={has_stderr}, metrics={has_metrics}, plots={num_plots}")
             print()
             
         except Exception as e:
@@ -107,8 +110,9 @@ def download_test_results(paper_id: str):
         print(f"\n✅ Downloaded {len(downloaded)} files to {output_path}/")
         
         # Display summary if stdout exists
-        stdout_path = output_path / "stdout.txt"
-        stderr_path = output_path / "stderr.txt"
+        stdout_path = output_path / "stdout.log"
+        stderr_path = output_path / "stderr.log"
+        metrics_path = output_path / "metrics.json"
         
         if stdout_path.exists():
             print(f"\n{'='*60}")
@@ -127,6 +131,23 @@ def download_test_results(paper_id: str):
                 lines = f.readlines()
                 for line in lines[-20:]:
                     print(line.rstrip())
+        
+        if metrics_path.exists():
+            print(f"\n{'='*60}")
+            print("📊 Metrics Summary:")
+            print(f"{'='*60}")
+            try:
+                with open(metrics_path, 'r') as f:
+                    metrics = json.load(f)
+                    for key, value in metrics.items():
+                        if isinstance(value, (int, float)):
+                            print(f"  {key}: {value}")
+                        elif isinstance(value, bool):
+                            print(f"  {key}: {value}")
+                        elif isinstance(value, str) and len(value) < 100:
+                            print(f"  {key}: {value}")
+            except Exception as e:
+                print(f"  Error reading metrics: {e}")
         
         return True
         
@@ -166,10 +187,12 @@ def show_summary():
         
         for prefix in response['CommonPrefixes']:
             paper_id = prefix['Prefix'].rstrip('/')
-            stdout_key = f"{paper_id}/outputs/stdout.txt"
+            stdout_key = f"{paper_id}/outputs/stdout.log"
             
             try:
                 s3.head_object(Bucket=BUCKET, Key=stdout_key)
+                # Check if execution was successful by looking for success flag in metrics or return code
+                # For now, just check if stdout exists (execution happened)
                 successful += 1
             except:
                 failed += 1
