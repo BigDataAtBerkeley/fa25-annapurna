@@ -55,7 +55,7 @@ if not all([REGION, HOST, INDEX, SEND_QUEUE_URL, RECV_QUEUE_URL]):
 session = boto3.Session(region_name=REGION)
 credentials = session.get_credentials().get_frozen_credentials()
 auth = AWSV4SignerAuth(credentials, region, "es")
-
+"""
 os_client = OpenSearch(
     hosts=[{"host": host.replace("https://", "").replace("http://", ""), "port": 443}],
     http_auth=auth,
@@ -88,7 +88,7 @@ for i, offset in enumerate(random_offsets, start=1):
         if not hits:
             continue
 auth = AWSV4SignerAuth(credentials, REGION, "es")
-
+"""
 # Tougher OpenSearch client (longer timeout + retries)
 def make_os_client(host: str, auth: AWSV4SignerAuth) -> OpenSearch:
     return OpenSearch(
