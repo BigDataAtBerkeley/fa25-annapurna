@@ -1,0 +1,115 @@
+_id,title,cluster,cluster_title
+5-j63JkBP8oloYi_6iI5,A Bring-Your-Own-Model Approach for ML-Driven Storage Placement in Warehouse-Scale Computers,11,Student Lms • Data • Miniplm
+6uj63JkBP8oloYi_7yKD,Efficient LLM Inference using Dynamic Input Pruning and Cache-Aware Masking,0,Token • Image • Reasoning
+4ujn3JkBP8oloYi_ySIt,Universal Image Restoration Pre-training via Degradation Classification,0,Token • Image • Reasoning
+7Oj63JkBP8oloYi_8yJ4,Youmu: Efficient Columnar Data Pipeline for LLM Training,11,Student Lms • Data • Miniplm
+5ujn3JkBP8oloYi_2CLD,Framer: Interactive Frame Interpolation,14,Human Values • Forward-Only Algorithms • Motion Generation
+5Ojn3JkBP8oloYi_1yJI,Port-Hamiltonian Architectural Bias for Long-Range Propagation in Deep Graph Networks,4,Structural Encoding • Graph Domain • Node Attribute
+4-jn3JkBP8oloYi_1SKS,On the Benefits of Attribute-Driven Graph Domain Adaptation,4,Structural Encoding • Graph Domain • Node Attribute
+6ej63JkBP8oloYi_7SI_,LeanAttention: Hardware-Aware Scalable Attention Mechanism for the Decode-Phase of Transformers,5,Speech Video • Linear Attention • Numerical Algorithms
+6-j63JkBP8oloYi_8CJH,TurboAttention: Efficient attention approximation for high throughputs llm,5,Speech Video • Linear Attention • Numerical Algorithms
+5ejn3JkBP8oloYi_2CIm,SORRY-Bench: Systematically Evaluating Large Language Model Safety Refusal,2,Vl Adaptation • Large Language • Safety
+6Oj63JkBP8oloYi_7CKj,Scaling Deep Learning Training with MPMD Pipeline Parallelism,16,Learning Rate • Rna • Explanations
+7ej63JkBP8oloYi_9iKE,Self-Data Distillation for Recovering Quality in Pruned Large Language Models,0,Token • Image • Reasoning
+8Oj73JkBP8oloYi_AiJV,AdaParse: An Adaptive Parallel PDF Parsing and Resource Scaling Engine,11,Student Lms • Data • Miniplm
+7-j63JkBP8oloYi__SJW,FLStore: Efficient Federated Learning Storage for non-training workloads,1,Federated Learning • Non-Training Workloads • Aggregator Server
+EeiaD5oBclM7MZc3c4-d,"Aligned Better, Listen Better for Audio-Visual Large Language Models",6,Sparse Vectors • Speculative Decoding • X
+7uj63JkBP8oloYi_-CJp,Efficient On-Device Machine Learning with a Biologically-Plausible Forward-Only Algorithm,14,Human Values • Forward-Only Algorithms • Motion Generation
+EOiaD5oBclM7MZc3bo84,CTSyn: A Foundation Model for Cross Tabular Data Generation,12,Tabular Data • Single-Layer Transformers • Markov Chains
+MeikD5oBclM7MZc3Zo_A,"Bridging the Data Provenance Gap Across Text, Speech, and Video",5,Speech Video • Linear Attention • Numerical Algorithms
+LeikD5oBclM7MZc3Uo8Y,Large Language Models Meet Symbolic Provers for Logical Reasoning Evaluation,2,Vl Adaptation • Large Language • Safety
+NeikD5oBclM7MZc3e49F,AgentTrek: Agent Trajectory Synthesis via Guiding Replay with Web Tutorials,14,Human Values • Forward-Only Algorithms • Motion Generation
+MOikD5oBclM7MZc3Yo88,CodeMMLU: A Multi-Task Benchmark for Assessing Code Understanding & Reasoning Capabilities of CodeLLMs,2,Vl Adaptation • Large Language • Safety
+L-ikD5oBclM7MZc3XY-7,DiTTo-TTS: Diffusion Transformers for Scalable Text-to-Speech without Domain-Specific Factors,3,Diffusion Models • Generative Classifiers • Continuous Control
+LuikD5oBclM7MZc3Vo9h,Learning mirror maps in policy mirror descent,9,Policy Gradient • Mathcal O • Mirror Maps
+M-ikD5oBclM7MZc3cY-R,Improved Diffusion-based Generative Model with Better Adversarial Robustness,3,Diffusion Models • Generative Classifiers • Continuous Control
+NOikD5oBclM7MZc3do-f,Generative Classifiers Avoid Shortcut Solutions,3,Diffusion Models • Generative Classifiers • Continuous Control
+MuikD5oBclM7MZc3bI8S,Decoupled Subgraph Federated Learning,1,Federated Learning • Non-Training Workloads • Aggregator Server
+RuikD5oBclM7MZc3z4_z,Understanding Warmup-Stable-Decay Learning Rates: A River Valley Loss Landscape View,16,Learning Rate • Rna • Explanations
+Q-ikD5oBclM7MZc3wo-_,Achieving Dimension-Free Communication in Federated Learning via Zeroth-Order Optimization,1,Federated Learning • Non-Training Workloads • Aggregator Server
+QOikD5oBclM7MZc3sY-1,Nonconvex Stochastic Optimization under Heavy-Tailed Noises: Optimal Convergence without Gradient Clipping,9,Policy Gradient • Mathcal O • Mirror Maps
+ReikD5oBclM7MZc3y49p,Towards Learning High-Precision Least Squares Algorithms with Sequence Models,5,Speech Video • Linear Attention • Numerical Algorithms
+QeikD5oBclM7MZc3to-e,Large (Vision) Language Models are Unsupervised In-Context Learners,0,Token • Image • Reasoning
+ROikD5oBclM7MZc3xo-n,Chain-of-Thought Provably Enables Learning the (Otherwise) Unlearnable,16,Learning Rate • Rna • Explanations
+QuikD5oBclM7MZc3vo9L,"ThunderKittens: Simple, Fast, and $\textit{Adorable}$ Kernels",5,Speech Video • Linear Attention • Numerical Algorithms
+P-ikD5oBclM7MZc3rY9_,Do LLMs estimate uncertainty well in instruction-following?,2,Vl Adaptation • Large Language • Safety
+R-ikD5oBclM7MZc31I9k,nGPT: Normalized Transformer with Representation Learning on the Hypersphere,16,Learning Rate • Rna • Explanations
+T-ikD5oBclM7MZc3_o9s,SurFhead: Affine Rig Blending for Geometrically Accurate 2D Gaussian Surfel Head Avatars,13,Infty Geometry • Past Gradients • Gaussian Primitives
+SuikD5oBclM7MZc35I-p,Reasoning with Latent Thoughts: On the Power of Looped Transformers,0,Token • Image • Reasoning
+TuikD5oBclM7MZc3-Y-8,InstantPortrait: One-Step Portrait Editing via Diffusion Multi-Objective Distillation,0,Token • Image • Reasoning
+UOilD5oBclM7MZc3BI92,MAP: Multi-Human-Value Alignment Palette,14,Human Values • Forward-Only Algorithms • Motion Generation
+S-ikD5oBclM7MZc36Y9Y,PhysPDE: Rethinking PDE Discovery and a Physical HYpothesis Selection Benchmark,16,Learning Rate • Rna • Explanations
+SeikD5oBclM7MZc33o9B,Homomorphism Counts as Structural Encodings for Graph Learning,4,Structural Encoding • Graph Domain • Node Attribute
+TOikD5oBclM7MZc37Y8v,Adam Exploits $\ell_\infty$-geometry of Loss Landscape via Coordinate-wise Adaptivity,13,Infty Geometry • Past Gradients • Gaussian Primitives
+TeikD5oBclM7MZc38Y_K,SINGER: Stochastic Network Graph Evolving Operator for High Dimensional PDEs,4,Structural Encoding • Graph Domain • Node Attribute
+SOikD5oBclM7MZc32I_1,A Coefficient Makes SVRG Effective,6,Sparse Vectors • Speculative Decoding • X
+XeilD5oBclM7MZc3Qo8o,MAVIS: Mathematical Visual Instruction Tuning with an Automatic Data Engine,0,Token • Image • Reasoning
+XOilD5oBclM7MZc3PY8B,Number Cookbook: Number Understanding of Language Models and How to Improve It,0,Token • Image • Reasoning
+YeilD5oBclM7MZc3Vo8V,Attention with Markov: A Curious Case of Single-layer Transformers,12,Tabular Data • Single-Layer Transformers • Markov Chains
+XuilD5oBclM7MZc3R49B,TC-MoE: Augmenting Mixture of Experts with Ternary Expert Choice,15,Generative Diffusion • Mixture Experts • Expert Space
+YuilD5oBclM7MZc3Wo8P,"The AdEMAMix Optimizer: Better, Faster, Older",13,Infty Geometry • Past Gradients • Gaussian Primitives
+X-ilD5oBclM7MZc3S491,Provably Accurate Shapley Value Estimation via Leverage Score Sampling,16,Learning Rate • Rna • Explanations
+W-ilD5oBclM7MZc3N4-c,Three Mechanisms of Feature Learning in a Linear Network,16,Learning Rate • Rna • Explanations
+WuilD5oBclM7MZc3M49Q,Affine Steerable Equivariant Layer for Canonicalization of Neural Networks,6,Sparse Vectors • Speculative Decoding • X
+YOilD5oBclM7MZc3UY8A,Remove Symmetries to Control Model Expressivity and Improve Optimization,16,Learning Rate • Rna • Explanations
+F-ijD5oBclM7MZc3wo-T,The 3D-PC: a benchmark for visual perspective taking in humans and machines,14,Human Values • Forward-Only Algorithms • Motion Generation
+FeiaD5oBclM7MZc3jI-A,DelTA: An Online Document-Level Translation Agent Based on Multi-Level Memory,7,Consistency Distillation • Teacher Ode • Translation
+E-iaD5oBclM7MZc3f4-m,From an LLM Swarm to a PDDL-empowered Hive: Planning Self-executed Instructions in a Multi-modal Jungle,15,Generative Diffusion • Mixture Experts • Expert Space
+EuiaD5oBclM7MZc3eY9c,MiniPLM: Knowledge Distillation for Pre-training Language Models,11,Student Lms • Data • Miniplm
+GOijD5oBclM7MZc3yY-C,Contextual Self-paced Learning for Weakly Supervised Spatio-Temporal Video Grounding,16,Learning Rate • Rna • Explanations
+FuijD5oBclM7MZc3uo-H,Discrete Codebook World Models for Continuous Control,3,Diffusion Models • Generative Classifiers • Continuous Control
+GuijD5oBclM7MZc30o9Y,miniCTX: Neural Theorem Proving with (Long-)Contexts,10,Retrieval Heads • Texttt Minictx • Theorem Proving
+D-iaD5oBclM7MZc3aY_-,Beyond Next Token Prediction: Patch-Level Training for Large Language Models,0,Token • Image • Reasoning
+FOiaD5oBclM7MZc3hY9K,"Recite, Reconstruct, Recollect: Memorization in LMs as a Multifaceted Phenomenon",8,Memorization Detection • Memorized Images • Inversion-Based Inference
+GeijD5oBclM7MZc3zY_j,Faster Cascades via Speculative Decoding,6,Sparse Vectors • Speculative Decoding • X
+IOikD5oBclM7MZc3BY8Z,Toward Exploratory Inverse Constraint Inference with Generative Diffusion Verifiers,15,Generative Diffusion • Mixture Experts • Expert Space
+IeikD5oBclM7MZc3DI_z,Federated Domain Generalization with Data-free On-server Matching Gradient,1,Federated Learning • Non-Training Workloads • Aggregator Server
+IuikD5oBclM7MZc3EI_M,Context-Parametric Inversion: Why Instruction Finetuning May Not Actually Improve Context Reliance,10,Retrieval Heads • Texttt Minictx • Theorem Proving
+H-ijD5oBclM7MZc394_b,NeSyC: A Neuro-symbolic Continual Learner For Complex Embodied Tasks in Open Domains,1,Federated Learning • Non-Training Workloads • Aggregator Server
+G-ijD5oBclM7MZc32498,Directional Gradient Projection for Robust Fine-Tuning of Foundation Models,1,Federated Learning • Non-Training Workloads • Aggregator Server
+HeijD5oBclM7MZc35I_S,Scaling Diffusion Language Models via Adaptation from Autoregressive Models,3,Diffusion Models • Generative Classifiers • Continuous Control
+HOijD5oBclM7MZc33I-I,Towards a Unified and Verified Understanding of Group-Operation Networks,16,Learning Rate • Rna • Explanations
+I-ikD5oBclM7MZc3GY8j,Understanding Optimization in Deep Learning with Central Flows,16,Learning Rate • Rna • Explanations
+HuijD5oBclM7MZc38I8Q,Multi-domain Distribution Learning for De Novo Drug Design,3,Diffusion Models • Generative Classifiers • Continuous Control
+JOikD5oBclM7MZc3Ho8j,Inference Optimal VLMs Need Fewer Visual Tokens and More Parameters,0,Token • Image • Reasoning
+LOikD5oBclM7MZc3TY_f,AgentHarm: A Benchmark for Measuring Harmfulness of LLM Agents,2,Vl Adaptation • Large Language • Safety
+KOikD5oBclM7MZc3OY-C,MAD-TD: Model-Augmented Data stabilizes High Update Ratio RL,11,Student Lms • Data • Miniplm
+JeikD5oBclM7MZc3J48k,StochSync: Stochastic Diffusion Synchronization for Image Generation in Arbitrary Spaces,3,Diffusion Models • Generative Classifiers • Continuous Control
+KuikD5oBclM7MZc3RI90,Adaptive Data Optimization: Dynamic Sample Selection with Scaling Laws,11,Student Lms • Data • Miniplm
+K-ikD5oBclM7MZc3SY8w,Compute-Optimal LLMs Provably Generalize Better with Scale,6,Sparse Vectors • Speculative Decoding • X
+JuikD5oBclM7MZc3K4_0,Data Unlearning in Diffusion Models,3,Diffusion Models • Generative Classifiers • Continuous Control
+J-ikD5oBclM7MZc3NI9W,Consistency Models Made Easy,3,Diffusion Models • Generative Classifiers • Continuous Control
+KeikD5oBclM7MZc3P4_b,Fast Uncovering of Protein Sequence Diversity from Structure,8,Memorization Detection • Memorized Images • Inversion-Based Inference
+NuikD5oBclM7MZc3gI88,"Everything, Everywhere, All at Once: Is Mechanistic Interpretability Identifiable?",16,Learning Rate • Rna • Explanations
+OuikD5oBclM7MZc3lI8S,Beyond Worst-Case Dimensionality Reduction for Sparse Vectors,6,Sparse Vectors • Speculative Decoding • X
+PuikD5oBclM7MZc3qY8c,Retrieval Head Mechanistically Explains Long-Context Factuality,10,Retrieval Heads • Texttt Minictx • Theorem Proving
+N-ikD5oBclM7MZc3hI9B,Masked Diffusion Models are Secretly Time-Agnostic Masked Models and Exploit Inaccurate Categorical Sampling,3,Diffusion Models • Generative Classifiers • Continuous Control
+OeikD5oBclM7MZc3j48s,LiFT: Learning to Fine-Tune via Bayesian Parameter Efficient Meta Fine-Tuning,16,Learning Rate • Rna • Explanations
+POikD5oBclM7MZc3n4_C,Improving Data Efficiency via Curating LLM-Driven Rating Systems,11,Student Lms • Data • Miniplm
+O-ikD5oBclM7MZc3mY9W,Elucidating the Preconditioning in Consistency Distillation,7,Consistency Distillation • Teacher Ode • Translation
+OOikD5oBclM7MZc3io_4,Diffusion Bridge Implicit Models,3,Diffusion Models • Generative Classifiers • Continuous Control
+PeikD5oBclM7MZc3pI9D,Convergence of Score-Based Discrete Diffusion Models: A Discrete-Time Analysis,3,Diffusion Models • Generative Classifiers • Continuous Control
+VOilD5oBclM7MZc3FY8g,Revisiting Large-Scale Non-convex Distributionally Robust Optimization,9,Policy Gradient • Mathcal O • Mirror Maps
+UeilD5oBclM7MZc3CI-g,Near-Optimal Policy Identification in Robust Constrained Markov Decision Processes via Epigraph Form,9,Policy Gradient • Mathcal O • Mirror Maps
+WOilD5oBclM7MZc3KY_x,SEPARATE: A Simple Low-rank Projection for Gradient Compression in Modern Large-scale Model Training Process,9,Policy Gradient • Mathcal O • Mirror Maps
+U-ilD5oBclM7MZc3EI_c,Optimality and Adaptivity of Deep Neural Features for Instrumental Variable Regression,16,Learning Rate • Rna • Explanations
+VeilD5oBclM7MZc3Go_d,Mufu:  Multilingual Fused Learning for Low-Resource Translation with LLM,7,Consistency Distillation • Teacher Ode • Translation
+VuilD5oBclM7MZc3H4-M,ImageFolder: Autoregressive Image Generation with Folded Tokens,0,Token • Image • Reasoning
+WeilD5oBclM7MZc3Lo-p,Can a MISL Fly? Analysis and Ingredients for Mutual Information Skill Learning,16,Learning Rate • Rna • Explanations
+V-ilD5oBclM7MZc3JI-G,Aligning Human Motion Generation with Human Perceptions,14,Human Values • Forward-Only Algorithms • Motion Generation
+UuilD5oBclM7MZc3DI_f,Diffusion Transformers for Tabular Data Time Series Generation,12,Tabular Data • Single-Layer Transformers • Markov Chains
+Y-ilD5oBclM7MZc3Xo_o,LiveCodeBench: Holistic and Contamination Free Evaluation of Large Language Models for Code,2,Vl Adaptation • Large Language • Safety
+aOilD5oBclM7MZc3e4-A,ChatQA 2: Bridging the Gap to Proprietary LLMs in Long Context and RAG Capabilities,10,Retrieval Heads • Texttt Minictx • Theorem Proving
+aeilD5oBclM7MZc3go_f,Image-level Memorization Detection via Inversion-based Inference Perturbation,8,Memorization Detection • Memorized Images • Inversion-Based Inference
+auilD5oBclM7MZc3iI88,gRNAde: Geometric Deep Learning for 3D RNA inverse design,16,Learning Rate • Rna • Explanations
+Z-ilD5oBclM7MZc3do-8,SpinQuant: LLM Quantization with Learned Rotations,6,Sparse Vectors • Speculative Decoding • X
+ZOilD5oBclM7MZc3Zo8G,Pyramidal Flow Matching for Efficient Video Generative Modeling,12,Tabular Data • Single-Layer Transformers • Markov Chains
+ZeilD5oBclM7MZc3a49o,DeLLMa: Decision Making Under Uncertainty with Large Language Models,2,Vl Adaptation • Large Language • Safety
+a-ilD5oBclM7MZc3jI96,A Policy-Gradient Approach to Solving Imperfect-Information Games with Best-Iterate Convergence,9,Policy Gradient • Mathcal O • Mirror Maps
+ZuilD5oBclM7MZc3cI8r,JPEG Inspired Deep Learning,0,Token • Image • Reasoning
+bOilD5oBclM7MZc3kY8D,Boltzmann priors for Implicit Transfer Operators,4,Structural Encoding • Graph Domain • Node Attribute
+beilD5oBclM7MZc3lY_d,Conformal Generative Modeling with Improved Sample Efficiency through Sequential Greedy Filtering,2,Vl Adaptation • Large Language • Safety
+buioD5oBclM7MZc3dI9X,How Does Vision-Language Adaptation Impact the Safety of Vision Language Models?,2,Vl Adaptation • Large Language • Safety
+b-jHD5oBclM7MZc3Eo9y,AIOpsLab  A Holistic Framework to Evaluate AI Agents for Enabling Autonomous Clouds,2,Vl Adaptation • Large Language • Safety
+cOjHD5oBclM7MZc3Eo__,AI Metropolis  Scaling Large Language Model-based Multi-Agent Simulation with Out-of-order Execution,6,Sparse Vectors • Speculative Decoding • X
+cejHD5oBclM7MZc3FY9Z,APOLLO  SGD-like Memory  AdamW-level Performance,7,Consistency Distillation • Teacher Ode • Translation
