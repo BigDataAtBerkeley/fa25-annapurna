@@ -10,9 +10,11 @@ from datetime import datetime
 try:
     from opensearch_client import OpenSearchClient
     from bedrock_client import BedrockClient
+    from dataset_recommender import DatasetRecommender
 except ImportError:
     from .opensearch_client import OpenSearchClient
     from .bedrock_client import BedrockClient
+    from .dataset_recommender import DatasetRecommender
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,7 @@ class PyTorchCodeGenerator:
         """initilaize code generator"""
         self.opensearch_client = OpenSearchClient()
         self.bedrock_client = BedrockClient()
+        self.dataset_recommender = DatasetRecommender(bedrock_client=self.bedrock_client)
         
         logger.info("PyTorch Code Generator initialized")
     
@@ -70,16 +73,28 @@ class PyTorchCodeGenerator:
             if include_full_content:
                 paper_content = self.opensearch_client.get_paper_content(paper)
             
-            # Generate PyTorch code using Bedrock
-            result = self.bedrock_client.generate_pytorch_code(paper_summary, paper_content)
+            # Get dataset recommendations
+            dataset_recommendations = self.dataset_recommender.recommend_datasets(
+                paper, paper_content, use_llm=True
+            )
+            logger.info(f"Recommended datasets: {dataset_recommendations.get('recommended_datasets', [])}")
             
-            # Add metadata
+            # Generate PyTorch code using Bedrock with dataset recommendations
+            result = self.bedrock_client.generate_pytorch_code(
+                paper_summary, 
+                paper_content,
+                dataset_recommendations=dataset_recommendations
+            )
+            
+            # Add metadata including dataset recommendations
             result.update({
                 "paper_id": paper_id,
                 "paper_title": paper.get('title', 'Unknown'),
                 "paper_authors": paper.get('authors', []),
                 "generated_at": datetime.now().isoformat(),
-                "include_full_content": include_full_content
+                "include_full_content": include_full_content,
+                "dataset_recommendations": dataset_recommendations,
+                "recommended_dataset": dataset_recommendations.get("primary_dataset", "synthetic")
             })
             
             logger.info(f"Successfully generated code for paper: {paper.get('title', 'Unknown')}")

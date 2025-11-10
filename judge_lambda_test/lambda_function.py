@@ -187,53 +187,22 @@ def is_duplicate(title_norm: str, sha_abs: str, exclude_id: str = None) -> bool:
         return False
 
 def evaluate_paper_with_claude(title: str, abstract: str) -> Dict[str, str]:
-    """Ask Claude (via Bedrock) to assess relevance, novelty, and Trainium compatibility."""
+    """Ask Claude (via Bedrock) to assess relevance and novelty."""
     prompt = f"""
-You are an expert ML research analyst embedded in an AWS AI automation pipeline.
-
-Decide whether this paper is:
-1) RELEVANT to current LLM/AI/ML work,
-2) NOVEL beyond the state of the art, and
-3) COMPATIBLE with AWS Trainium for practical implementation.
-
-Use this rubric:
-
-RELEVANCE — say "yes" only if the paper is clearly about one or more of:
-- LLM architectures or scaling (Transformers, MoE, long-context),
-- training efficiency/optimization (optimizers, curriculum, data/augmentation, alignment like RLHF/DPO/ORPO),
-- inference efficiency (KV-cache, quantization, sparsity, speculative decoding, retrieval/RAG),
-- evaluation or safety methods with concrete technical contributions.
-Say "no" if it is primarily a survey/position/ethics/policy piece, a benchmark proposal without new methods,
-a narrow end-user application without method advances, or non-neural stats unrelated to LLMs.
-
-NOVELTY — judge relative to widely known 2024–2025 techniques (e.g., Llama-3/Mistral/Gemma/Claude-class practices).
-- novel = "yes" if it proposes a new algorithm/architecture or materially better training/inference method with credible evidence
-  (theory or strong experiments), not just a dataset swap or minor tuning.
-- novel = "no" if it is mostly packaging/ablations/parameter tweaks/benchmarking of known tricks.
-
-TRAINIUM COMPATIBILITY — respond "yes" only if the method can realistically run on Trainium:
-- Expressible in PyTorch/XLA; uses FP16/BF16; relies on transformer-compatible ops or ops with XLA kernels (e.g., Flash-Attention-style
-  kernels that have XLA paths); no proprietary hardware requirements (TPU-only) or CUDA-only custom kernels without XLA equivalents.
-- If the abstract lacks enough detail to judge, respond "unclear". If it depends on unavailable kernels or CUDA-only custom ops, respond "no".
-
-Edge rules:
-- Surveys/position/ethics/benchmark-only ⇒ relevance="no", novelty="no".
-- If the abstract is too vague to tell, set novelty="no" and trainium_compatibility="unclear".
-- Keep justification short and cite the decisive claim(s) from the abstract.
+You are an expert ML researcher. 
+Read the paper below and decide:
+1. Is it relevant to current LLM, AI, or ML research?
+2. Is it novel (introduces new techniques or methods, specifically for training or inference)?
+Exclude papers that are surveys, summaries, or non-technical, such as ethics or proposals for new benchmarks. 
 
 Paper:
 Title: {title}
 Abstract: {abstract}
 
-Respond with STRICT JSON only, exactly:
-{{
-  "relevance": "yes" | "no",
-  "novelty": "yes" | "no",
-  "trainium_compatibility": "yes" | "no" | "unclear",
-  "reason": "<≤3 short sentences citing decisive factors from the abstract>"
-}}
-""".strip()
-
+Answer in JSON with fields: relevance, novelty, reason.
+Keep answers to 'yes' or 'no' for relevance and novelty.
+Keep it short.
+"""
     try:
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
@@ -249,13 +218,7 @@ Respond with STRICT JSON only, exactly:
         return json.loads(text)
     except Exception as e:
         logger.warning(f"Claude via Bedrock failed: {e}")
-        return {
-            "relevance": "unknown",
-            "novelty": "unknown",
-            "trainium_compatibility": "unclear",
-            "reason": "Claude evaluation failed"
-        }
-
+        return {"relevance": "unknown", "novelty": "unknown", "reason": "Claude evaluation failed"}
 
 def send_result_to_queue(result: Dict) -> bool:
     """Send simulation result to SQS results queue."""
@@ -286,10 +249,10 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
     s3_key = body.get("s3_key", "")
     date = body.get("date")
     paper_id = body.get("paper_id")  # For self-comparison guard
-
+    
     title_norm = normalize_title(title)
     sha_abs = sha256_text(abstract)
-
+    
     result = {
         "paper_id": paper_id,
         "title": title,
@@ -300,7 +263,7 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
         "message_id": msg_id,
         "evaluated_at": datetime.utcnow().isoformat()
     }
-
+    
     # Exact duplicate pre-check (excluding self)
     if is_duplicate(title_norm, sha_abs, exclude_id=paper_id):
         reason = "Exact duplicate by title_normalized or sha_abstract"
@@ -309,12 +272,11 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
             "rejected_by": "exact_duplicate",
             "reason": reason,
             "relevance": "unknown",
-            "novelty": "unknown",
-            "trainium_compatibility": "unclear"
+            "novelty": "unknown"
         })
         logger.info(f"[SIMULATION] Skipped (exact duplicate) | {title} | {reason}")
         return result
-
+    
     # RAG redundancy pre-check (excluding self)
     redundancy = is_paper_redundant_rag(title, abstract, exclude_id=paper_id)
     if redundancy.get("is_redundant"):
@@ -327,53 +289,31 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
             "most_similar_paper": redundancy.get("most_similar_paper"),
             "most_similar_id": redundancy.get("most_similar_id"),
             "relevance": "unknown",
-            "novelty": "unknown",
-            "trainium_compatibility": "unclear"
+            "novelty": "unknown"
         })
         logger.info(f"[SIMULATION] Rejected by RAG | {title} | {reason}")
         return result
-
+    
     # Evaluate with Claude (Bedrock)
     evaluation = evaluate_paper_with_claude(title, abstract)
-
-    relevance = (evaluation.get("relevance") or "unknown").lower()
-    novelty = (evaluation.get("novelty") or "unknown").lower()
-    trainium = (evaluation.get("trainium_compatibility") or "unclear").lower()
+    relevance = evaluation.get("relevance", "unknown").lower()
+    novelty = evaluation.get("novelty", "unknown").lower()
     reason = evaluation.get("reason", "No reason provided.")
-
+    
     result.update({
         "relevance": relevance,
         "novelty": novelty,
-        "trainium_compatibility": trainium,
         "claude_reason": reason
     })
-
-    # Decision policy:
-    #   - accept only if all three are positive: relevance=yes, novelty=yes, trainium=yes
-    #   - hard reject if explicitly not Trainium-compatible
-    #   - if the model returned all unknown/unclear, send to manual review
-    #   - otherwise reject by Claude
-    if relevance == "yes" and novelty == "yes" and trainium == "yes":
+    
+    # Only accept relevant + novel papers
+    if relevance == "yes" and novelty == "yes":
         result.update({
             "decision": "accept",
             "rejected_by": None,
             "reason": reason
         })
         logger.info(f"[SIMULATION] Would accept | {title}")
-    elif trainium == "no":
-        result.update({
-            "decision": "reject",
-            "rejected_by": "trainium",
-            "reason": "Not Trainium compatible"
-        })
-        logger.info(f"[SIMULATION] Rejected (Trainium incompatible) | {title}")
-    elif relevance == "unknown" and novelty == "unknown" and trainium == "unclear":
-        result.update({
-            "decision": "review",
-            "rejected_by": None,
-            "reason": reason
-        })
-        logger.info(f"[SIMULATION] Needs review (Claude unknown) | {title} | {reason}")
     else:
         result.update({
             "decision": "reject",
@@ -381,9 +321,8 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
             "reason": reason
         })
         logger.info(f"[SIMULATION] Rejected by Claude | {title} | {reason}")
-
+    
     return result
-
 
 # Lambda Handler
 def lambda_handler(event, context):

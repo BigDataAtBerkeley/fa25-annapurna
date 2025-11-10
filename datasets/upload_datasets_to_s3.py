@@ -102,11 +102,22 @@ def download_cifar10():
         download=True
     )
     
-    # Save as PyTorch tensor for fast loading
+    # Extract raw data as tensors (avoid saving dataset objects to prevent torchvision import issues)
+    import torchvision.transforms as transforms
+    to_tensor = transforms.ToTensor()
+    
+    train_images = torch.stack([to_tensor(train_dataset[i][0]) for i in range(len(train_dataset))])
+    train_labels = torch.tensor([train_dataset[i][1] for i in range(len(train_dataset))])
+    test_images = torch.stack([to_tensor(test_dataset[i][0]) for i in range(len(test_dataset))])
+    test_labels = torch.tensor([test_dataset[i][1] for i in range(len(test_dataset))])
+    
+    # Save as raw tensors (no torchvision dependencies)
     torch_file = os.path.join(dataset_dir, 'cifar10_pytorch.pt')
     torch.save({
-        'train': train_dataset,
-        'test': test_dataset,
+        'train_data': train_images,
+        'train_labels': train_labels,
+        'test_data': test_images,
+        'test_labels': test_labels,
         'num_classes': 10,
         'classes': train_dataset.classes
     }, torch_file)
@@ -157,10 +168,21 @@ def download_cifar100():
         download=True
     )
     
+    # Extract raw data as tensors
+    import torchvision.transforms as transforms
+    to_tensor = transforms.ToTensor()
+    
+    train_images = torch.stack([to_tensor(train_dataset[i][0]) for i in range(len(train_dataset))])
+    train_labels = torch.tensor([train_dataset[i][1] for i in range(len(train_dataset))])
+    test_images = torch.stack([to_tensor(test_dataset[i][0]) for i in range(len(test_dataset))])
+    test_labels = torch.tensor([test_dataset[i][1] for i in range(len(test_dataset))])
+    
     torch_file = os.path.join(dataset_dir, 'cifar100_pytorch.pt')
     torch.save({
-        'train': train_dataset,
-        'test': test_dataset,
+        'train_data': train_images,
+        'train_labels': train_labels,
+        'test_data': test_images,
+        'test_labels': test_labels,
         'num_classes': 100
     }, torch_file)
     
@@ -197,6 +219,25 @@ def download_mnist():
         download=True
     )
     
+    # Extract raw data as tensors
+    import torchvision.transforms as transforms
+    to_tensor = transforms.ToTensor()
+    
+    train_images = torch.stack([to_tensor(train_dataset[i][0]) for i in range(len(train_dataset))])
+    train_labels = torch.tensor([train_dataset[i][1] for i in range(len(train_dataset))])
+    test_images = torch.stack([to_tensor(test_dataset[i][0]) for i in range(len(test_dataset))])
+    test_labels = torch.tensor([test_dataset[i][1] for i in range(len(test_dataset))])
+    
+    # Save as raw tensors
+    torch_file = os.path.join(dataset_dir, 'mnist_pytorch.pt')
+    torch.save({
+        'train_data': train_images,
+        'train_labels': train_labels,
+        'test_data': test_images,
+        'test_labels': test_labels,
+        'num_classes': 10
+    }, torch_file)
+    
     upload_directory_to_s3(dataset_dir, 'mnist')
     
     size_mb = sum(f.stat().st_size for f in Path(dataset_dir).rglob('*') if f.is_file()) / (1024 * 1024)
@@ -229,6 +270,25 @@ def download_fashion_mnist():
         train=False, 
         download=True
     )
+    
+    # Extract raw data as tensors
+    import torchvision.transforms as transforms
+    to_tensor = transforms.ToTensor()
+    
+    train_images = torch.stack([to_tensor(train_dataset[i][0]) for i in range(len(train_dataset))])
+    train_labels = torch.tensor([train_dataset[i][1] for i in range(len(train_dataset))])
+    test_images = torch.stack([to_tensor(test_dataset[i][0]) for i in range(len(test_dataset))])
+    test_labels = torch.tensor([test_dataset[i][1] for i in range(len(test_dataset))])
+    
+    # Save as raw tensors
+    torch_file = os.path.join(dataset_dir, 'fashion_mnist_pytorch.pt')
+    torch.save({
+        'train_data': train_images,
+        'train_labels': train_labels,
+        'test_data': test_images,
+        'test_labels': test_labels,
+        'num_classes': 10
+    }, torch_file)
     
     upload_directory_to_s3(dataset_dir, 'fashion_mnist')
     
