@@ -11,7 +11,7 @@ class Config:
     AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
     OPENSEARCH_ENDPOINT = os.getenv("OPENSEARCH_ENDPOINT")
     OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "research-papers")
-    BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0")
+    BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20240620-v1:0")
     S3_BUCKET = os.getenv("BUCKET_NAME")
     DEFAULT_MAX_PAPERS = 5
     DEFAULT_DAYS_BACK = 30

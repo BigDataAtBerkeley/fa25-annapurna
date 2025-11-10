@@ -684,6 +684,13 @@ python download_test_results.py
 
 # Deploy Trainium executor (Ask Dan for SSH key)
 ./deployment/deploy_trainium.sh /path/to/your-key.pem
+
+```
+
+### Code gen --> test on trn
+```bash
+python grab_papers_for_code_gen.py ## this grabs 3 random papers from opensearch and then sends them to code eval SQS
+python monitor_pipeline.py --paper-ids <Paper ID> <Paper ID> <Paper ID> --watch --interval 15
 ```
 
 ---

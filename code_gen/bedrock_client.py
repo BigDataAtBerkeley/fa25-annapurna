@@ -6,6 +6,7 @@ import os
 import json
 import logging
 import time
+import random
 from typing import Dict, Any, Optional
 import boto3
 from botocore.exceptions import ClientError
@@ -21,7 +22,8 @@ class BedrockClient:
     def __init__(self):
         """Initialize  Bedrock client"""
         self.aws_region = os.getenv("AWS_REGION", "us-east-1")
-        self.model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0")
+        # Upgraded to Claude 3.5 Sonnet for better code generation quality
+        self.model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20240620-v1:0")
         
         # Initialize Bedrock client with timeout matching per-paper timeout
         # Per-paper timeout is 180s, so we set Bedrock timeout to 150s to ensure
@@ -55,7 +57,8 @@ class BedrockClient:
             # Prepare the request body
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 8192,  # Claude 3 Sonnet supports up to 8,192 tokens output
+                "max_tokens": 8192,  # Claude 3.5 Sonnet supports up to 8,192 tokens output
+                "temperature": 0.3,  # Lower temperature for more detailed, deterministic code generation
                 "messages": [
                     {
                         "role": "user",
@@ -65,8 +68,8 @@ class BedrockClient:
             }
             
             # Make the request to Bedrock with retry logic for throttling and service unavailability
-            max_retries = 5
-            base_delay = 2  # Start with 2 seconds
+            max_retries = 8  # Increased from 5 to handle rate limits better
+            base_delay = 5  # Increased from 2s to 5s for better rate limit handling
             for attempt in range(max_retries):
                 try:
                     response = self.client.invoke_model(
@@ -77,13 +80,24 @@ class BedrockClient:
                     break  # Success, exit retry loop
                 except ClientError as e:
                     error_code = e.response.get('Error', {}).get('Code', '')
+                    error_msg = str(e)
                     # Retry on throttling or service unavailability (both are often transient)
-                    retryable_errors = ['ThrottlingException', 'ServiceUnavailableException']
-                    if error_code in retryable_errors and attempt < max_retries - 1:
-                        # Exponential backoff: 2s, 4s, 8s, 16s, 32s
-                        delay = base_delay * (2 ** attempt)
-                        logger.warning(f"Bedrock {error_code}, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
-                        time.sleep(delay)
+                    retryable_errors = ['ThrottlingException', 'ServiceUnavailableException', 'TooManyRequestsException']
+                    # Also check error message for throttling indicators
+                    is_throttling = (error_code in retryable_errors or 
+                                   'throttl' in error_msg.lower() or 
+                                   'too many requests' in error_msg.lower() or
+                                   'rate' in error_msg.lower())
+                    
+                    if is_throttling and attempt < max_retries - 1:
+                        # Exponential backoff with jitter: 5s, 10s, 20s, 40s, 80s, 120s, 120s, 120s
+                        # Cap at 120s to avoid extremely long waits
+                        delay = min(base_delay * (2 ** attempt), 120)
+                        # Add random jitter (0-2s) to avoid thundering herd
+                        jitter = random.uniform(0, 2)
+                        total_delay = delay + jitter
+                        logger.warning(f"Bedrock throttling detected ({error_code}), retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(total_delay)
                         continue
                     else:
                         raise  # Re-raise if not retryable or out of retries
@@ -177,10 +191,11 @@ Paper Information:
 """
 
         if paper_content:
-            # Claude 3 Sonnet has 200k token context window
+            # Claude 3.5 Sonnet has 200k token context window
+            # Increased from 80k to 150k chars to provide more paper context for better code generation
             base_prompt += f"""
 Full Paper Content:
-{paper_content[:80000]}
+{paper_content[:150000]}
 
 """
 
@@ -383,32 +398,36 @@ for epoch in range(5):  # 5-10 epochs for testing
 ```
 
 ═══════════════════════════════════════════════════════════════════════════════
-OUTPUT FORMAT - CODE ONLY, NO EXPLANATIONS
+OUTPUT FORMAT - CODE WITH BRIEF INLINE COMMENTS
 ═══════════════════════════════════════════════════════════════════════════════
 
-CRITICAL: You have a 8192 token OUTPUT limit. Generate ONLY code - NO explanations, NO markdown, NO text outside code blocks.
+CRITICAL: You have a 8192 token OUTPUT limit. Generate complete, detailed code with brief inline comments explaining key implementation steps.
 
 Your response must be EXACTLY this format:
 
 ```python
 [COMPLETE, RUNNABLE PYTORCH CODE]
 # All imports here
-# Model definition
+# Model definition with brief comments explaining key components
 # Dataset loading
-# Training loop
+# Training loop with comments for important steps
 # Evaluation
 # Everything needed to run
 ```
 
-DO NOT include:
-- Explanations before or after the code
-- Markdown headers or sections
-- "Here's the code" or similar text
-- Dataset information text
-- Key features text
-- Any text outside the code block
+INCLUDE:
+- Complete, detailed implementation
+- Brief inline comments explaining key steps (e.g., "# Apply XLA-compatible sigmoid", "# Handle tuple outputs from model")
+- All necessary code to run the implementation
 
-ONLY output the code block. The code must be immediately runnable with no manual setup required.
+DO NOT include:
+- Long explanations before or after the code block
+- Markdown headers or sections outside code
+- "Here's the code" or similar introductory text
+- Dataset information text outside code
+- Key features text outside code
+
+ONLY output the code block with inline comments. The code must be immediately runnable with no manual setup required.
 """
 
         return base_prompt
@@ -491,7 +510,8 @@ Please provide an improved implementation addressing the feedback.
             # Prepare the request body
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 8192,  # Claude 3 Sonnet supports up to 8,192 tokens output
+                "max_tokens": 8192,  # Claude 3.5 Sonnet supports up to 8,192 tokens output
+                "temperature": 0.3,  # Lower temperature for more detailed, deterministic code generation
                 "messages": [
                     {
                         "role": "user",
@@ -500,7 +520,7 @@ Please provide an improved implementation addressing the feedback.
                 ]
             }
             
-            # BEdrock requestt
+            # Bedrock request
             response = self.client.invoke_model(
                 modelId=self.model_id,
                 body=json.dumps(body),

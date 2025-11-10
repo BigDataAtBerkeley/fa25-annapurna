@@ -403,7 +403,8 @@ If no issues found, set "no_issues": true."""
                         modelId=self.bedrock_client.model_id,
                         body=json.dumps({
                             "anthropic_version": "bedrock-2023-05-31",
-                            "max_tokens": 8192,  # Claude 3 Sonnet supports up to 8,192 tokens output
+                            "max_tokens": 8192,  # Claude 3.5 Sonnet supports up to 8,192 tokens output
+                            "temperature": 0.3,  # Lower temperature for more thorough analysis
                             "messages": [
                                 {
                                     "role": "user",
@@ -535,7 +536,8 @@ Return ONLY the complete fixed Python code in a code block. Do not include expla
                         modelId=self.bedrock_client.model_id,
                         body=json.dumps({
                             "anthropic_version": "bedrock-2023-05-31",
-                            "max_tokens": 8192,  # Claude 3 Sonnet supports up to 8,192 tokens output
+                            "max_tokens": 8192,  # Claude 3.5 Sonnet supports up to 8,192 tokens output
+                            "temperature": 0.3,  # Lower temperature for more detailed fixes
                             "messages": [
                                 {
                                     "role": "user",
