@@ -75,19 +75,48 @@ class CodeReviewAgent:
                 logger.info("✅ No issues found - code is ready!")
                 break
             
+            # Record issues found (even if fix fails, we want to track what was found)
+            issues_found = issues.get('issues', [])
+            fixes_needed = issues.get('fixes_needed', [])
+            
+            if issues_found:
+                logger.info(f"Found {len(issues_found)} issues: {', '.join(issues_found[:3])}...")
+            
             # Fix issues
             fixed_code = self._fix_code_with_ai(current_code, issues, dataset_name)
             
             if fixed_code and fixed_code != current_code:
                 fixes_applied.append({
                     'iteration': iteration,
-                    'issues_found': issues.get('issues', []),
-                    'fixes': issues.get('fixes', [])
+                    'issues_found': issues_found,
+                    'fixes': fixes_needed  # Use fixes_needed, not fixes
                 })
                 current_code = fixed_code
-                logger.info(f"✅ Applied fixes in iteration {iteration}")
+                logger.info(f"✅ Applied fixes in iteration {iteration} - code updated")
+            elif fixed_code is None:
+                # Fix failed - record issues but warn
+                logger.error(f"❌ Code fix failed - AI could not generate fixed code")
+                logger.error(f"   Issues found: {len(issues_found)}")
+                # Still record the issues so we know what was wrong
+                fixes_applied.append({
+                    'iteration': iteration,
+                    'issues_found': issues_found,
+                    'fixes': fixes_needed,
+                    'fix_failed': True  # Mark that fix attempt failed
+                })
+                # Don't break - try to continue with original code, but log the failure
+                logger.warning("⚠️ Continuing with original code (fix failed)")
+                break
             else:
-                logger.warning(f"⚠️ No changes made in iteration {iteration}, stopping")
+                # Fix returned same code - might mean no changes needed or fix failed
+                logger.warning(f"⚠️ Fix returned same code - no changes applied")
+                # Still record issues found
+                fixes_applied.append({
+                    'iteration': iteration,
+                    'issues_found': issues_found,
+                    'fixes': fixes_needed,
+                    'no_changes': True  # Mark that no changes were made
+                })
                 break
         
         return {
@@ -186,6 +215,13 @@ class CodeReviewAgent:
             if 'xm.mark_step' not in code:
                 issues.append("XLA device used but xm.mark_step() missing in training loop")
             
+            # Check for xm.rendezvous() - must have a tag argument on Trainium/Neuron
+            if 'xm.rendezvous()' in code:
+                # Check if it's called without arguments (will cause IndexError on Trainium)
+                rendezvous_pattern = r'xm\.rendezvous\s*\(\s*\)'
+                if re.search(rendezvous_pattern, code):
+                    issues.append("CRITICAL: xm.rendezvous() called without required tag argument - will cause IndexError on Trainium. Must be xm.rendezvous('tag_name')")
+            
             # Check for XLA tensor size issues (common bug: using tensor.size(0) directly as int)
             if '.size(0)' in code or '.shape[0]' in code:
                 # Check if there are patterns like "count += inputs.size(0)" or "batch_size = inputs.size(0)"
@@ -260,6 +296,15 @@ class CodeReviewAgent:
                     new_imports = '\n'.join(imports_to_add) + '\n'
                     fixed_code = fixed_code[:insert_pos] + new_imports + fixed_code[insert_pos:]
                     fixes_applied.append(f"Added missing imports: {', '.join(imports_to_add)}")
+        
+        # Fix xm.rendezvous() without arguments (CRITICAL - causes IndexError on Trainium)
+        if 'xm.rendezvous()' in fixed_code:
+            # Replace xm.rendezvous() with xm.rendezvous('init')
+            rendezvous_pattern = r'xm\.rendezvous\s*\(\s*\)'
+            if re.search(rendezvous_pattern, fixed_code):
+                fixed_code = re.sub(rendezvous_pattern, "xm.rendezvous('init')", fixed_code)
+                fixes_applied.append("Fixed xm.rendezvous() - added required tag argument 'init'")
+                logger.info("✅ Quick fix: Added tag argument to xm.rendezvous()")
         
         return fixed_code, fixes_applied
     
@@ -470,7 +515,12 @@ CRITICAL FIXES NEEDED:
    - In XLA, tensor.size(0) returns a tensor, NOT a Python int - this causes AttributeError
 4. Ensure all tensors are moved to device before operations
 5. Use xm.optimizer_step() and xm.mark_step() for XLA
-6. Add any missing imports
+6. xm.rendezvous() MUST have a tag argument on Trainium/Neuron:
+   - WRONG: xm.rendezvous()  (will cause IndexError: tuple index out of range)
+   - CORRECT: xm.rendezvous('init') or xm.rendezvous('training') or any string tag
+7. Add any missing imports
+
+IMPORTANT: Return the COMPLETE fixed Python code. Include ALL imports, ALL functions, and ALL the main execution code. Do not return partial code or explanations - return the full working code that can be executed directly.
 
 Return ONLY the complete fixed Python code in a code block. Do not include explanations outside the code block."""
 
@@ -514,27 +564,60 @@ Return ONLY the complete fixed Python code in a code block. Do not include expla
             response_body = json.loads(response['body'].read())
             fixed_text = response_body['content'][0]['text']
             
+            logger.info(f"AI fix response length: {len(fixed_text)} characters")
+            
             # Extract code from response - try multiple patterns
             code_patterns = [
-                r'```python\n(.*?)\n```',  # Python code block
+                r'```python\n(.*?)\n```',  # Python code block with python tag
+                r'```python\n(.*?)```',  # Python code block without closing newline
                 r'```\n(.*?)\n```',  # Generic code block
                 r'```(.*?)```',  # Code block without newlines
             ]
             
+            extracted_code = None
             for pattern in code_patterns:
                 code_match = re.search(pattern, fixed_text, re.DOTALL)
                 if code_match:
-                    extracted_code = code_match.group(1).strip()
+                    candidate = code_match.group(1).strip()
                     # Validate it's actually code (has imports or def/class)
-                    if 'import' in extracted_code or 'def ' in extracted_code or 'class ' in extracted_code:
-                        return extracted_code
+                    if 'import' in candidate or 'def ' in candidate or 'class ' in candidate:
+                        extracted_code = candidate
+                        logger.info(f"✅ Extracted code using pattern: {pattern[:20]}...")
+                        break
             
             # Fallback: if no code block found, check if entire response looks like code
-            if 'import' in fixed_text or 'def ' in fixed_text:
-                return fixed_text.strip()
+            if not extracted_code:
+                # Remove markdown formatting if present
+                cleaned_text = fixed_text.strip()
+                # Remove leading/trailing markdown code block markers if they exist
+                if cleaned_text.startswith('```'):
+                    lines = cleaned_text.split('\n')
+                    if lines[0].startswith('```'):
+                        lines = lines[1:]
+                    if lines and lines[-1].strip() == '```':
+                        lines = lines[:-1]
+                    cleaned_text = '\n'.join(lines).strip()
+                
+                # Check if it looks like code
+                if ('import' in cleaned_text or 'def ' in cleaned_text or 'class ' in cleaned_text) and len(cleaned_text) > 100:
+                    extracted_code = cleaned_text
+                    logger.info("✅ Using entire response as code (no code block markers found)")
+            
+            if extracted_code:
+                # Validate the extracted code is different and substantial
+                if extracted_code != code:
+                    if len(extracted_code) > 50:  # Must be substantial
+                        logger.info(f"✅ Successfully extracted fixed code ({len(extracted_code)} chars)")
+                        return extracted_code
+                    else:
+                        logger.warning(f"Extracted code too short ({len(extracted_code)} chars) - likely incomplete")
+                else:
+                    logger.warning("Extracted code is identical to original - no changes made")
+            else:
+                logger.error("Could not extract fixed code from AI response")
+                logger.error(f"Response preview: {fixed_text[:500]}...")
             
             # If we can't extract code, return None (fix failed)
-            logger.warning("Could not extract fixed code from AI response")
             return None
             
         except Exception as e:
