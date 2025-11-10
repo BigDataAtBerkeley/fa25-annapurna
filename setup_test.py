@@ -54,6 +54,39 @@ if not all([REGION, HOST, INDEX, SEND_QUEUE_URL, RECV_QUEUE_URL]):
 # AWS auth
 session = boto3.Session(region_name=REGION)
 credentials = session.get_credentials().get_frozen_credentials()
+auth = AWSV4SignerAuth(credentials, region, "es")
+
+os_client = OpenSearch(
+    hosts=[{"host": host.replace("https://", "").replace("http://", ""), "port": 443}],
+    http_auth=auth,
+    use_ssl=True,
+    verify_certs=True,
+    connection_class=RequestsHttpConnection
+)
+
+sqs = boto3.client("sqs", region_name=region)
+
+# === 1. Get total documents ===
+count_response = os_client.count(index=index_name)
+total_docs = count_response.get("count", 0)
+if total_docs == 0:
+    raise ValueError(f"No documents found in index '{index_name}'")
+
+print(f"\n✅ Found {total_docs} total documents in '{index_name}'")
+
+# === 2. Randomly select 100 ===
+sample_size = min(250, total_docs)
+random_offsets = random.sample(range(total_docs), sample_size)
+print(f"📦 Sampling {sample_size} random documents...")
+
+# === 3. Send to SQS ===
+sent_ids = []
+for i, offset in enumerate(random_offsets, start=1):
+    try:
+        res = os_client.search(index=index_name, body={"from": offset, "size": 1, "query": {"match_all": {}}})
+        hits = res.get("hits", {}).get("hits", [])
+        if not hits:
+            continue
 auth = AWSV4SignerAuth(credentials, REGION, "es")
 
 # Tougher OpenSearch client (longer timeout + retries)

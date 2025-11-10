@@ -9,6 +9,7 @@ import hashlib
 import logging
 import certifi
 import ssl
+import random
 from typing import List, Dict
 from datetime import datetime
 from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
@@ -52,40 +53,65 @@ def normalize_title(t: str) -> str:
 def sha256_text(t: str) -> str:
     return hashlib.sha256(t.encode("utf-8")).hexdigest()
 
-def generate_embedding(text: str) -> List[float]:
-    try:
-        body = json.dumps({"inputText": text})
-        response = bedrock.invoke_model(
-            modelId="amazon.titan-embed-text-v1",
-            body=body,
-            contentType="application/json"
-        )
-        result = json.loads(response["body"].read())
-        return result.get("embedding", [])
-    except Exception as e:
-        logger.warning(f"Embedding generation failed: {e}")
-        return []
+def generate_embedding(text: str, max_retries: int = 6) -> List[float]:
+    """Generate embedding with exponential backoff retry logic for throttling."""
+    body = json.dumps({"inputText": text})
+    
+    for attempt in range(max_retries):
+        try:
+            response = bedrock.invoke_model(
+                modelId="amazon.titan-embed-text-v1",
+                body=body,
+                contentType="application/json"
+            )
+            result = json.loads(response["body"].read())
+            return result.get("embedding", [])
+            
+        except Exception as e:
+            error_str = str(e)
+            if "ThrottlingException" in error_str or "Too many requests" in error_str:
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 2^attempt + random jitter (0-1 seconds)
+                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning(f"Titan embedding throttled, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Titan embedding throttled after {max_retries} attempts")
+                    return []
+            else:
+                logger.warning(f"Embedding generation failed: {e}")
+                return []
+    
+    return []
 
-def search_similar_papers_rag(abstract: str, exclude_id: str = None, size: int = 5) -> List[Dict]:
+def search_similar_papers_with_embedding(
+    embedding: List[float], 
+    exclude_id: str = None, 
+    size: int = 5
+) -> List[Dict]:
     """
-    Perform KNN search, optionally excluding a specific document ID.
-    This prevents self-comparison in simulation mode.
+    Perform KNN search using a pre-generated embedding.
+    Avoids redundant embedding generation.
     """
     try:
-        embedding = generate_embedding(abstract)
         if not embedding:
             return []
+            
+        # Ensure embedding is list of floats
         try:
             embedding = [float(x) for x in embedding]
         except Exception:
             pass
 
+        # Get expected dimension from index mapping
         try:
             mapping = os_client.indices.get_mapping(index=OPENSEARCH_INDEX)
             props = mapping.get(OPENSEARCH_INDEX, {}).get("mappings", {}).get("properties", {})
             dim = int(props.get("abstract_embedding", {}).get("dimension", len(embedding)))
         except Exception:
             dim = len(embedding)
+            
+        # Adjust embedding dimension if needed
         if len(embedding) > dim:
             embedding = embedding[:dim]
         elif len(embedding) < dim:
@@ -101,7 +127,10 @@ def search_similar_papers_rag(abstract: str, exclude_id: str = None, size: int =
         }
         
         try:
-            res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query_primary, "size": size + 1 if exclude_id else size})
+            res = os_client.search(
+                index=OPENSEARCH_INDEX, 
+                body={"query": query_primary, "size": size + 1 if exclude_id else size}
+            )
         except Exception as e1:
             logger.warning(f"Primary kNN query failed, retrying with field/query_vector: {e1}")
             query_fallback = {
@@ -111,11 +140,15 @@ def search_similar_papers_rag(abstract: str, exclude_id: str = None, size: int =
                     "k": size + 1 if exclude_id else size
                 }
             }
-            res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query_fallback, "size": size + 1 if exclude_id else size})
+            res = os_client.search(
+                index=OPENSEARCH_INDEX, 
+                body={"query": query_fallback, "size": size + 1 if exclude_id else size}
+            )
         
         out = []
         for hit in res.get('hits', {}).get('hits', []):
             doc_id = hit.get('_id')
+            
             # Skip the document we're testing (self-comparison guard)
             if exclude_id and doc_id == exclude_id:
                 logger.info(f"Skipping self-match: {doc_id}")
@@ -135,12 +168,17 @@ def search_similar_papers_rag(abstract: str, exclude_id: str = None, size: int =
         logger.warning(f"RAG search failed: {e}")
         return []
 
-def is_paper_redundant_rag(title: str, abstract: str, exclude_id: str = None) -> Dict[str, any]:
+def is_paper_redundant_rag_with_embedding(
+    title: str, 
+    abstract: str, 
+    embedding: List[float],
+    exclude_id: str = None
+) -> Dict[str, any]:
     """
-    Check if paper is redundant by comparing to similar papers.
-    Excludes the paper itself from comparison in simulation mode.
+    Check if paper is redundant using a pre-generated embedding.
+    This avoids regenerating the embedding we already created.
     """
-    similar = search_similar_papers_rag(abstract, exclude_id=exclude_id, size=10)
+    similar = search_similar_papers_with_embedding(embedding, exclude_id=exclude_id, size=10)
     if not similar:
         return {"is_redundant": False, "reason": "No similar papers found", "max_similarity": 0.0}
     
@@ -186,39 +224,94 @@ def is_duplicate(title_norm: str, sha_abs: str, exclude_id: str = None) -> bool:
         logger.warning(f"Duplicate check failed: {e}")
         return False
 
-def evaluate_paper_with_claude(title: str, abstract: str) -> Dict[str, str]:
-    """Ask Claude (via Bedrock) to assess relevance and novelty."""
+def evaluate_paper_with_claude(title: str, abstract: str, max_retries: int = 6) -> Dict[str, str]:
+    """Ask Claude (via Bedrock) to assess relevance and novelty with exponential backoff."""
     prompt = f"""
-You are an expert ML researcher. 
-Read the paper below and decide:
-1. Is it relevant to current LLM, AI, or ML research?
-2. Is it novel (introduces new techniques or methods, specifically for training or inference)?
-Exclude papers that are surveys, summaries, or non-technical, such as ethics or proposals for new benchmarks. 
+You are an expert ML research analyst embedded in an AWS AI automation pipeline.
+
+Decide whether this paper is:
+1) RELEVANT to current LLM/AI/ML work,
+2) NOVEL beyond the state of the art, and
+3) COMPATIBLE with AWS Trainium for practical implementation.
+
+Use this rubric:
+
+RELEVANCE — say "yes" only if the paper is clearly about one or more of:
+- LLM architectures or scaling (Transformers, MoE, long-context),
+- training efficiency/optimization (optimizers, curriculum, data/augmentation, alignment like RLHF/DPO/ORPO),
+- inference efficiency (KV-cache, quantization, sparsity, speculative decoding, retrieval/RAG),
+- evaluation or safety methods with concrete technical contributions.
+Say "no" if it is primarily a survey/position/ethics/policy piece, a benchmark proposal without new methods,
+a narrow end-user application without method advances, or non-neural stats unrelated to LLMs.
+
+NOVELTY — judge relative to widely known 2024–2025 techniques (e.g., Llama-3/Mistral/Gemma/Claude-class practices).
+- novel = "yes" if it proposes a new algorithm/architecture or materially better training/inference method with credible evidence
+  (theory or strong experiments), not just a dataset swap or minor tuning.
+- novel = "no" if it is mostly packaging/ablations/parameter tweaks/benchmarking of known tricks.
+
+TRAINIUM COMPATIBILITY — respond "yes" only if the method can realistically run on Trainium:
+- Expressible in PyTorch/XLA; uses FP16/BF16; relies on transformer-compatible ops or ops with XLA kernels (e.g., Flash-Attention-style
+  kernels that have XLA paths); no proprietary hardware requirements (TPU-only) or CUDA-only custom kernels without XLA equivalents.
+- If the abstract lacks enough detail to judge, respond "unclear". If it depends on unavailable kernels or CUDA-only custom ops, respond "no".
+
+Edge rules:
+- Surveys/position/ethics/benchmark-only ⇒ relevance="no", novelty="no".
+- If the abstract is too vague to tell, set novelty="no" and trainium_compatibility="unclear".
+- Keep justification short and cite the decisive claim(s) from the abstract.
 
 Paper:
 Title: {title}
 Abstract: {abstract}
 
-Answer in JSON with fields: relevance, novelty, reason.
-Keep answers to 'yes' or 'no' for relevance and novelty.
-Keep it short.
-"""
-    try:
-        body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-            "max_tokens": 200,
-            "temperature": 0.3
-        })
-        response = bedrock.invoke_model(
-            modelId="anthropic.claude-3-haiku-20240307-v1:0",
-            body=body
-        )
-        text = json.loads(response["body"].read())["content"][0]["text"].strip()
-        return json.loads(text)
-    except Exception as e:
-        logger.warning(f"Claude via Bedrock failed: {e}")
-        return {"relevance": "unknown", "novelty": "unknown", "reason": "Claude evaluation failed"}
+Respond with STRICT JSON only, exactly:
+{{
+  "relevance": "yes" | "no",
+  "novelty": "yes" | "no",
+  "trainium_compatibility": "yes" | "no" | "unclear",
+  "reason": "<≤3 short sentences citing decisive factors from the abstract>"
+}}
+""".strip()
+    
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+        "max_tokens": 200,
+        "temperature": 0.3
+    })
+    
+    for attempt in range(max_retries):
+        try:
+            response = bedrock.invoke_model(
+                modelId="anthropic.claude-3-haiku-20240307-v1:0",
+                body=body
+            )
+            text = json.loads(response["body"].read())["content"][0]["text"].strip()
+            return json.loads(text)
+            
+        except Exception as e:
+            error_str = str(e)
+            if "ThrottlingException" in error_str or "Too many requests" in error_str:
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 2^attempt + random jitter (0-1 seconds)
+                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning(f"Claude throttled on '{title[:50]}...', retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Claude throttled after {max_retries} attempts for '{title[:50]}...'")
+                    return {
+                        "relevance": "unknown", 
+                        "novelty": "unknown", 
+                        "reason": "Bedrock throttling - max retries exceeded"
+                    }
+            else:
+                logger.warning(f"Claude via Bedrock failed: {e}")
+                return {
+                    "relevance": "unknown", 
+                    "novelty": "unknown", 
+                    "reason": f"Claude evaluation failed: {str(e)}"
+                }
+    
+    return {"relevance": "unknown", "novelty": "unknown", "reason": "Unexpected error in retry loop"}
 
 def send_result_to_queue(result: Dict) -> bool:
     """Send simulation result to SQS results queue."""
@@ -277,8 +370,26 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
         logger.info(f"[SIMULATION] Skipped (exact duplicate) | {title} | {reason}")
         return result
     
-    # RAG redundancy pre-check (excluding self)
-    redundancy = is_paper_redundant_rag(title, abstract, exclude_id=paper_id)
+    # Generate embedding ONCE and reuse it (optimization!)
+    logger.info(f"Generating embedding for: {title[:50]}...")
+    paper_embedding = generate_embedding(abstract)
+    
+    if not paper_embedding:
+        logger.error(f"Failed to generate embedding for: {title}")
+        result.update({
+            "decision": "error",
+            "rejected_by": "embedding_failure",
+            "reason": "Could not generate embedding",
+            "relevance": "unknown",
+            "novelty": "unknown"
+        })
+        return result
+    
+    # RAG redundancy pre-check - use the pre-generated embedding
+    redundancy = is_paper_redundant_rag_with_embedding(
+        title, abstract, paper_embedding, exclude_id=paper_id
+    )
+    
     if redundancy.get("is_redundant"):
         reason = redundancy.get("reason", "RAG redundancy")
         result.update({
@@ -342,7 +453,10 @@ def lambda_handler(event, context):
             
             # Send result to queue
             send_result_to_queue(result)
-
+            
+            # Gentle rate limiting between papers
+            time.sleep(1)
+            
         except Exception as e:
             logger.exception(f"Failed to process message {msg_id}: {e}")
             failures.append({"itemIdentifier": msg_id})
