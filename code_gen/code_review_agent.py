@@ -106,6 +106,62 @@ class CodeReviewAgent:
         """
         issues = []
         
+        # Check if code appears incomplete/truncated
+        if code:
+            # Check for incomplete code patterns
+            code_stripped = code.rstrip()
+            
+            # Check for unclosed brackets/parens/braces
+            open_parens = code.count('(') - code.count(')')
+            open_brackets = code.count('[') - code.count(']')
+            open_braces = code.count('{') - code.count('}')
+            
+            if open_parens > 0:
+                issues.append(f"Code appears incomplete: {open_parens} unclosed parenthesis")
+            if open_brackets > 0:
+                issues.append(f"Code appears incomplete: {open_brackets} unclosed brackets")
+            if open_braces > 0:
+                issues.append(f"Code appears incomplete: {open_braces} unclosed braces")
+            
+            # Check if code ends with incomplete statement
+            incomplete_endings = [',', '(', '[', '{', '\\', '=']
+            if code_stripped and code_stripped[-1] in incomplete_endings:
+                issues.append(f"Code appears incomplete: ends with '{code_stripped[-1]}' (likely truncated)")
+            
+            # Check for incomplete function/class definitions (no body)
+            lines = code.split('\n')
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                # Check for def/class without body
+                if (stripped.startswith('def ') or stripped.startswith('class ')) and stripped.endswith(':'):
+                    # Check if next non-empty line is at same or less indentation (no body)
+                    if i + 1 < len(lines):
+                        next_lines = [l for l in lines[i+1:] if l.strip()]
+                        if next_lines:
+                            next_line = next_lines[0]
+                            if not next_line.startswith(' ') or len(next_line) - len(next_line.lstrip()) <= len(line) - len(line.lstrip()):
+                                issues.append(f"Code appears incomplete: {stripped} has no body")
+                                break
+            
+            # Check if code is suspiciously short for a complete implementation
+            # (This is a heuristic - very short code might be incomplete)
+            if len(code.split('\n')) < 20 and ('for ' in code or 'def ' in code or 'class ' in code):
+                issues.append("Code appears suspiciously short - may be incomplete or truncated")
+            
+            # Check if code ends with incomplete comment (clear sign of truncation)
+            if code_stripped.endswith('#') or code_stripped.endswith('# '):
+                # Check if it's a comment that looks incomplete
+                last_line = lines[-1].strip() if lines else ''
+                if last_line.startswith('#') and len(last_line) < 10:
+                    issues.append("Code appears incomplete: ends with incomplete comment (likely truncated by max_tokens)")
+            
+            # Check if last line is incomplete (doesn't end with newline or proper statement)
+            if lines and lines[-1].strip() and not lines[-1].rstrip().endswith((':', ';', ')', ']', '}')):
+                # Check if it looks like it was cut off mid-statement
+                last_line = lines[-1].strip()
+                if any(last_line.endswith(char) for char in [',', '(', '[', '{', '=', '+', '-', '*', '/', '%']):
+                    issues.append(f"Code appears incomplete: last line ends with '{last_line[-1]}' (likely truncated)")
+        
         # Check for IMDB dataset without tokenization
         if dataset_name == 'imdb' or 'imdb' in code.lower():
             if 'load_dataset' in code and 'imdb' in code.lower():
@@ -158,6 +214,12 @@ class CodeReviewAgent:
         if 'collections.' in code and 'from collections' not in code:
             issues.append("Missing import: collections")
         
+        # Check for invalid/non-existent imports
+        if 'transformers_xla' in code or 'from transformers_xla' in code or 'import transformers_xla' in code:
+            issues.append("CRITICAL: transformers_xla package does not exist. Use 'from transformers import AutoTokenizer' instead. transformers_xla is not a real package.")
+        if 'XLATokenizer' in code:
+            issues.append("CRITICAL: XLATokenizer does not exist. Use AutoTokenizer from transformers package instead.")
+        
         return issues
     
     def _apply_quick_fixes(self, code: str, issues: List[str], dataset_name: str = None) -> Tuple[str, List[str]]:
@@ -169,6 +231,15 @@ class CodeReviewAgent:
         """
         fixed_code = code
         fixes_applied = []
+        
+        # Fix invalid transformers_xla imports
+        if 'transformers_xla' in fixed_code or 'XLATokenizer' in fixed_code:
+            # Replace transformers_xla imports with correct transformers imports
+            fixed_code = fixed_code.replace('from transformers_xla import XLATokenizer', 'from transformers import AutoTokenizer')
+            fixed_code = fixed_code.replace('import transformers_xla', '# transformers_xla does not exist, using transformers instead')
+            fixed_code = fixed_code.replace('XLATokenizer', 'AutoTokenizer')
+            if 'transformers_xla' in fixed_code or 'XLATokenizer' in fixed_code:
+                fixes_applied.append("Fixed invalid transformers_xla/XLATokenizer imports - replaced with AutoTokenizer from transformers")
         
         # Add missing imports
         if any('Missing import' in issue for issue in issues):
@@ -287,7 +358,7 @@ If no issues found, set "no_issues": true."""
                         modelId=self.bedrock_client.model_id,
                         body=json.dumps({
                             "anthropic_version": "bedrock-2023-05-31",
-                            "max_tokens": 4000,
+                            "max_tokens": 8192,  # Claude 3 Sonnet supports up to 8,192 tokens output
                             "messages": [
                                 {
                                     "role": "user",
@@ -300,9 +371,11 @@ If no issues found, set "no_issues": true."""
                     break  # Success
                 except ClientError as e:
                     error_code = e.response.get('Error', {}).get('Code', '')
-                    if error_code == 'ThrottlingException' and attempt < max_retries - 1:
+                    # Retry on throttling or service unavailability (both are often transient)
+                    retryable_errors = ['ThrottlingException', 'ServiceUnavailableException']
+                    if error_code in retryable_errors and attempt < max_retries - 1:
                         delay = base_delay * (2 ** attempt)
-                        logger.warning(f"Code review analysis throttled, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                        logger.warning(f"Code review analysis {error_code}, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
                         time.sleep(delay)
                         continue
                     else:
@@ -412,7 +485,7 @@ Return ONLY the complete fixed Python code in a code block. Do not include expla
                         modelId=self.bedrock_client.model_id,
                         body=json.dumps({
                             "anthropic_version": "bedrock-2023-05-31",
-                            "max_tokens": 32000,
+                            "max_tokens": 8192,  # Claude 3 Sonnet supports up to 8,192 tokens output
                             "messages": [
                                 {
                                     "role": "user",
@@ -425,9 +498,11 @@ Return ONLY the complete fixed Python code in a code block. Do not include expla
                     break  # Success
                 except ClientError as e:
                     error_code = e.response.get('Error', {}).get('Code', '')
-                    if error_code == 'ThrottlingException' and attempt < max_retries - 1:
+                    # Retry on throttling or service unavailability (both are often transient)
+                    retryable_errors = ['ThrottlingException', 'ServiceUnavailableException']
+                    if error_code in retryable_errors and attempt < max_retries - 1:
                         delay = base_delay * (2 ** attempt)
-                        logger.warning(f"Code review fix throttled, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                        logger.warning(f"Code review fix {error_code}, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
                         time.sleep(delay)
                         continue
                     else:

@@ -23,10 +23,17 @@ class BedrockClient:
         self.aws_region = os.getenv("AWS_REGION", "us-east-1")
         self.model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0")
         
-        # Initialize Bedrock client
-        self.client = boto3.client("bedrock-runtime", region_name=self.aws_region)
+        # Initialize Bedrock client with timeout matching per-paper timeout
+        # Per-paper timeout is 180s, so we set Bedrock timeout to 150s to ensure
+        # Bedrock calls timeout before the per-paper timeout fires
+        from botocore.config import Config
+        config = Config(
+            read_timeout=150,  # 2.5 minutes - must be less than per-paper timeout (180s)
+            retries={'max_attempts': 0}  # We handle retries manually
+        )
+        self.client = boto3.client("bedrock-runtime", region_name=self.aws_region, config=config)
         
-        logger.info(f"Bedrock client initialized with model: {self.model_id}")
+        logger.info(f"Bedrock client initialized with model: {self.model_id} (timeout: 150s)")
     
     def generate_pytorch_code(self, paper_summary: str, paper_content: Optional[str] = None,
                              dataset_recommendations: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -48,7 +55,7 @@ class BedrockClient:
             # Prepare the request body
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 32000,  # Claude Sonnet 4.5 supports up to 64,000 tokens
+                "max_tokens": 8192,  # Claude 3 Sonnet supports up to 8,192 tokens output
                 "messages": [
                     {
                         "role": "user",
@@ -57,7 +64,7 @@ class BedrockClient:
                 ]
             }
             
-            # Make the request to Bedrock with retry logic for throttling
+            # Make the request to Bedrock with retry logic for throttling and service unavailability
             max_retries = 5
             base_delay = 2  # Start with 2 seconds
             for attempt in range(max_retries):
@@ -70,30 +77,66 @@ class BedrockClient:
                     break  # Success, exit retry loop
                 except ClientError as e:
                     error_code = e.response.get('Error', {}).get('Code', '')
-                    if error_code == 'ThrottlingException' and attempt < max_retries - 1:
+                    # Retry on throttling or service unavailability (both are often transient)
+                    retryable_errors = ['ThrottlingException', 'ServiceUnavailableException']
+                    if error_code in retryable_errors and attempt < max_retries - 1:
                         # Exponential backoff: 2s, 4s, 8s, 16s, 32s
                         delay = base_delay * (2 ** attempt)
-                        logger.warning(f"Bedrock throttled, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                        logger.warning(f"Bedrock {error_code}, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
                         time.sleep(delay)
                         continue
                     else:
-                        raise  # Re-raise if not throttling or out of retries
+                        raise  # Re-raise if not retryable or out of retries
             
             # Parse the response
             response_body = json.loads(response['body'].read())
             generated_text = response_body['content'][0]['text']
             
+            # Check if response was truncated due to max_tokens
+            stop_reason = response_body.get('stop_reason')
+            if stop_reason == 'max_tokens':
+                logger.warning("⚠️ Bedrock response was truncated due to max_tokens limit (8192). Code may be incomplete!")
+            
             # Extract code from the response
             code_result = self._extract_code_from_response(generated_text)
             
+            # Check if extracted code appears incomplete
+            code = code_result.get('code', '')
+            if code and stop_reason == 'max_tokens':
+                # Check for incomplete code patterns
+                incomplete_patterns = [
+                    code.rstrip().endswith('#'),  # Ends with comment
+                    code.rstrip().endswith(','),  # Ends with comma
+                    code.rstrip().endswith('('),  # Ends with open paren
+                    code.rstrip().endswith('['),  # Ends with open bracket
+                    code.rstrip().endswith('{'),  # Ends with open brace
+                    not code.rstrip().endswith('\n'),  # Doesn't end with newline (might be cut off)
+                ]
+                if any(incomplete_patterns):
+                    logger.warning("⚠️ Extracted code appears incomplete - may be truncated")
+                    code_result['truncated'] = True
+                    code_result['warning'] = "Code generation was truncated due to max_tokens limit. Code may be incomplete."
+            
             logger.info("Successfully generated PyTorch code")
-            return {
+            result = {
                 "success": True,
                 "code": code_result["code"],
                 "explanation": code_result["explanation"],
                 "full_response": generated_text,
                 "model_used": self.model_id
             }
+            
+            # Add truncation warning if detected
+            if code_result.get('truncated'):
+                result["truncated"] = True
+                result["warning"] = code_result.get('warning', 'Code may be incomplete due to max_tokens limit')
+            if stop_reason == 'max_tokens':
+                result["stop_reason"] = "max_tokens"
+                result["truncated"] = True
+                if "warning" not in result:
+                    result["warning"] = "Code generation was truncated due to max_tokens limit (8192). Code may be incomplete."
+            
+            return result
             
         except ClientError as e:
             logger.error(f"Bedrock client error: {e}")
@@ -134,7 +177,7 @@ Paper Information:
 """
 
         if paper_content:
-            # Claude Sonnet 4.5 has 200k token context window
+            # Claude 3 Sonnet has 200k token context window
             base_prompt += f"""
 Full Paper Content:
 {paper_content[:80000]}
@@ -221,11 +264,13 @@ PACKAGES & ENVIRONMENT
 
 AVAILABLE:
 - torch, torch_xla, torch.nn, torch.optim (PyTorch 2.1.0)
-- transformers (HuggingFace) - for tokenization
+- transformers (HuggingFace) - for tokenization - USE: 'from transformers import AutoTokenizer'
 - numpy, standard library (math, random, collections, json, os, sys, etc.)
 - dataset_loader (custom module)
 
-NOT AVAILABLE:
+NOT AVAILABLE / DO NOT USE:
+- transformers_xla (THIS PACKAGE DOES NOT EXIST - use 'from transformers import AutoTokenizer' instead)
+- XLATokenizer (THIS CLASS DOES NOT EXIST - use AutoTokenizer instead)
 - matplotlib, PIL/Pillow, pandas, scipy, sklearn, torchtext
 - torchvision.datasets (use dataset_loader instead)
 
@@ -338,28 +383,32 @@ for epoch in range(5):  # 5-10 epochs for testing
 ```
 
 ═══════════════════════════════════════════════════════════════════════════════
-OUTPUT FORMAT
+OUTPUT FORMAT - CODE ONLY, NO EXPLANATIONS
 ═══════════════════════════════════════════════════════════════════════════════
 
-Structure your response as:
+CRITICAL: You have a 8192 token OUTPUT limit. Generate ONLY code - NO explanations, NO markdown, NO text outside code blocks.
 
-## PyTorch Implementation
+Your response must be EXACTLY this format:
 
-### Overview
-[What the code implements]
-
-### Code Implementation
 ```python
-[Complete, runnable PyTorch code]
+[COMPLETE, RUNNABLE PYTORCH CODE]
+# All imports here
+# Model definition
+# Dataset loading
+# Training loop
+# Evaluation
+# Everything needed to run
 ```
 
-### Dataset Information
-[Which dataset you used and why it matches the paper]
+DO NOT include:
+- Explanations before or after the code
+- Markdown headers or sections
+- "Here's the code" or similar text
+- Dataset information text
+- Key features text
+- Any text outside the code block
 
-### Key Features
-[Main features implemented]
-
-The code must be immediately runnable with no manual setup required.
+ONLY output the code block. The code must be immediately runnable with no manual setup required.
 """
 
         return base_prompt
@@ -442,7 +491,7 @@ Please provide an improved implementation addressing the feedback.
             # Prepare the request body
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 32000,  # Claude Sonnet 4.5 supports up to 64,000 tokens
+                "max_tokens": 8192,  # Claude 3 Sonnet supports up to 8,192 tokens output
                 "messages": [
                     {
                         "role": "user",

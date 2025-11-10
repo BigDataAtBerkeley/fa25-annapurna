@@ -55,19 +55,6 @@ class PyTorchCodeGenerator:
                     "paper_id": paper_id
                 }
             
-            # Guard: Skip if code already generated for this paper
-            if paper.get("code_generated") is True or (
-                paper.get("code_s3_bucket") and paper.get("code_s3_key")
-            ):
-                return {
-                    "success": True,
-                    "already_generated": True,
-                    "paper_id": paper_id,
-                    "paper_title": paper.get('title', 'Unknown'),
-                    "paper_authors": paper.get('authors', []),
-                    "generated_at": datetime.now().isoformat()
-                }
-            
             # Get paper summary
             paper_summary = self.opensearch_client.get_paper_summary(paper)
             
@@ -89,25 +76,57 @@ class PyTorchCodeGenerator:
                 dataset_recommendations=dataset_recommendations
             )
             
-            # Review and fix code before returning
-            if result.get("success") and result.get("code"):
-                logger.info("Reviewing and fixing generated code...")
-                primary_dataset = dataset_recommendations.get("primary_dataset", "synthetic")
-                review_result = self.code_review_agent.review_and_fix_code(
-                    result["code"],
-                    dataset_name=primary_dataset
-                )
-                
-                if review_result.get("success"):
-                    result["code"] = review_result["code"]
-                    result["code_review"] = {
-                        "fixes_applied": review_result.get("fixes_applied", []),
-                        "iterations": review_result.get("iterations", 0)
-                    }
-                    logger.info(f"Code review complete: {review_result.get('iterations', 0)} iterations, "
-                              f"{len(review_result.get('fixes_applied', []))} fixes applied")
-                else:
-                    logger.warning("Code review did not apply fixes, using original code")
+            # If code generation failed, return error immediately
+            if not result.get("success") or not result.get("code"):
+                logger.error(f"Code generation failed for paper {paper_id}: {result.get('error', 'Unknown error')}")
+                return {
+                    "success": False,
+                    "error": result.get("error", "Code generation failed"),
+                    "paper_id": paper_id,
+                    "paper_title": paper.get('title', 'Unknown')
+                }
+            
+            # Check for truncation warning from Bedrock
+            if result.get("truncated") or result.get("stop_reason") == "max_tokens":
+                warning = result.get("warning", "Code may be incomplete due to max_tokens limit (8192)")
+                logger.error(f"⚠️ CODE GENERATION TRUNCATED: {warning}")
+                logger.error("⚠️ This code may not run correctly - consider regenerating with a shorter prompt")
+            
+            # Review and fix code - REQUIRED before sending to test queue
+            logger.info("Reviewing and fixing generated code...")
+            primary_dataset = dataset_recommendations.get("primary_dataset", "synthetic")
+            review_result = self.code_review_agent.review_and_fix_code(
+                result["code"],
+                dataset_name=primary_dataset
+            )
+            
+            # Check if code review found incomplete code issues
+            fixes_applied = review_result.get("fixes_applied", [])
+            incomplete_issues = []
+            for fix in fixes_applied:
+                if isinstance(fix, dict):
+                    issues = fix.get('issues_found', [])
+                    if any('incomplete' in str(issue).lower() or 'truncated' in str(issue).lower() for issue in issues):
+                        incomplete_issues.extend([i for i in issues if 'incomplete' in str(i).lower() or 'truncated' in str(i).lower()])
+            
+            if incomplete_issues:
+                logger.error(f"⚠️ CODE REVIEW DETECTED INCOMPLETE CODE:")
+                for issue in incomplete_issues:
+                    logger.error(f"   - {issue}")
+                logger.error("⚠️ Code may fail to execute - consider regenerating")
+            
+            # Use reviewed code (even if review didn't find issues, it may have applied quick fixes)
+            if review_result.get("code"):
+                result["code"] = review_result["code"]
+                result["code_review"] = {
+                    "fixes_applied": review_result.get("fixes_applied", []),
+                    "iterations": review_result.get("iterations", 0),
+                    "incomplete_code_detected": len(incomplete_issues) > 0
+                }
+                logger.info(f"Code review complete: {review_result.get('iterations', 0)} iterations, "
+                          f"{len(review_result.get('fixes_applied', []))} fixes applied")
+            else:
+                logger.warning("Code review returned no code, using original code")
             
             # Add metadata including dataset recommendations
             result.update({
