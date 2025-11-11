@@ -97,13 +97,11 @@ def search_similar_papers_with_embedding(
         if not embedding:
             return []
             
-        # Ensure embedding is list of floats
         try:
             embedding = [float(x) for x in embedding]
         except Exception:
             pass
 
-        # Get expected dimension from index mapping
         try:
             mapping = os_client.indices.get_mapping(index=OPENSEARCH_INDEX)
             props = mapping.get(OPENSEARCH_INDEX, {}).get("mappings", {}).get("properties", {})
@@ -111,7 +109,6 @@ def search_similar_papers_with_embedding(
         except Exception:
             dim = len(embedding)
             
-        # Adjust embedding dimension if needed
         if len(embedding) > dim:
             embedding = embedding[:dim]
         elif len(embedding) < dim:
@@ -168,22 +165,33 @@ def search_similar_papers_with_embedding(
         logger.warning(f"RAG search failed: {e}")
         return []
 
-def is_paper_redundant_rag_with_embedding(
+def retrieve_rag_context_window(
     title: str, 
     abstract: str, 
     embedding: List[float],
     exclude_id: str = None
-) -> Dict[str, any]:
-    """
-    Check if paper is redundant using a pre-generated embedding.
-    This avoids regenerating the embedding we already created.
-    """
-    similar = search_similar_papers_with_embedding(embedding, exclude_id=exclude_id, size=10)
+) -> str:
+    
+    similar = search_similar_papers_with_embedding(embedding, exclude_id=exclude_id, size=5)
+    logger.info(f"Found {len(similar)} similar papers for RAG redundancy check.")
+    
     if not similar:
+        logger.info(f"[CRITICAL FLAG] No similar papers for RAG redundancy check.")
         return {"is_redundant": False, "reason": "No similar papers found", "max_similarity": 0.0}
     
     most_similar = similar[0]
     max_sim = most_similar.get('similarity_score', 0.0) or 0.0
+    logger.info(f"Most similar paper has similarity {max_sim:.3f} (threshold={SIMILARITY_THRESHOLD})")
+    
+    rag_context_window = ""
+    
+    for i, sim in enumerate(similar, start=1):
+        if sim.get('similarity_score', 0.0) < SIMILARITY_THRESHOLD:
+            break
+        rag_context_window += f"\n[{i}] Title: {sim.get('title', 'Unknown')}\nAbstract: {sim.get('abstract', 'No abstract')}"
+
+    return rag_context_window
+    """
     return {
         "is_redundant": max_sim >= SIMILARITY_THRESHOLD,
         "reason": f"Most similar has {max_sim:.3f} similarity (threshold={SIMILARITY_THRESHOLD})",
@@ -191,6 +199,7 @@ def is_paper_redundant_rag_with_embedding(
         "most_similar_paper": most_similar.get('title', 'Unknown'),
         "most_similar_id": most_similar.get('_id', 'Unknown')
     }
+    """
 
 def is_duplicate(title_norm: str, sha_abs: str, exclude_id: str = None) -> bool:
     """
@@ -224,53 +233,76 @@ def is_duplicate(title_norm: str, sha_abs: str, exclude_id: str = None) -> bool:
         logger.warning(f"Duplicate check failed: {e}")
         return False
 
-def evaluate_paper_with_claude(title: str, abstract: str, max_retries: int = 6) -> Dict[str, str]:
-    """Ask Claude (via Bedrock) to assess relevance and novelty with exponential backoff."""
+def evaluate_paper_with_claude(title: str, abstract: str, rag_context_window: str, max_retries: int = 6) -> Dict[str, str]:
+    rag_prompt_section = ""
+    if rag_context_window:
+        rag_prompt_section = f"""
+    SIMILARITY — evaluate how closely this paper replicates or overlaps with previously indexed work.
+    Use the following retrieved papers as reference context:
+
+    {rag_context_window}
+
+    Say "yes" to SIMILARITY if the current paper is **near-identical** in method, architecture, or result claims to one or more of the retrieved papers,
+    without offering a substantial new improvement, extension, or validation.
+    Say "no" if the paper is about a distinct topic, or makes a clear, material improvement (e.g., better results, new component, novel analysis, or broader applicability).
+    Say "unclear" only if the overlap cannot be confidently determined from the abstract.
+    """
+
     prompt = f"""
-You are an expert ML research analyst embedded in an AWS AI automation pipeline.
+    You are an expert ML research analyst embedded in an AWS AI automation pipeline.
 
-Decide whether this paper is:
-1) RELEVANT to current LLM/AI/ML work,
-2) NOVEL beyond the state of the art, and
-3) COMPATIBLE with AWS Trainium for practical implementation.
+    Decide whether this paper is:
+    1) RELEVANT to current LLM/AI/ML work,
+    2) NOVEL beyond the state of the art,
+    3) COMPATIBLE with AWS Trainium for practical implementation,
+    {('4) DISTINCT enough from previously indexed work (SIMILARITY check).' if rag_context_window else '').strip()}
 
-Use this rubric:
+    Use this rubric:
 
-RELEVANCE — say "yes" only if the paper is clearly about one or more of:
-- LLM architectures or scaling (Transformers, MoE, long-context),
-- training efficiency/optimization (optimizers, curriculum, data/augmentation, alignment like RLHF/DPO/ORPO),
-- inference efficiency (KV-cache, quantization, sparsity, speculative decoding, retrieval/RAG),
-- evaluation or safety methods with concrete technical contributions.
-Say "no" if it is primarily a survey/position/ethics/policy piece, a benchmark proposal without new methods,
-a narrow end-user application without method advances, or non-neural stats unrelated to LLMs.
+    RELEVANCE — say "yes" only if the paper is clearly about one or more of:
+    - model architectures (LLMs, Transformers, CNNs, GNNs, diffusion models, MoE, hybrid or modular systems, etc.),
+    - training algorithms or optimization strategies (optimizers, regularization, loss design, curriculum learning, meta-learning, etc.),
+    - efficiency improvements (training or inference speedups, quantization, sparsity, parallelism, mixed precision, distributed training, etc.),
+    - alignment, fine-tuning, or data-centric techniques (RLHF, DPO/ORPO, synthetic data, augmentation, retrieval, multimodal alignment, etc.)
+    Say "no" if it is primarily a:
+    - survey/position/ethics/policy piece,
+    - a benchmark proposal without new methods,
+    - an application of an existing model to a domain without new ML techniques,
+    - non-neural stats unrelated to MLs or evaluation/safety methods
+    - purely theoretical work without clear implementation.
 
-NOVELTY — judge relative to widely known 2024–2025 techniques (e.g., Llama-3/Mistral/Gemma/Claude-class practices).
-- novel = "yes" if it proposes a new algorithm/architecture or materially better training/inference method with credible evidence
-  (theory or strong experiments), not just a dataset swap or minor tuning.
-- novel = "no" if it is mostly packaging/ablations/parameter tweaks/benchmarking of known tricks.
+    NOVELTY — judge relative to widely known 2024–2025 techniques (e.g., Llama-3/Mistral/Gemma/Claude-class practices).
+    - novel = "yes" if it proposes a new algorithm/architecture or materially better training/inference method with credible evidence
+    (theory or strong experiments), not just a dataset swap or minor tuning.
+    - novel = "no" if it is mostly packaging/ablations/parameter tweaks/benchmarking of known tricks.
 
-TRAINIUM COMPATIBILITY — respond "yes" only if the method can realistically run on Trainium:
-- Expressible in PyTorch/XLA; uses FP16/BF16; relies on transformer-compatible ops or ops with XLA kernels (e.g., Flash-Attention-style
-  kernels that have XLA paths); no proprietary hardware requirements (TPU-only) or CUDA-only custom kernels without XLA equivalents.
-- If the abstract lacks enough detail to judge, respond "unclear". If it depends on unavailable kernels or CUDA-only custom ops, respond "no".
+    TRAINIUM COMPATIBILITY — respond "yes" only if the method can realistically run on Trainium:
+    - Expressible in PyTorch/XLA; uses FP16/BF16; relies on transformer-compatible ops or ops with XLA kernels (e.g., Flash-Attention-style
+    kernels that have XLA paths); no proprietary hardware requirements (TPU-only) or CUDA-only custom kernels without XLA equivalents.
+    - If the abstract lacks enough detail to judge, respond "unclear". If it depends on unavailable kernels or CUDA-only custom ops, respond "no".
 
-Edge rules:
-- Surveys/position/ethics/benchmark-only ⇒ relevance="no", novelty="no".
-- If the abstract is too vague to tell, set novelty="no" and trainium_compatibility="unclear".
-- Keep justification short and cite the decisive claim(s) from the abstract.
+    {rag_prompt_section}
 
-Paper:
-Title: {title}
-Abstract: {abstract}
+    Edge rules:
+    - Surveys/position/ethics/benchmark-only ⇒ relevance="no", novelty="no".
+    - If the abstract is too vague to tell, set novelty="no" and trainium_compatibility="unclear".
+    - Keep justification short and cite the decisive claim(s) from the abstract.
 
-Respond with STRICT JSON only, exactly:
-{{
-  "relevance": "yes" | "no",
-  "novelty": "yes" | "no",
-  "trainium_compatibility": "yes" | "no" | "unclear",
-  "reason": "<≤3 short sentences citing decisive factors from the abstract>"
-}}
-""".strip()
+    Paper:
+    Title: {title}
+    Abstract: {abstract}
+
+    Respond with STRICT JSON only, exactly:
+    {{
+    "relevance": "yes" | "no",
+    "novelty": "yes" | "no",
+    "trainium_compatibility": "yes" | "no" | "unclear",
+    "similarity": {"\"yes\" | \"no\" | \"unclear\"" if rag_context_window else "\"no\""},
+    "reason": "<≤3 short sentences citing decisive factors from the abstract and RAG context if applicable>"
+    }}
+    """.strip()
+    
+    logger.info(f"Similar papers prompt: {rag_prompt_section}")
     
     body = json.dumps({
         "anthropic_version": "bedrock-2023-05-31",
@@ -301,6 +333,8 @@ Respond with STRICT JSON only, exactly:
                     return {
                         "relevance": "unknown", 
                         "novelty": "unknown", 
+                        "similarity": "unknown",
+                        "trainium_compatibility": "unknown",
                         "reason": "Bedrock throttling - max retries exceeded"
                     }
             else:
@@ -308,10 +342,12 @@ Respond with STRICT JSON only, exactly:
                 return {
                     "relevance": "unknown", 
                     "novelty": "unknown", 
+                    "similarity": "unknown",
+                    "trainium_compatibility": "unknown",
                     "reason": f"Claude evaluation failed: {str(e)}"
                 }
     
-    return {"relevance": "unknown", "novelty": "unknown", "reason": "Unexpected error in retry loop"}
+    return {"relevance": "unknown", "novelty": "unknown", "similarity": "unknown", "trainium_compatibility": "unknown", "reason": "Unexpected error in retry loop"}
 
 def send_result_to_queue(result: Dict) -> bool:
     """Send simulation result to SQS results queue."""
@@ -370,7 +406,6 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
         logger.info(f"[SIMULATION] Skipped (exact duplicate) | {title} | {reason}")
         return result
     
-    # Generate embedding ONCE and reuse it (optimization!)
     logger.info(f"Generating embedding for: {title[:50]}...")
     paper_embedding = generate_embedding(abstract)
     
@@ -386,10 +421,10 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
         return result
     
     # RAG redundancy pre-check - use the pre-generated embedding
-    redundancy = is_paper_redundant_rag_with_embedding(
-        title, abstract, paper_embedding, exclude_id=paper_id
-    )
+    logger.info(f"Retrieving RAG context window redundancy for: {title[:50]}...")
+    rag_context_window = retrieve_rag_context_window(title, abstract, paper_embedding, exclude_id=paper_id)
     
+    """
     if redundancy.get("is_redundant"):
         reason = redundancy.get("reason", "RAG redundancy")
         result.update({
@@ -404,21 +439,26 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
         })
         logger.info(f"[SIMULATION] Rejected by RAG | {title} | {reason}")
         return result
+    """    
     
     # Evaluate with Claude (Bedrock)
-    evaluation = evaluate_paper_with_claude(title, abstract)
+    evaluation = evaluate_paper_with_claude(title, abstract, rag_context_window)
     relevance = evaluation.get("relevance", "unknown").lower()
+    similarity = evaluation.get("similarity", "unknown").lower()
+    trainium_compatibility = evaluation.get("trainium_compatibility", "unknown").lower()
     novelty = evaluation.get("novelty", "unknown").lower()
     reason = evaluation.get("reason", "No reason provided.")
     
     result.update({
         "relevance": relevance,
         "novelty": novelty,
+        "similarity": similarity,
+        "trainium_compatibility": trainium_compatibility,
         "claude_reason": reason
     })
     
     # Only accept relevant + novel papers
-    if relevance == "yes" and novelty == "yes":
+    if relevance == "yes" and novelty == "yes" and similarity != "yes" and trainium_compatibility != "no":
         result.update({
             "decision": "accept",
             "rejected_by": None,
