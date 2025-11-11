@@ -15,6 +15,7 @@ import sys
 import json
 import logging
 import time
+import subprocess
 import boto3
 import requests
 from datetime import datetime
@@ -115,38 +116,64 @@ def execute_code_via_http(paper_id: str, code: str, timeout: int = 1800, paper_t
     
     logger.info(f"Sending execution request to {endpoint}")
     
-    try:
-        # Use longer timeout: execution_timeout + 5 minutes buffer for HTTP overhead
-        # Neuron compilation can take 20-40+ minutes, so we need a long timeout
-        http_timeout = timeout + 300  # Add 5 minute buffer
-        logger.info(f"HTTP request timeout set to {http_timeout}s ({http_timeout/60:.1f} minutes)")
-        response = requests.post(
-            endpoint,
-            json=payload,
-            timeout=http_timeout
-        )
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.Timeout as e:
-        logger.warning(f"HTTP request timed out after {http_timeout}s")
-        logger.warning("Execution may still be running on Trainium - check Trainium logs to verify")
-        return {
-            "success": False,
-            "error_message": f"HTTP request timed out after {http_timeout}s. Execution may still be running on Trainium.",
-            "error_type": "http_timeout",
-            "execution_time": 0,
-            "return_code": -1,
-            "note": "Check Trainium logs and CloudWatch metrics to verify if execution completed"
-        }
-    except requests.exceptions.RequestException as e:
-        logger.error(f"HTTP request to Trainium executor failed: {e}")
-        return {
-            "success": False,
-            "error_message": f"HTTP request failed: {str(e)}",
-            "error_type": "http_error",
-            "execution_time": 0,
-            "return_code": -1
-        }
+    # Retry logic for connection errors
+    max_retries = 3
+    retry_delay = 5  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            # Use longer timeout: execution_timeout + 5 minutes buffer for HTTP overhead
+            # Neuron compilation can take 20-40+ minutes, so we need a long timeout
+            http_timeout = timeout + 300  # Add 5 minute buffer
+            if attempt == 0:
+                logger.info(f"HTTP request timeout set to {http_timeout}s ({http_timeout/60:.1f} minutes)")
+            
+            response = requests.post(
+                endpoint,
+                json=payload,
+                timeout=http_timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.Timeout as e:
+            logger.warning(f"HTTP request timed out after {http_timeout}s")
+            logger.warning("Execution may still be running on Trainium - check Trainium logs to verify")
+            return {
+                "success": False,
+                "error_message": f"HTTP request timed out after {http_timeout}s. Execution may still be running on Trainium.",
+                "error_type": "http_timeout",
+                "execution_time": 0,
+                "return_code": -1,
+                "note": "Check Trainium logs and CloudWatch metrics to verify if execution completed"
+            }
+        except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
+            # Connection errors - retry with exponential backoff
+            if attempt < max_retries - 1:
+                wait_time = retry_delay * (2 ** attempt)
+                logger.warning(f"HTTP connection error (attempt {attempt + 1}/{max_retries}): {e}")
+                logger.info(f"Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+                continue
+            else:
+                logger.error(f"HTTP connection failed after {max_retries} attempts: {e}")
+                return {
+                    "success": False,
+                    "error_message": f"HTTP connection failed after {max_retries} attempts: {str(e)}",
+                    "error_type": "http_error",
+                    "execution_time": 0,
+                    "return_code": -1,
+                    "note": "Executor may have crashed or network connection is unstable. Check executor logs."
+                }
+        except requests.exceptions.RequestException as e:
+            # Other request errors - don't retry
+            logger.error(f"HTTP request to Trainium executor failed: {e}")
+            return {
+                "success": False,
+                "error_message": f"HTTP request failed: {str(e)}",
+                "error_type": "http_error",
+                "execution_time": 0,
+                "return_code": -1
+            }
 
 
 def find_instance_by_elastic_ip(elastic_ip: str) -> Optional[str]:
@@ -504,6 +531,7 @@ def process_paper(paper_id: str, generator: PyTorchCodeGenerator) -> Dict[str, A
         if profiler_info and profiler_info.get("profiler_enabled"):
             profiler_output_dir = profiler_info.get("profiler_output_dir")
             profiler_files = profiler_info.get("profiler_files", [])
+            perfetto_file_path = profiler_info.get("perfetto_file")  # Path on Trainium
             
             if profiler_output_dir and profiler_files:
                 # Save profiler metadata
@@ -513,16 +541,79 @@ def process_paper(paper_id: str, generator: PyTorchCodeGenerator) -> Dict[str, A
                     "profiler_output_dir": profiler_output_dir,
                     "profiler_files": profiler_files,
                     "profiler_enabled": True,
+                    "perfetto_file": perfetto_file_path,
                     "note": f"Profiler output files are on Trainium instance at: {profiler_output_dir}"
                 })
                 logger.info(f"✅ Profiler results available: {len(profiler_files)} files in {profiler_output_dir}")
+                
+                # Download Perfetto file from Trainium if available
+                if perfetto_file_path:
+                    try:
+                        # Create profiler_file directory in paper's results folder
+                        paper_dir = RESULTS_DIR / paper_id
+                        profiler_file_dir = paper_dir / 'profiler_file'
+                        profiler_file_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        # Download from Trainium using SCP
+                        trainium_host = TRAINIUM_ENDPOINT.replace('http://', '').replace('https://', '').split(':')[0]
+                        ssh_key = os.getenv('SSH_KEY', '~/.ssh/trainium-deploy-key.pem')
+                        
+                        local_perfetto_file = profiler_file_dir / f"{paper_id}_profile.pftrace"
+                        
+                        scp_cmd = [
+                            'scp',
+                            '-i', os.path.expanduser(ssh_key),
+                            '-o', 'StrictHostKeyChecking=no',
+                            f'ec2-user@{trainium_host}:{perfetto_file_path}',
+                            str(local_perfetto_file)
+                        ]
+                        
+                        logger.info(f"Downloading Perfetto file from Trainium: {perfetto_file_path}")
+                        download_result = subprocess.run(
+                            scp_cmd,
+                            capture_output=True,
+                            text=True,
+                            timeout=300  # 5 minute timeout
+                        )
+                        
+                        if download_result.returncode == 0 and local_perfetto_file.exists():
+                            file_size = local_perfetto_file.stat().st_size / (1024 * 1024)
+                            logger.info(f"✓ Downloaded Perfetto file to {local_perfetto_file} ({file_size:.2f} MB)")
+                        else:
+                            logger.warning(f"Failed to download Perfetto file: {download_result.stderr}")
+                    except Exception as e:
+                        logger.warning(f"Failed to download Perfetto file from Trainium: {e}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
         
         pipeline_results["steps"]["trn_execution"] = step4_result
         
         if execution_result.get("success"):
             logger.info(f"✅ Execution successful ({step4_result['execution_time']:.1f}s)")
         else:
-            logger.error(f"❌ Execution failed: {execution_result.get('error_message', 'Unknown error')}")
+            # Extract error message from stderr if available
+            error_msg = execution_result.get('error_message')
+            if not error_msg:
+                stderr = execution_result.get('stderr', '')
+                # Try to extract the actual error from stderr
+                if stderr:
+                    # Look for common error patterns
+                    import re
+                    # Find ValueError, RuntimeError, ModuleNotFoundError, etc.
+                    error_match = re.search(r'(ValueError|RuntimeError|ModuleNotFoundError|ImportError|TypeError|AttributeError|KeyError|IndexError):\s*(.+)', stderr)
+                    if error_match:
+                        error_msg = f"{error_match.group(1)}: {error_match.group(2).split(chr(10))[0]}"
+                    else:
+                        # Fallback: get last non-empty line from stderr
+                        stderr_lines = [line.strip() for line in stderr.split('\n') if line.strip()]
+                        if stderr_lines:
+                            error_msg = stderr_lines[-1][:200]  # Limit to 200 chars
+                        else:
+                            error_msg = f"Return code: {execution_result.get('return_code', -1)}"
+                else:
+                    error_msg = f"Return code: {execution_result.get('return_code', -1)}"
+            
+            logger.error(f"❌ Execution failed: {error_msg}")
         
         # Overall pipeline result
         pipeline_results["success"] = (
@@ -555,6 +646,8 @@ def main():
     parser.add_argument('--query', help='OpenSearch query to find papers (JSON format)')
     parser.add_argument('--recent-days', type=int, default=30,
                        help='Process recent papers from last N days')
+    parser.add_argument('--random', action='store_true',
+                       help='Get random papers instead of recent papers')
     
     args = parser.parse_args()
     
@@ -582,8 +675,15 @@ def main():
         query = json.loads(args.query)
         papers = generator.opensearch_client.search_papers(query, size=args.max_papers)
         paper_ids = [p.get('_id') for p in papers if p.get('_id')]
+    elif args.random:
+        # Get random papers
+        logger.info(f"Selecting {args.max_papers} random papers...")
+        papers = generator.opensearch_client.get_random_papers(size=args.max_papers)
+        paper_ids = [p.get('_id') for p in papers if p.get('_id')]
+        if paper_ids:
+            logger.info(f"Selected random papers: {', '.join(paper_ids)}")
     else:
-        # Get recent papers
+        # Get recent papers (default behavior)
         papers = generator.opensearch_client.get_recent_papers(
             days=args.recent_days, 
             size=args.max_papers

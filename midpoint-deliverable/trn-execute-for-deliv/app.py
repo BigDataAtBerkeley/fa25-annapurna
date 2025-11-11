@@ -92,6 +92,70 @@ def setup_dataset_loader(job_dir: str):
     else:
         logger.warning("dataset_loader.py not found, generated code won't have dataset utilities")
 
+def ensure_synthetic_dataset():
+    """
+    Ensure synthetic dataset is downloaded from S3.
+    This is called before execution to prevent missing dataset errors.
+    """
+    try:
+        # Import dataset_loader from the same directory as this script
+        loader_path = os.path.join(os.path.dirname(__file__), 'dataset_loader.py')
+        if not os.path.exists(loader_path):
+            logger.warning("dataset_loader.py not found, cannot download synthetic dataset")
+            return False
+        
+        # Add the directory to sys.path temporarily for import
+        import sys
+        script_dir = os.path.dirname(__file__)
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        
+        try:
+            from dataset_loader import DatasetManager
+            
+            manager = DatasetManager(cache_dir=DATASET_CACHE_DIR)
+            
+            # Check if synthetic dataset exists
+            synthetic_dir = os.path.join(DATASET_CACHE_DIR, 'synthetic')
+            required_files = ['synthetic_small.pt', 'synthetic_medium.pt', 'synthetic_tabular.pt']
+            all_exist = all(os.path.exists(os.path.join(synthetic_dir, f)) for f in required_files)
+            
+            if all_exist:
+                logger.info("✓ Synthetic dataset already available")
+                return True
+            
+            # Download synthetic dataset
+            logger.info("Synthetic dataset not found, downloading from S3...")
+            try:
+                dataset_dir = manager.download_dataset('synthetic', force=False)
+                logger.info(f"✓ Synthetic dataset downloaded to {dataset_dir}")
+                
+                # Verify all files were downloaded
+                all_exist = all(os.path.exists(os.path.join(dataset_dir, f)) for f in required_files)
+                if all_exist:
+                    logger.info(f"✓ Verified all synthetic dataset files are present")
+                    return True
+                else:
+                    missing = [f for f in required_files if not os.path.exists(os.path.join(dataset_dir, f))]
+                    logger.error(f"✗ Some synthetic dataset files are missing: {missing}")
+                    return False
+            except Exception as e:
+                logger.error(f"Failed to download synthetic dataset: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                logger.error("  Code requiring synthetic dataset will fail")
+                return False
+        finally:
+            # Remove the directory from sys.path if we added it
+            if script_dir in sys.path:
+                sys.path.remove(script_dir)
+            
+    except Exception as e:
+        logger.error(f"Failed to ensure synthetic dataset: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
 def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME, paper_title: Optional[str] = None) -> Dict[str, Any]:
     """
     Execute Python code in isolated environment with Neuron support.
@@ -166,6 +230,12 @@ sys.path.append('{exec_dir}')
                 logger.info(f"Initialized SageMaker metrics logger for {paper_id}")
             except Exception as e:
                 logger.warning(f"Failed to initialize SageMaker metrics logger: {e}")
+        
+        # Ensure synthetic dataset is available only if code uses it
+        # Check if code references 'synthetic' dataset to avoid unnecessary downloads
+        code_lower = code.lower()
+        if 'synthetic' in code_lower and ('load_dataset' in code_lower or 'dataset' in code_lower):
+            ensure_synthetic_dataset()
         
         logger.info(f"Executing code for paper {paper_id} in isolated directory {exec_dir} (timeout: {timeout}s)")
         
@@ -291,18 +361,63 @@ sys.path.append('{exec_dir}')
                             profiler_subdirs.append(rel_dir)
                 
                 if profiler_files:
+                    # Convert profiler files to Perfetto format
+                    perfetto_file_path = None
+                    try:
+                        # Find the subdirectory with profiler files (usually instance_id_pid)
+                        if profiler_subdirs:
+                            profiler_subdir = profiler_subdirs[0]  # Use first subdirectory
+                            profiler_session_dir = os.path.join(profiler_output_path, profiler_subdir)
+                            
+                            if os.path.exists(profiler_session_dir):
+                                # Convert to Perfetto format
+                                perfetto_file = os.path.join(profiler_output_path, f"{paper_id}_profile.pftrace")
+                                neuron_profile_cmd = '/opt/aws/neuron/bin/neuron-profile'
+                                
+                                if os.path.exists(neuron_profile_cmd):
+                                    convert_cmd = [
+                                        neuron_profile_cmd,
+                                        'view',
+                                        '--session-dir', profiler_session_dir,
+                                        '--output-format', 'perfetto',
+                                        '--output-file', perfetto_file
+                                    ]
+                                    
+                                    convert_result = subprocess.run(
+                                        convert_cmd,
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=300  # 5 minute timeout for conversion
+                                    )
+                                    
+                                    if convert_result.returncode == 0 and os.path.exists(perfetto_file):
+                                        perfetto_file_path = perfetto_file
+                                        file_size = os.path.getsize(perfetto_file) / (1024 * 1024)
+                                        logger.info(f"✓ Converted profiler to Perfetto format: {perfetto_file} ({file_size:.2f} MB)")
+                                    else:
+                                        logger.warning(f"Failed to convert profiler to Perfetto: {convert_result.stderr}")
+                                else:
+                                    logger.warning("neuron-profile command not found, cannot convert to Perfetto")
+                    except Exception as e:
+                        logger.warning(f"Failed to convert profiler to Perfetto format: {e}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
+                    
                     profiler_results = {
                         "profiler_output_dir": profiler_output_path,
                         "profiler_files": profiler_files,
                         "profiler_subdirs": profiler_subdirs,
                         "profiler_enabled": True,
-                        "total_files": len(profiler_files)
+                        "total_files": len(profiler_files),
+                        "perfetto_file": perfetto_file_path  # Path to Perfetto file on Trainium
                     }
                     logger.info(f"Neuron Profiler results available: {len(profiler_files)} files in {profiler_output_path}")
                 else:
                     logger.warning(f"Neuron Profiler directory exists but contains no files: {profiler_output_path}")
             except Exception as e:
                 logger.warning(f"Failed to collect profiler results: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
         
         execution_result = {
             "success": success,
@@ -458,12 +573,19 @@ def analyze_code(code: str) -> Dict[str, Any]:
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
+    # Check synthetic dataset availability
+    synthetic_dir = os.path.join(DATASET_CACHE_DIR, 'synthetic')
+    required_files = ['synthetic_small.pt', 'synthetic_medium.pt', 'synthetic_tabular.pt']
+    synthetic_available = all(os.path.exists(os.path.join(synthetic_dir, f)) for f in required_files)
+    
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "neuron_available": os.path.exists('/opt/aws/neuron'),
         "working_dir": WORKING_DIR,
-        "max_execution_time": MAX_EXECUTION_TIME
+        "max_execution_time": MAX_EXECUTION_TIME,
+        "synthetic_dataset_available": synthetic_available,
+        "dataset_cache_dir": DATASET_CACHE_DIR
     })
 
 @app.route('/execute_batch', methods=['POST'])

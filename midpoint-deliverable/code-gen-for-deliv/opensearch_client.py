@@ -162,6 +162,26 @@ class OpenSearchClient:
         }
         return self.search_papers(query, size)
     
+    def get_random_papers(self, size: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get random papers from the index.
+        
+        Args:
+            size: Maximum number of results
+            
+        Returns:
+            List of random papers
+        """
+        # Use function_score with random_score to get random papers
+        query = {
+            "function_score": {
+                "query": {"match_all": {}},
+                "random_score": {},
+                "boost_mode": "replace"
+            }
+        }
+        return self.search_papers(query, size)
+    
     def get_all_papers(self, size: int = 50) -> List[Dict[str, Any]]:
         """
         Get all papers from the index.

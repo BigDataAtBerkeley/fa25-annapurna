@@ -512,21 +512,30 @@ Original code:
 Dataset: {dataset_name or 'unknown'}
 
 CRITICAL FIXES NEEDED:
-1. If using IMDB dataset: Add tokenization in training/test loops (IMDB returns text strings, not tokenized tensors)
-2. Handle model tuple outputs: Check if model returns tuple and extract first element
-3. XLA tensor size conversion (CRITICAL - MOST COMMON BUG):
+1. Tokenizer input types (CRITICAL - COMMON BUG):
+   - Tokenizers from transformers library expect STRINGS or LIST OF STRINGS, NOT tensors
+   - WRONG: tokenizer(inputs, ...) where inputs is a tensor from dataloader
+   - WRONG: tokenizer(list(inputs), ...) where inputs is a tensor (list() doesn't convert tensor to strings)
+   - CORRECT: If inputs are strings, use tokenizer(inputs, ...) or tokenizer(list(inputs), ...)
+   - CORRECT: If inputs are tensors from dataloader, you need to extract text strings first
+   - For synthetic datasets: synthetic data returns tensors, NOT text - do NOT pass to tokenizer
+   - For IMDB dataset: IMDB returns text strings - tokenize them in the training loop
+   - For WikiText: WikiText returns text strings - tokenize them in the training loop
+2. If using IMDB dataset: Add tokenization in training/test loops (IMDB returns text strings, not tokenized tensors)
+3. Handle model tuple outputs: Check if model returns tuple and extract first element
+4. XLA tensor size conversion (CRITICAL - MOST COMMON BUG):
    - Find ALL uses of tensor.size(0) or tensor.shape[0] in arithmetic operations
    - WRONG: count += inputs.size(0) or batch_size = inputs.size(0) or scores / count where count came from size(0)
    - CORRECT: count += int(inputs.size(0)) or batch_size = int(inputs.size(0))
    - Before division: count = int(count) if hasattr(count, 'item') else int(count) before scores / count
    - In XLA, tensor.size(0) returns a tensor, NOT a Python int - this causes AttributeError
-4. Ensure all tensors are moved to XLA device (xm.xla_device()) before operations
-5. MUST use xm.optimizer_step(optimizer) instead of optimizer.step() (Neuron SDK requirement)
-6. MUST call xm.mark_step() after each backward pass (Neuron SDK synchronization)
-7. xm.rendezvous() MUST have a tag argument on Trainium/Neuron:
+5. Ensure all tensors are moved to XLA device (xm.xla_device()) before operations
+6. MUST use xm.optimizer_step(optimizer) instead of optimizer.step() (Neuron SDK requirement)
+7. MUST call xm.mark_step() after each backward pass (Neuron SDK synchronization)
+8. xm.rendezvous() MUST have a tag argument on Trainium/Neuron:
    - WRONG: xm.rendezvous()  (will cause IndexError: tuple index out of range)
    - CORRECT: xm.rendezvous('init') or xm.rendezvous('training') or any string tag
-8. Add any missing imports
+9. Add any missing imports
 
 IMPORTANT: Return the COMPLETE fixed Python code. Include ALL imports, ALL functions, and ALL the main execution code. Do not return partial code or explanations - return the full working code that can be executed directly.
 

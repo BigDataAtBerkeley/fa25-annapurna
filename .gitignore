@@ -78,3 +78,23 @@ config.json
 
 ## 
 clear_opensearch.py 
+
+# --- Midpoint deliverable outputs & local-only artifacts ---
+# Results and logs
+midpoint-deliverable/results/
+midpoint-deliverable/pipeline_for_delivery.log
+
+# Profiler outputs (large)
+midpoint-deliverable/profiler_results/
+midpoint-deliverable/results/*/profiler_file/*.pftrace
+
+# Dataset caches (local-only, recreated on Trainium)
+midpoint-deliverable/dataset_cache_synthetic/
+midpoint-deliverable/trn-execute-for-deliv/dataset_cache*/
+
+# Bytecode/caches anywhere
+midpoint-deliverable/**/__pycache__/
+midpoint-deliverable/**/*.pyc
+
+# Secrets/keys (ensure local env not committed)
+midpoint-deliverable/.env
