@@ -1,0 +1,488 @@
+"""
+Bedrock client for chunked code generation.
+Handles individual chunk summarization and final code generation.
+"""
+
+import os
+import json
+import logging
+import time
+import random
+from typing import Dict, Any, Optional, List
+import boto3
+from botocore.exceptions import ClientError
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+class ChunkedBedrockClient:
+    """Client for chunked code generation with throttling mitigation."""
+    
+    def __init__(self, use_haiku: bool = False):
+        """
+        Initialize Bedrock client for chunked generation.
+        
+        Args:
+            use_haiku: If True, use Claude 3 Haiku for chunk summaries (faster, better rate limits)
+                      If False, use Claude 3 Sonnet (default)
+        """
+        self.aws_region = os.getenv("AWS_REGION", "us-east-1")
+        
+        # Use Haiku for chunk summaries if requested (better rate limits, faster, cheaper)
+        # Use Sonnet for final code generation (better quality)
+        if use_haiku:
+            self.chunk_model_id = os.getenv("BEDROCK_CHUNK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
+        else:
+            self.chunk_model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0")
+        
+        # Always use Sonnet for final code generation (better quality)
+        self.final_model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0")
+        
+        from botocore.config import Config
+        config = Config(
+            read_timeout=150,
+            retries={'max_attempts': 0}  
+        )
+        self.client = boto3.client("bedrock-runtime", region_name=self.aws_region, config=config)
+        
+        # Delay between chunk processing to avoid throttling
+        self.chunk_delay = float(os.getenv("CHUNK_PROCESSING_DELAY", "3.0"))  # 3 seconds between chunks (increased from 2.0)
+        
+        logger.info(f"Chunked Bedrock client initialized:")
+        logger.info(f"  - Chunk model: {self.chunk_model_id}")
+        logger.info(f"  - Final model: {self.final_model_id}")
+        logger.info(f"  - Chunk delay: {self.chunk_delay}s")
+    
+    def summarize_chunk(self, chunk_text: str, chunk_number: int, total_chunks: int, 
+                       paper_summary: str) -> Dict[str, Any]:
+        """
+        Generate a detailed summary of a paper chunk.
+        
+        Args:
+            chunk_text: Text content of the chunk
+            chunk_number: Current chunk number (1-indexed)
+            total_chunks: Total number of chunks
+            paper_summary: Overall paper summary (title, authors, abstract)
+            
+        Returns:
+            Dictionary with summary and metadata
+        """
+        prompt = f"""
+You are analyzing a research paper that has been split into {total_chunks} parts. You are analyzing part {chunk_number} of {total_chunks}.
+
+Paper Overview:
+{paper_summary}
+
+Chunk {chunk_number} Content:
+{chunk_text}
+
+Your task is to provide a DETAILED SUMMARY of this chunk that will be used to generate PyTorch code. Include:
+
+1. KEY ALGORITHMS AND METHODS described in this chunk
+2. MATHEMATICAL FORMULAS and equations (write them out clearly)
+3. ARCHITECTURAL DETAILS (neural network structures, layer types, etc.)
+4. TRAINING PROCEDURES (loss functions, optimization methods, training steps)
+5. KEY IMPLEMENTATION DETAILS (data preprocessing, specific operations, etc.)
+6. IMPORTANT CONSTANTS, HYPERPARAMETERS, or configuration details
+7. ANY CODE-RELEVANT INFORMATION that would be needed to implement this
+
+Be extremely detailed and specific. Include all mathematical notation, formulas, and technical details.
+This summary will be combined with summaries from other chunks to generate complete PyTorch code.
+
+Format your response as a structured summary with clear sections.
+"""
+        
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 4096,  # Chunk summaries don't need to be as long as full code
+            "temperature": 0.2,  # Lower temperature for more accurate, detailed summaries
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        }
+        
+        max_retries = 8
+        base_delay = 5  # Increased base delay to better handle rate limits
+        
+        for attempt in range(max_retries):
+            try:
+                response = self.client.invoke_model(
+                    modelId=self.chunk_model_id,
+                    body=json.dumps(body),
+                    contentType="application/json"
+                )
+                break
+            except ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', '')
+                error_msg = str(e)
+                
+                # Log the actual error for debugging
+                logger.debug(f"Chunk {chunk_number} error: Code={error_code}, Message={error_msg[:200]}")
+                
+                retryable_errors = ['ThrottlingException', 'ServiceUnavailableException', 'TooManyRequestsException']
+                # More specific throttling detection - don't match generic 'rate' word
+                is_throttling = (error_code in retryable_errors or 
+                               'throttl' in error_msg.lower() or 
+                               'too many requests' in error_msg.lower() or
+                               'rate limit' in error_msg.lower() or
+                               'rate exceeded' in error_msg.lower())
+                
+                if is_throttling and attempt < max_retries - 1:
+                    # Exponential backoff with jitter
+                    delay = min(base_delay * (2 ** attempt), 60)  # Cap at 60s for chunks
+                    jitter = random.uniform(0, 1)
+                    total_delay = delay + jitter
+                    logger.warning(f"Chunk {chunk_number} throttling detected (Code: {error_code}), retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(total_delay)
+                    continue
+                else:
+                    # Log non-throttling errors before raising
+                    if not is_throttling:
+                        logger.error(f"Chunk {chunk_number} non-retryable error: Code={error_code}, Message={error_msg[:200]}")
+                    raise
+        
+        response_body = json.loads(response['body'].read())
+        summary_text = response_body['content'][0]['text']
+        
+        return {
+            "success": True,
+            "chunk_number": chunk_number,
+            "summary": summary_text,
+            "model_used": self.chunk_model_id
+        }
+    
+    def summarize_batch(self, batch_summaries: List[str], batch_number: int, total_batches: int,
+                       paper_summary: str) -> Dict[str, Any]:
+        """
+        Summarize a batch of chunk summaries into an intermediate summary (Stage 2 of hierarchical summarization).
+        
+        Args:
+            batch_summaries: List of summaries from a batch of chunks
+            batch_number: Current batch number (1-indexed)
+            total_batches: Total number of batches
+            paper_summary: Overall paper summary
+            
+        Returns:
+            Dictionary with intermediate summary and metadata
+        """
+        # Combine batch summaries
+        combined_batch = "\n\n".join([
+            f"--- Chunk Summary {i+1} ---\n{summary}"
+            for i, summary in enumerate(batch_summaries)
+        ])
+        
+        prompt = f"""
+You are analyzing intermediate summaries from a research paper. These summaries come from batch {batch_number} of {total_batches} batches.
+
+Paper Overview:
+{paper_summary}
+
+Batch {batch_number} Summaries:
+{combined_batch}
+
+Your task is to create a CONSOLIDATED SUMMARY of this batch that:
+1. Combines and synthesizes the key information from all chunk summaries in this batch
+2. Removes redundancy and focuses on unique, important details
+3. Preserves all mathematical formulas, algorithms, and implementation details
+4. Maintains architectural and training procedure information
+5. Is comprehensive but concise
+
+This consolidated summary will be combined with other batch summaries to generate final PyTorch code.
+
+Format your response as a structured, comprehensive summary.
+"""
+        
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 4096,
+            "temperature": 0.2,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        }
+        
+        max_retries = 8
+        base_delay = 3
+        
+        for attempt in range(max_retries):
+            try:
+                response = self.client.invoke_model(
+                    modelId=self.chunk_model_id,
+                    body=json.dumps(body),
+                    contentType="application/json"
+                )
+                break
+            except ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', '')
+                error_msg = str(e)
+                
+                retryable_errors = ['ThrottlingException', 'ServiceUnavailableException', 'TooManyRequestsException']
+                is_throttling = (error_code in retryable_errors or 
+                               'throttl' in error_msg.lower() or 
+                               'too many requests' in error_msg.lower() or
+                               'rate' in error_msg.lower())
+                
+                if is_throttling and attempt < max_retries - 1:
+                    delay = min(base_delay * (2 ** attempt), 60)
+                    jitter = random.uniform(0, 1)
+                    total_delay = delay + jitter
+                    logger.warning(f"Batch {batch_number} throttling detected, retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(total_delay)
+                    continue
+                else:
+                    raise
+        
+        response_body = json.loads(response['body'].read())
+        summary_text = response_body['content'][0]['text']
+        
+        return {
+            "success": True,
+            "batch_number": batch_number,
+            "summary": summary_text,
+            "model_used": self.chunk_model_id
+        }
+    
+    def generate_final_code(self, paper_summary: str, chunk_summaries: List[str],
+                           dataset_recommendations: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Generate final PyTorch code from combined chunk summaries.
+        
+        Args:
+            paper_summary: Overall paper summary
+            chunk_summaries: List of detailed summaries from each chunk
+            dataset_recommendations: Optional dataset recommendations
+            
+        Returns:
+            Dictionary with generated code and metadata
+        """
+        # Combine all chunk summaries
+        combined_summaries = "\n\n".join([
+            f"=== CHUNK {i+1} SUMMARY ===\n{summary}"
+            for i, summary in enumerate(chunk_summaries)
+        ])
+        
+        # Get primary dataset
+        primary_dataset = "mnist"
+        if dataset_recommendations:
+            primary_dataset = dataset_recommendations.get("primary_dataset", "mnist")
+        
+        prompt = f"""
+You are an expert PyTorch developer and machine learning researcher. I will provide you with detailed summaries from different parts of a research paper, and I need you to generate a complete PyTorch implementation that demonstrates the key concepts and algorithms described in the paper.
+
+Paper Information:
+{paper_summary}
+
+Detailed Chunk Summaries:
+{combined_summaries}
+
+"""
+        
+        # Add dataset recommendations if available
+        if dataset_recommendations:
+            recommended_datasets = dataset_recommendations.get("recommended_datasets", [])
+            domain = dataset_recommendations.get("domain", "general")
+            explicitly_mentioned = dataset_recommendations.get("explicitly_mentioned", [])
+            reasoning = dataset_recommendations.get("llm_reasoning") or dataset_recommendations.get("reasoning", "")
+            
+            prompt += f"""
+DATASET RECOMMENDATIONS (IMPORTANT - USE THESE):
+PRIMARY DATASET: {primary_dataset}
+RECOMMENDED DATASETS: {', '.join(recommended_datasets) if recommended_datasets else 'synthetic'}
+INFERRED DOMAIN: {domain}
+"""
+            if explicitly_mentioned:
+                prompt += f"EXPLICITLY MENTIONED IN PAPER: {', '.join(explicitly_mentioned)}\n"
+            if reasoning:
+                prompt += f"REASONING: {reasoning}\n"
+            prompt += "\n"
+        
+        # Add the standard code generation requirements (same as bedrock_client2.py)
+        prompt += f"""
+Generate a complete, production-ready PyTorch implementation that demonstrates the paper's key concepts.
+
+═══════════════════════════════════════════════════════════════════════════════
+CRITICAL REQUIREMENTS - READ CAREFULLY
+═══════════════════════════════════════════════════════════════════════════════
+
+1. DATASET LOADING (MANDATORY - CRITICAL):
+   ```python
+   from dataset_loader import load_dataset
+   train_loader, test_loader = load_dataset('{primary_dataset}', batch_size=128)
+   ```
+   - USE PRIMARY DATASET: '{primary_dataset}'
+   - Available: cifar10, cifar100, mnist, fashion_mnist, imdb, wikitext2, synthetic
+   - For NLP: use imdb or wikitext2 (NOT vision datasets)
+   - CRITICAL: DO NOT use torchvision.datasets - it will cause PermissionError
+   - CRITICAL: DO NOT try to move DataLoaders to device: `train_loader.to(device)` is WRONG
+   - CORRECT: Move tensors to device INSIDE training loop: `inputs, labels = inputs.to(device), labels.to(device)`
+   - DO NOT create your own data loaders - use dataset_loader module
+
+2. AWS NEURON SDK REQUIREMENTS (MANDATORY - CRITICAL):
+   This code MUST run on AWS Trainium using the Neuron SDK. You MUST use torch_xla (XLA) which is part of the Neuron SDK.
+   
+   ```python
+   import torch_xla.core.xla_model as xm  # REQUIRED: Neuron SDK XLA module
+   device = xm.xla_device()  # REQUIRED: Get XLA device (Trainium accelerator)
+   model = model.to(device)
+   inputs = inputs.to(device)  # Move ALL tensors before operations
+   labels = labels.to(device)
+   
+   # Training loop with Neuron SDK XLA operations:
+   xm.optimizer_step(optimizer)  # REQUIRED: Use XLA optimizer step (NOT optimizer.step())
+   xm.mark_step()  # REQUIRED: Synchronize XLA computation after backward pass
+   ```
+   
+   CRITICAL NEURON SDK REQUIREMENTS:
+   - MUST use `torch_xla.core.xla_model as xm` - this is the Neuron SDK XLA interface
+   - MUST use `xm.xla_device()` to get the Trainium device (NOT torch.device('cuda') or 'cpu')
+   - MUST use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` - this is Neuron SDK requirement
+   - MUST call `xm.mark_step()` after each backward pass to synchronize XLA computation
+   - MUST move ALL tensors to device BEFORE any operations
+   - DO NOT move loss functions: `criterion = nn.CrossEntropyLoss()` (no .to(device))
+   - DO NOT use CUDA: no `.cuda()`, no `device='cuda'`, no `torch.device('cuda')`
+   - DO NOT use regular PyTorch device operations - this code runs on Trainium via Neuron SDK
+
+3. IMPORTS (MOST COMMON ERROR):
+   ```python
+   import math  # If using math.log(), math.exp(), etc.
+   import torch
+   import torch.nn as nn
+   import torch_xla.core.xla_model as xm
+   from dataset_loader import load_dataset
+   ```
+   - Import ALL standard library modules you use (math, random, collections, etc.)
+   - This is the #1 cause of NameError failures
+
+═══════════════════════════════════════════════════════════════════════════════
+PACKAGES & ENVIRONMENT
+═══════════════════════════════════════════════════════════════════════════════
+
+AVAILABLE (Neuron SDK Environment):
+- torch, torch_xla (Neuron SDK PyTorch 2.1.0 with XLA support) - REQUIRED for Trainium
+- torch.nn, torch.optim (PyTorch neural network and optimizer modules)
+- transformers (HuggingFace) - for tokenization - USE: 'from transformers import AutoTokenizer'
+- numpy, standard library (math, random, collections, json, os, sys, etc.)
+- dataset_loader (custom module)
+
+NOTE: This code runs on AWS Trainium using the Neuron SDK. The torch_xla module is part of the Neuron SDK and provides XLA (Accelerated Linear Algebra) support for Trainium accelerators.
+
+NOT AVAILABLE / DO NOT USE:
+- transformers_xla (THIS PACKAGE DOES NOT EXIST - use 'from transformers import AutoTokenizer' instead)
+- XLATokenizer (THIS CLASS DOES NOT EXIST - use AutoTokenizer instead)
+- matplotlib, PIL/Pillow, pandas, scipy, sklearn, torchtext
+- torchvision.datasets (use dataset_loader instead)
+
+═══════════════════════════════════════════════════════════════════════════════
+OUTPUT FORMAT - CODE WITH BRIEF INLINE COMMENTS
+═══════════════════════════════════════════════════════════════════════════════
+
+CRITICAL: You have a 8192 token OUTPUT limit. Generate complete, detailed code with brief inline comments explaining key implementation steps.
+
+Your response must be EXACTLY this format:
+
+```python
+[COMPLETE, RUNNABLE PYTORCH CODE]
+# All imports here
+# Model definition with brief comments explaining key components
+# Dataset loading
+# Training loop with comments for important steps
+# Evaluation
+# Everything needed to run
+```
+
+INCLUDE:
+- Complete, detailed implementation based on ALL chunk summaries
+- Brief inline comments explaining key steps
+- All necessary code to run the implementation
+
+DO NOT include:
+- Long explanations before or after the code block
+- Markdown headers or sections outside code
+- "Here's the code" or similar introductory text
+
+ONLY output the code block with inline comments. The code must be immediately runnable with no manual setup required.
+"""
+        
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 8192,
+            "temperature": 0.3,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        }
+        
+        max_retries = 8
+        base_delay = 5
+        
+        for attempt in range(max_retries):
+            try:
+                response = self.client.invoke_model(
+                    modelId=self.final_model_id,
+                    body=json.dumps(body),
+                    contentType="application/json"
+                )
+                break
+            except ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', '')
+                error_msg = str(e)
+                
+                retryable_errors = ['ThrottlingException', 'ServiceUnavailableException', 'TooManyRequestsException']
+                is_throttling = (error_code in retryable_errors or 
+                               'throttl' in error_msg.lower() or 
+                               'too many requests' in error_msg.lower() or
+                               'rate' in error_msg.lower())
+                
+                if is_throttling and attempt < max_retries - 1:
+                    delay = min(base_delay * (2 ** attempt), 120)
+                    jitter = random.uniform(0, 2)
+                    total_delay = delay + jitter
+                    logger.warning(f"Final code generation throttling detected, retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(total_delay)
+                    continue
+                else:
+                    raise
+        
+        response_body = json.loads(response['body'].read())
+        generated_text = response_body['content'][0]['text']
+        
+        # Extract code from response
+        code_blocks = []
+        lines = generated_text.split('\n')
+        in_code_block = False
+        current_code = []
+        
+        for line in lines:
+            if line.strip().startswith('```python'):
+                in_code_block = True
+                current_code = []
+                continue
+            elif line.strip().startswith('```') and in_code_block:
+                in_code_block = False
+                if current_code:
+                    code_blocks.append('\n'.join(current_code))
+                current_code = []
+                continue
+            elif in_code_block:
+                current_code.append(line)
+        
+        full_code = '\n\n'.join(code_blocks) if code_blocks else ""
+        
+        return {
+            "success": True,
+            "code": full_code,
+            "full_response": generated_text,
+            "model_used": self.final_model_id
+        }
+

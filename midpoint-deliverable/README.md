@@ -295,3 +295,11 @@ ls -la /tmp/neuron_profiler/{paper_id}_*
 - ✅ **EC2 Auto-Management**: Automatically starts/stops Trainium instance
 - ✅ **Code Review**: Automated review ensures Neuron SDK compatibility
 
+
+
+### View Profiler Output
+1. `ssh -i ~/.ssh/trainium-deploy-key.pem ec2-user@3.21.7.129`
+2. `tensorboard --logdir /tmp/neuron_profiler/<PAPER ID> --port 6006`
+3. `ssh -i ~/.ssh/trainium-deploy-key.pem -L 6006:localhost:6006 -N ec2-user@3.21.7.129`
+4. open http://localhost:6006 in browser
+

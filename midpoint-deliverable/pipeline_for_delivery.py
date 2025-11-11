@@ -38,6 +38,33 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code-gen-for-deliv')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'trn-execute-for-deliv'))
 
 from pytorch_generator import PyTorchCodeGenerator
+try:
+    # Import chunked generator from chunked-code-gen subdirectory
+    # Since the directory name has hyphens, we need to import the module directly
+    import importlib.util
+    chunked_dir = os.path.join(os.path.dirname(__file__), 'code-gen-for-deliv', 'chunked-code-gen')
+    chunked_generator_path = os.path.join(chunked_dir, 'chunked_generator.py')
+    
+    if os.path.exists(chunked_generator_path):
+        # Add the chunked-code-gen directory to path so it can import its dependencies
+        sys.path.insert(0, chunked_dir)
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code-gen-for-deliv'))
+        
+        # Load the chunked_generator module
+        spec = importlib.util.spec_from_file_location("chunked_generator", chunked_generator_path)
+        chunked_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(chunked_module)
+        ChunkedPyTorchGenerator = chunked_module.ChunkedPyTorchGenerator
+        CHUNKED_AVAILABLE = True
+        logger.info("✅ Chunked code generator loaded successfully")
+    else:
+        CHUNKED_AVAILABLE = False
+        logger.warning(f"Chunked code generator not available (chunked_generator.py not found at {chunked_generator_path})")
+except Exception as e:
+    CHUNKED_AVAILABLE = False
+    logger.warning(f"Chunked code generator not available: {e}")
+    import traceback
+    logger.debug(traceback.format_exc())
 
 # EC2 and Trainium configuration
 TRAINIUM_ENDPOINT = os.getenv('TRAINIUM_ENDPOINT')  # e.g., "http://1.2.3.4:8000"
@@ -148,21 +175,31 @@ def execute_code_via_http(paper_id: str, code: str, timeout: int = 1800, paper_t
             }
         except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
             # Connection errors - retry with exponential backoff
+            # "Remote end closed connection without response" usually means:
+            # 1. Flask app timed out waiting for execution (but execution may still be running)
+            # 2. Flask app crashed
+            # 3. Network issue
             if attempt < max_retries - 1:
                 wait_time = retry_delay * (2 ** attempt)
                 logger.warning(f"HTTP connection error (attempt {attempt + 1}/{max_retries}): {e}")
+                if "Remote end closed connection" in str(e):
+                    logger.warning("⚠️ Flask server closed connection - execution may still be running on Trainium")
+                    logger.warning("   Check Trainium logs/CloudWatch to verify if execution completed")
                 logger.info(f"Retrying in {wait_time} seconds...")
                 time.sleep(wait_time)
                 continue
             else:
                 logger.error(f"HTTP connection failed after {max_retries} attempts: {e}")
+                if "Remote end closed connection" in str(e):
+                    logger.error("⚠️ Flask server closed connection - execution may still be running on Trainium")
+                    logger.error("   Check Trainium instance logs and CloudWatch metrics to verify execution status")
                 return {
                     "success": False,
                     "error_message": f"HTTP connection failed after {max_retries} attempts: {str(e)}",
                     "error_type": "http_error",
                     "execution_time": 0,
                     "return_code": -1,
-                    "note": "Executor may have crashed or network connection is unstable. Check executor logs."
+                    "note": "Executor may have crashed or network connection is unstable. Execution may still be running on Trainium - check executor logs and CloudWatch metrics."
                 }
         except requests.exceptions.RequestException as e:
             # Other request errors - don't retry
@@ -342,7 +379,7 @@ def save_code_file(paper_id: str, code: str, step: str) -> str:
     return str(filepath)
 
 
-def process_paper(paper_id: str, generator: PyTorchCodeGenerator) -> Dict[str, Any]:
+def process_paper(paper_id: str, generator) -> Dict[str, Any]:
     """
     Process a single paper through the entire pipeline.
     
@@ -396,7 +433,21 @@ def process_paper(paper_id: str, generator: PyTorchCodeGenerator) -> Dict[str, A
         logger.info(f"Step 2: Generating PyTorch code for paper {paper_id}...")
         step2_start = time.time()
         
-        code_gen_result = generator.generate_code_for_paper(paper_id, include_full_content=True)
+        # Handle different generator interfaces
+        if hasattr(generator, 'generate_code_for_paper'):
+            # Check if it's chunked generator (no include_full_content param) or standard
+            import inspect
+            sig = inspect.signature(generator.generate_code_for_paper)
+            if 'include_full_content' in sig.parameters:
+                # Standard generator
+                code_gen_result = generator.generate_code_for_paper(paper_id, include_full_content=True)
+            else:
+                # Chunked generator
+                code_gen_result = generator.generate_code_for_paper(paper_id)
+        else:
+            pipeline_results["success"] = False
+            pipeline_results["error"] = "Generator does not have generate_code_for_paper method"
+            return pipeline_results
         
         if not code_gen_result.get("success") or not code_gen_result.get("code"):
             pipeline_results["success"] = False
@@ -433,22 +484,26 @@ def process_paper(paper_id: str, generator: PyTorchCodeGenerator) -> Dict[str, A
         pipeline_results["steps"]["code_generation"] = step2_result
         logger.info(f"✅ Code generated ({len(code_gen_result['code'])} chars)")
         
-        # Step 3: Code review (already done in generate_code_for_paper, but we track it separately)
+        # Step 3: Code review (only for standard generator, chunked doesn't do review yet)
         logger.info(f"Step 3: Code review results for paper {paper_id}...")
         step3_start = time.time()
         
+        # Chunked generator doesn't do code review yet, standard generator does
         code_review = code_gen_result.get("code_review", {})
-        reviewed_code = code_gen_result["code"]  # Already reviewed
+        reviewed_code = code_gen_result["code"]  # Already reviewed (or not, for chunked)
         
         # Save reviewed code
         reviewed_code_file = save_code_file(paper_id, reviewed_code, 'code-review')
+        
+        # Use actual review_time from code_review if available, otherwise measure pipeline step time
+        actual_review_time = code_review.get("review_time", time.time() - step3_start)
         
         step3_result = {
             "success": True,
             "fixes_applied": code_review.get("fixes_applied", []),
             "iterations": code_review.get("iterations", 0),
             "reviewed_code_file": reviewed_code_file,
-            "review_time": time.time() - step3_start
+            "review_time": actual_review_time
         }
         
         save_step_result('code-review', paper_id, {
@@ -648,12 +703,34 @@ def main():
                        help='Process recent papers from last N days')
     parser.add_argument('--random', action='store_true',
                        help='Get random papers instead of recent papers')
+    parser.add_argument('--use-chunked', action='store_true',
+                       help='Use chunked code generator (for long papers that exceed token limits)')
+    parser.add_argument('--chunked-parallel', action='store_true',
+                       help='Process chunks in parallel (only with --use-chunked, may increase throttling risk)')
+    parser.add_argument('--max-parallel', type=int, default=2,
+                       help='Max parallel chunks (only with --use-chunked and --chunked-parallel, default: 2)')
     
     args = parser.parse_args()
     
     # Initialize generator
-    logger.info("Initializing PyTorch Code Generator...")
-    generator = PyTorchCodeGenerator()
+    if args.use_chunked:
+        if not CHUNKED_AVAILABLE:
+            logger.error("❌ Chunked code generator requested but not available")
+            logger.error("   Make sure chunked-code-gen module is properly set up")
+            return
+        logger.info("Initializing Chunked PyTorch Code Generator...")
+        generator = ChunkedPyTorchGenerator(
+            max_chunk_size=150000,  # 150k characters per chunk (accounts for prompt + paper summary overhead)
+            use_haiku_for_chunks=True,
+            parallel_chunks=args.chunked_parallel,
+            max_parallel=args.max_parallel,
+            batch_size=8  # Group 8 chunk summaries into each batch for hierarchical summarization
+        )
+        logger.info("✅ Using chunked approach (better for long papers)")
+    else:
+        logger.info("Initializing PyTorch Code Generator...")
+        generator = PyTorchCodeGenerator()
+        logger.info("✅ Using standard approach")
     
     # Ensure Trainium is ready before processing papers
     if TRAINIUM_ENDPOINT:

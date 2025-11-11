@@ -9,12 +9,12 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 try:
     from opensearch_client import OpenSearchClient
-    from bedrock_client import BedrockClient
+    from bedrock_client2 import BedrockClient2
     from dataset_recommender import DatasetRecommender
     from code_review_agent import CodeReviewAgent
 except ImportError:
     from .opensearch_client import OpenSearchClient
-    from .bedrock_client import BedrockClient
+    from .bedrock_client2 import BedrockClient2
     from .dataset_recommender import DatasetRecommender
     from .code_review_agent import CodeReviewAgent
 
@@ -26,11 +26,11 @@ class PyTorchCodeGenerator:
     def __init__(self):
         """initilaize code generator"""
         self.opensearch_client = OpenSearchClient()
-        self.bedrock_client = BedrockClient()
+        self.bedrock_client = BedrockClient2()  # Using BedrockClient2 for extended paper content support
         self.dataset_recommender = DatasetRecommender(bedrock_client=self.bedrock_client)
         self.code_review_agent = CodeReviewAgent(bedrock_client=self.bedrock_client)
         
-        logger.info("PyTorch Code Generator initialized")
+        logger.info("PyTorch Code Generator initialized with BedrockClient2 (extended paper content support)")
     
     def generate_code_for_paper(self, paper_id: str, include_full_content: bool = True) -> Dict[str, Any]:
         """
