@@ -1,0 +1,43 @@
+{
+  "execution_result": {
+    "detailed_metrics": {
+      "final_epoch_loss": 1.249,
+      "initial_epoch_loss": 1.7527,
+      "num_epochs": 5,
+      "test_accuracy": 55.23,
+      "training_loss": 1.249
+    },
+    "execution_time": 231.55,
+    "final_epoch_loss": 1.249,
+    "has_evaluation": true,
+    "has_training_loop": true,
+    "initial_epoch_loss": 1.7527,
+    "lines_of_code": 56,
+    "num_epochs": 5,
+    "peak_memory_mb": 879.2421875,
+    "return_code": 0,
+    "stderr": "<string>:43: DeprecationWarning: Use torch_xla.device instead\n2025-11-11 02:35:33.959002: W neuron/pjrt-api/neuronpjrt.cc:1972] Use PJRT C-API 0.73 as client did not specify a PJRT C-API version\n<string>:65: DeprecationWarning: Use torch_xla.sync instead\n<string>:65: DeprecationWarning: Use torch_xla.sync instead\n<string>:65: DeprecationWarning: Use torch_xla.sync instead\n<string>:65: DeprecationWarning: Use torch_xla.sync instead\nnrtucode: internal error: 54 object(s) leaked, improper teardown\n",
+    "stdout": "2025-Nov-11 02:35:39.0009 6455:6516 [1] int nccl_net_ofi_create_plugin(nccl_net_ofi_plugin_t**):213 CCOM WARN NET/OFI Failed to initialize sendrecv protocol\n2025-Nov-11 02:35:39.0019 6455:6516 [1] int nccl_net_ofi_create_plugin(nccl_net_ofi_plugin_t**):354 CCOM WARN NET/OFI aws-ofi-nccl initialization failed\n2025-Nov-11 02:35:39.0029 6455:6516 [1] ncclResult_t nccl_net_ofi_init_no_atexit_fini_v6(ncclDebugLogger_t):183 CCOM WARN NET/OFI Initializing plugin failed\n2025-Nov-11 02:35:39.0038 6455:6516 [1] net_plugin.cc:97 CCOM WARN OFI plugin initNet() failed is EFA enabled?\n2025-11-11 02:35:39.000083:  6455  INFO ||NEURON_CC_WRAPPER||: Call compiler with cmd: neuronx-cc compile --framework=XLA /tmp/ec2-user/neuroncc_compile_workdir/7a668187-b5c3-4b1f-8131-1188beeaca1d/model.MODULE_1711538760662170130+e30acd3a.hlo_module.pb --output /tmp/ec2-user/neuroncc_compile_workdir/7a668187-b5c3-4b1f-8131-1188beeaca1d/model.MODULE_1711538760662170130+e30acd3a.neff --target=trn1 --verbose=35\n..Completed run_backend_driver.\n\nCompiler status PASS\n2025-11-11 02:36:00.000900:  6455  INFO ||NEURON_CC_WRAPPER||: Call compiler with cmd: neuronx-cc compile --framework=XLA /tmp/ec2-user/neuroncc_compile_workdir/41a8006d-5948-4a05-94a0-7393b4d7b245/model.MODULE_16867092204011694583+e30acd3a.hlo_module.pb --output /tmp/ec2-user/neuroncc_compile_workdir/41a8006d-5948-4a05-94a0-7393b4d7b245/model.MODULE_16867092204011694583+e30acd3a.neff --target=trn1 --verbose=35\n..Completed run_backend_driver.\n\nCompiler status PASS\n2025-11-11 02:36:30.000066:  6455  INFO ||NEURON_CC_WRAPPER||: Call compiler with cmd: neuronx-cc compile --framework=XLA /tmp/ec2-user/neuroncc_compile_workdir/8d863881-1ae4-45f0-b5ba-6baadf9e81a7/model.MODULE_14924580815968069155+e30acd3a.hlo_module.pb --output /tmp/ec2-user/neuroncc_compile_workdir/8d863881-1ae4-45f0-b5ba-6baadf9e81a7/model.MODULE_14924580815968069155+e30acd3a.neff --target=trn1 --verbose=35\n.Completed run_backend_driver.\n\nCompiler status PASS\nEpoch 1/5, Loss: 1.7527\nEpoch 2/5, Loss: 1.4639\nEpoch 3/5, Loss: 1.3597\nEpoch 4/5, Loss: 1.2998\nEpoch 5/5, Loss: 1.2490\n2025-11-11 02:37:15.000104:  6455  INFO ||NEURON_CC_WRAPPER||: Call compiler with cmd: neuronx-cc compile --framework=XLA /tmp/ec2-user/neuroncc_compile_workdir/ba3ca444-d452-4fb7-9b9e-b946abbc4cea/model.MODULE_5780227159613568284+e30acd3a.hlo_module.pb --output /tmp/ec2-user/neuroncc_compile_workdir/ba3ca444-d452-4fb7-9b9e-b946abbc4cea/model.MODULE_5780227159613568284+e30acd3a.neff --target=trn1 --verbose=35\n......Completed run_backend_driver.\n\nCompiler status PASS\n2025-11-11 02:39:10.000902:  6455  INFO ||NEURON_CC_WRAPPER||: Call compiler with cmd: neuronx-cc compile --framework=XLA /tmp/ec2-user/neuroncc_compile_workdir/5dbe95b9-e045-4789-a960-e7951c4e3756/model.MODULE_638626916470604231+e30acd3a.hlo_module.pb --output /tmp/ec2-user/neuroncc_compile_workdir/5dbe95b9-e045-4789-a960-e7951c4e3756/model.MODULE_638626916470604231+e30acd3a.neff --target=trn1 --verbose=35\n.Completed run_backend_driver.\n\nCompiler status PASS\nTest accuracy: 55.23%\n",
+    "success": true,
+    "test_accuracy": 55.23,
+    "timeout": false,
+    "training_loss": 1.249,
+    "uses_distributed_training": false
+  },
+  "metadata": {
+    "success": true,
+    "execution_time": 231.55,
+    "return_code": 0,
+    "timeout": false,
+    "metrics": {
+      "final_epoch_loss": 1.249,
+      "initial_epoch_loss": 1.7527,
+      "num_epochs": 5,
+      "test_accuracy": 55.23,
+      "training_loss": 1.249
+    },
+    "execution_time_seconds": 231.9625527858734
+  },
+  "stdout": "2025-Nov-11 02:35:39.0009 6455:6516 [1] int nccl_net_ofi_create_plugin(nccl_net_ofi_plugin_t**):213 CCOM WARN NET/OFI Failed to initialize sendrecv protocol\n2025-Nov-11 02:35:39.0019 6455:6516 [1] int nccl_net_ofi_create_plugin(nccl_net_ofi_plugin_t**):354 CCOM WARN NET/OFI aws-ofi-nccl initialization failed\n2025-Nov-11 02:35:39.0029 6455:6516 [1] ncclResult_t nccl_net_ofi_init_no_atexit_fini_v6(ncclDebugLogger_t):183 CCOM WARN NET/OFI Initializing plugin failed\n2025-Nov-11 02:35:39.0038 6455:6516 [1] net_plugin.cc:97 CCOM WARN OFI plugin initNet() failed is EFA enabled?\n2025-11-11 02:35:39.000083:  6455  INFO ||NEURON_CC_WRAPPER||: Call compiler with cmd: neuronx-cc compile --framework=XLA /tmp/ec2-user/neuroncc_compile_workdir/7a668187-b5c3-4b1f-8131-1188beeaca1d/model.MODULE_1711538760662170130+e30acd3a.hlo_module.pb --output /tmp/ec2-user/neuroncc_compile_workdir/7a668187-b5c3-4b1f-8131-1188beeaca1d/model.MODULE_1711538760662170130+e30acd3a.neff --target=trn1 --verbose=35\n..Completed run_backend_driver.\n\nCompiler status PASS\n2025-11-11 02:36:00.000900:  6455  INFO ||NEURON_CC_WRAPPER||: Call compiler with cmd: neuronx-cc compile --framework=XLA /tmp/ec2-user/neuroncc_compile_workdir/41a8006d-5948-4a05-94a0-7393b4d7b245/model.MODULE_16867092204011694583+e30acd3a.hlo_module.pb --output /tmp/ec2-user/neuroncc_compile_workdir/41a8006d-5948-4a05-94a0-7393b4d7b245/model.MODULE_16867092204011694583+e30acd3a.neff --target=trn1 --verbose=35\n..Completed run_backend_driver.\n\nCompiler status PASS\n2025-11-11 02:36:30.000066:  6455  INFO ||NEURON_CC_WRAPPER||: Call compiler with cmd: neuronx-cc compile --framework=XLA /tmp/ec2-user/neuroncc_compile_workdir/8d863881-1ae4-45f0-b5ba-6baadf9e81a7/model.MODULE_14924580815968069155+e30acd3a.hlo_module.pb --output /tmp/ec2-user/neuroncc_compile_workdir/8d863881-1ae4-45f0-b5ba-6baadf9e81a7/model.MODULE_14924580815968069155+e30acd3a.neff --target=trn1 --verbose=35\n.Completed run_backend_driver.\n\nCompiler status PASS\nEpoch 1/5, Loss: 1.7527\nEpoch 2/5, Loss: 1.4639\nEpoch 3/5, Loss: 1.3597\nEpoch 4/5, Loss: 1.2998\nEpoch 5/5, Loss: 1.2490\n2025-11-11 02:37:15.000104:  6455  INFO ||NEURON_CC_WRAPPER||: Call compiler with cmd: neuronx-cc compile --framework=XLA /tmp/ec2-user/neuroncc_compile_workdir/ba3ca444-d452-4fb7-9b9e-b946abbc4cea/model.MODULE_5780227159613568284+e30acd3a.hlo_module.pb --output /tmp/ec2-user/neuroncc_compile_workdir/ba3ca444-d452-4fb7-9b9e-b946abbc4cea/model.MODULE_5780227159613568284+e30acd3a.neff --target=trn1 --verbose=35\n......Completed run_backend_driver.\n\nCompiler status PASS\n2025-11-11 02:39:10.000902:  6455  INFO ||NEURON_CC_WRAPPER||: Call compiler with cmd: neuronx-cc compile --framework=XLA /tmp/ec2-user/neuroncc_compile_workdir/5dbe95b9-e045-4789-a960-e7951c4e3756/model.MODULE_638626916470604231+e30acd3a.hlo_module.pb --output /tmp/ec2-user/neuroncc_compile_workdir/5dbe95b9-e045-4789-a960-e7951c4e3756/model.MODULE_638626916470604231+e30acd3a.neff --target=trn1 --verbose=35\n.Completed run_backend_driver.\n\nCompiler status PASS\nTest accuracy: 55.23%\n",
+  "stderr": "<string>:43: DeprecationWarning: Use torch_xla.device instead\n2025-11-11 02:35:33.959002: W neuron/pjrt-api/neuronpjrt.cc:1972] Use PJRT C-API 0.73 as client did not specify a PJRT C-API version\n<string>:65: DeprecationWarning: Use torch_xla.sync instead\n<string>:65: DeprecationWarning: Use torch_xla.sync instead\n<string>:65: DeprecationWarning: Use torch_xla.sync instead\n<string>:65: DeprecationWarning: Use torch_xla.sync instead\nnrtucode: internal error: 54 object(s) leaked, improper teardown\n"
+}

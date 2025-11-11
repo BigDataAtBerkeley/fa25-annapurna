@@ -695,3 +695,43 @@ python monitor_pipeline.py --paper-ids <Paper ID> <Paper ID> <Paper ID> --watch 
 
 ---
 
+## Midpoint Deliverable Pipeline
+
+Grabs a single random paper from opensearch, generates its code, sends it to the code reviewer, then the flask app executes it on trn & stores neuron profiler results + overall trn results. All files are in the `midpoint-deliverable/` directory.
+
+### Quick Start
+
+```bash
+cd midpoint-deliverable
+
+# Process a specific paper
+python pipeline_for_delivery.py --paper-id <paper_id>
+
+# Process recent papers
+python pipeline_for_delivery.py --recent-days 30 --max-papers 5
+
+# Check results for a paper
+python check_results.py <paper_id>
+```
+
+### Key Features
+
+- **Neuron SDK Integration**: Generated code uses `torch_xla` for Trainium compatibility
+- **Hardware-Level Profiling**: Neuron Profiler captures hardware execution traces
+- **CloudWatch Metrics**: Automatic logging of training and execution metrics
+
+### Directory Structure
+
+```
+midpoint-deliverable/
+├── code-gen-for-deliv/      # Code generation module
+├── trn-execute-for-deliv/   # Trainium execution module
+├── results/                 # Results (per-paper folders)
+├── pipeline_for_delivery.py # Main pipeline script
+└── README.md                # Complete documentation
+```
+
+See `midpoint-deliverable/README.md` for full documentation.
+
+---
+
