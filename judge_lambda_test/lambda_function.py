@@ -256,6 +256,9 @@ def evaluate_paper_with_claude(title: str, abstract: str, rag_context_window: st
     2) NOVEL beyond the state of the art,
     3) COMPATIBLE with AWS Trainium for practical implementation,
     {('4) DISTINCT enough from previously indexed work (SIMILARITY check).' if rag_context_window else '').strip()}
+    
+    Skew your judgements towards being conservative in acceptance, prioritizing papers that clearly push the field forward
+    with implementable techniques that would provide valuable insights by testing performance on Trainium hardware.
 
     Use this rubric:
 
@@ -264,9 +267,10 @@ def evaluate_paper_with_claude(title: str, abstract: str, rag_context_window: st
     - training algorithms or optimization strategies (optimizers, regularization, loss design, curriculum learning, meta-learning, etc.),
     - efficiency improvements (training or inference speedups, quantization, sparsity, parallelism, mixed precision, distributed training, etc.),
     - alignment, fine-tuning, or data-centric techniques (RLHF, DPO/ORPO, synthetic data, augmentation, retrieval, multimodal alignment, etc.)
-    Say "no" if it is primarily a:
+    The paper must implement or propose new, directly implementable ML techniques, not just analyze or survey existing ones.
+    Say "no" if the paper is clearly about one or more of:
     - survey/position/ethics/policy piece,
-    - a benchmark proposal without new methods,
+    - a benchmark proposal or method of evaluation,
     - an application of an existing model to a domain without new ML techniques,
     - non-neural stats unrelated to MLs or evaluation/safety methods
     - purely theoretical work without clear implementation.
