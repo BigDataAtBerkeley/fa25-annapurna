@@ -46,7 +46,7 @@ if total_docs == 0:
 print(f"\n✅ Found {total_docs} total documents in '{index_name}'")
 
 # === 2. Randomly select 100–150 ===
-sample_size = min(50, total_docs)
+sample_size = min(20, total_docs)
 random_offsets = random.sample(range(total_docs), sample_size)
 print(f"📦 Sampling {sample_size} random documents...")
 
