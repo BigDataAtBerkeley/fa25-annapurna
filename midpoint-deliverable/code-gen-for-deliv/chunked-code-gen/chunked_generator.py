@@ -80,7 +80,12 @@ class ChunkedPyTorchGenerator:
         self.dataset_recommender = DatasetRecommender(bedrock_client=None)  # Don't need bedrock for dataset rec
         # Initialize code review agent (use the bedrock client from chunked_bedrock_client if needed)
         # CodeReviewAgent will create its own BedrockClient if not provided
-        self.code_review_agent = CodeReviewAgent(bedrock_client=None)
+        # Enable execution testing if requested
+        enable_execution_testing = os.getenv('ENABLE_EXECUTION_TESTING', 'false').lower() == 'true'
+        self.code_review_agent = CodeReviewAgent(
+            bedrock_client=None,
+            enable_execution_testing=enable_execution_testing
+        )
         self.max_chunk_size = max_chunk_size
         self.parallel_chunks = parallel_chunks
         self.max_parallel = max_parallel
@@ -386,7 +391,9 @@ class ChunkedPyTorchGenerator:
                 primary_dataset = dataset_recommendations.get("primary_dataset", "synthetic")
                 review_result = self.code_review_agent.review_and_fix_code(
                     final_result["code"],
-                    dataset_name=primary_dataset
+                    dataset_name=primary_dataset,
+                    paper_id=paper_id,
+                    paper_title=paper.get('title', 'Unknown')
                 )
                 
                 # Use reviewed code (even if review didn't find issues, it may have applied quick fixes)

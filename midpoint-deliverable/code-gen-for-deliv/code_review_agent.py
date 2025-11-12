@@ -10,6 +10,8 @@ import logging
 import re
 import json
 import time
+import os
+import requests
 from typing import Dict, Any, Optional, List, Tuple
 from bedrock_client import BedrockClient
 from botocore.exceptions import ClientError
@@ -22,16 +24,27 @@ class CodeReviewAgent:
     Agent that reviews and fixes generated PyTorch code iteratively.
     """
     
-    def __init__(self, bedrock_client: Optional[BedrockClient] = None):
+    def __init__(self, bedrock_client: Optional[BedrockClient] = None, 
+                 enable_execution_testing: bool = False,
+                 trainium_endpoint: Optional[str] = None,
+                 execution_timeout: int = 120):
         """
         Initialize the code review agent.
         
         Args:
             bedrock_client: BedrockClient instance (creates new one if None)
+            enable_execution_testing: If True, execute code on Trainium during review to get real errors
+            trainium_endpoint: Trainium executor endpoint (e.g., "http://1.2.3.4:8000")
+            execution_timeout: Timeout for execution tests in seconds (default 2 minutes)
+                              This is SHORT because we only need to catch immediate errors.
+                              If code takes longer, that's a problem we should know about.
         """
         self.bedrock_client = bedrock_client or BedrockClient()
-        self.max_iterations = 7  # Run up to 3 iterations to catch and fix issues
+        self.max_iterations = 4  # Run up to 3 iterations to catch and fix issues
         self.fix_history = []  # Track fixes applied
+        self.enable_execution_testing = enable_execution_testing
+        self.trainium_endpoint = trainium_endpoint or os.getenv('TRAINIUM_ENDPOINT')
+        self.execution_timeout = execution_timeout
     
     def _get_trainium_error_reference(self) -> str:
         """
@@ -55,13 +68,16 @@ class CodeReviewAgent:
 - ❌ `xm.optimizer_step(opt, sync=True)` → ✅ `xm.optimizer_step(opt)`
 - ❌ `base_model = ...` → ✅ `base_model = nn.Sequential(...)`"""
     
-    def review_and_fix_code(self, code: str, dataset_name: str = None) -> Dict[str, Any]:
+    def review_and_fix_code(self, code: str, dataset_name: str = None, 
+                           paper_id: str = None, paper_title: str = None) -> Dict[str, Any]:
         """
         Review code and iteratively fix issues.
         
         Args:
             code: Generated PyTorch code to review
             dataset_name: Name of dataset being used (e.g., 'imdb', 'cifar10')
+            paper_id: Paper ID for execution testing (optional, required if enable_execution_testing=True)
+            paper_title: Paper title for execution testing (optional)
             
         Returns:
             Dictionary with:
@@ -69,6 +85,7 @@ class CodeReviewAgent:
             - 'fixes_applied': List of fixes made
             - 'iterations': Number of fix iterations
             - 'success': Whether code was successfully fixed
+            - 'execution_tests': List of execution test results (if enabled)
         """
         logger.info("Starting code review and fix process...")
         review_start_time = time.time()
@@ -84,16 +101,58 @@ class CodeReviewAgent:
             current_code, quick_fixes = self._apply_quick_fixes(current_code, static_issues, dataset_name)
             fixes_applied.extend(quick_fixes)
         
+        execution_tests = []  # Track execution test results
+        
         # AI analysis 
         while iteration < self.max_iterations:
             iteration += 1
             logger.info(f"Code review iteration {iteration}/{self.max_iterations}")
             
+            # If execution testing is enabled, test the code on Trainium first
+            execution_errors = []
+            if self.enable_execution_testing and self.trainium_endpoint and paper_id:
+                logger.info(f"🧪 Testing code on Trainium (iteration {iteration})...")
+                exec_result = self._test_code_on_trainium(
+                    current_code, paper_id, paper_title, iteration
+                )
+                execution_tests.append(exec_result)
+                
+                if exec_result.get('success'):
+                    logger.info("✅ Code executed successfully on Trainium!")
+                    # If execution succeeded, we can still do AI analysis to catch potential issues
+                    # but we know it at least runs
+                else:
+                    # Extract errors from execution
+                    execution_errors = self._extract_execution_errors(exec_result)
+                    if execution_errors:
+                        logger.warning(f"❌ Execution failed with {len(execution_errors)} errors")
+                        for error in execution_errors[:3]:
+                            logger.warning(f"   - {error[:100]}")
+            
             # Analyze code for issues (using current_code which may have been fixed in previous iteration)
             logger.debug(f"Iteration {iteration}: Analyzing code ({len(current_code)} chars)")
-            issues = self._analyze_code_with_ai(current_code, dataset_name, fixes_applied)
+            issues = self._analyze_code_with_ai(
+                current_code, dataset_name, fixes_applied, execution_errors
+            )
+            
+            # If we have execution errors, add them to the issues
+            if execution_errors:
+                if not issues:
+                    issues = {"issues": [], "fixes_needed": []}
+                issues["issues"] = execution_errors + issues.get("issues", [])
+                issues["fixes_needed"] = [
+                    f"Fix execution error: {err}" for err in execution_errors[:3]
+                ] + issues.get("fixes_needed", [])
             
             if not issues or issues.get('no_issues', False):
+                # If execution testing is enabled and we haven't tested yet, test first
+                if self.enable_execution_testing and self.trainium_endpoint and paper_id:
+                    if not execution_tests or not any(t.get('success') for t in execution_tests):
+                        logger.info("⚠️ AI found no issues, but execution hasn't succeeded yet - continuing...")
+                    else:
+                        logger.info("✅ No issues found and execution succeeded - code is ready!")
+                        break
+                else:
                 logger.info("✅ No issues found - code is ready!")
                 break
             
@@ -112,25 +171,23 @@ class CodeReviewAgent:
                 fixes_applied.append({
                     'iteration': iteration,
                     'issues_found': issues_found,
-                    'fixes': fixes_needed  # Use fixes_needed, not fixes
+                    'fixes': fixes_needed,  # Use fixes_needed, not fixes
+                    'execution_errors': execution_errors  # Store execution errors for next iteration
                 })
                 # Log code changes for debugging
                 logger.info(f"Code length changed: {len(current_code)} -> {len(fixed_code)} chars")
-                # Check if the specific issues mentioned are actually fixed
-                for issue in issues_found[:2]:  # Check first 2 issues
-                    if '@ operator' in issue.lower() and '@' in fixed_code:
-                        logger.warning(f"⚠️ Issue '{issue[:50]}...' may not be fixed - '@' still present in code")
                 # CRITICAL: Update current_code so next iteration uses the fixed code
                 current_code = fixed_code
                 logger.info(f"✅ Applied fixes in iteration {iteration} - code updated (next iteration will use this fixed code)")
             elif fixed_code == current_code:
                 # Fix returned same code - might mean no changes needed or fix failed
                 logger.warning(f"⚠️ Fix returned same code - no changes applied")
-                # Still record issues found
+                # Still record issues found and execution errors
                 fixes_applied.append({
                     'iteration': iteration,
                     'issues_found': issues_found,
                     'fixes': fixes_needed,
+                    'execution_errors': execution_errors,  # Store execution errors even if fix failed
                     'no_changes': True  # Mark that no changes were made
                 })
                 break
@@ -138,11 +195,12 @@ class CodeReviewAgent:
                 # Fix failed - record issues but warn
                 logger.error(f"❌ Code fix failed - AI could not generate fixed code")
                 logger.error(f"   Issues found: {len(issues_found)}")
-                # Still record the issues so we know what was wrong
+                # Still record the issues and execution errors so we know what was wrong
                 fixes_applied.append({
                     'iteration': iteration,
                     'issues_found': issues_found,
                     'fixes': fixes_needed,
+                    'execution_errors': execution_errors,  # Store execution errors even if fix failed
                     'fix_failed': True  # Mark that fix attempt failed
                 })
                 # Don't break - try to continue with original code, but log the failure
@@ -151,11 +209,12 @@ class CodeReviewAgent:
             else:
                 # Fix returned same code - might mean no changes needed or fix failed
                 logger.warning(f"⚠️ Fix returned same code - no changes applied")
-                # Still record issues found
+                # Still record issues found and execution errors
                 fixes_applied.append({
                     'iteration': iteration,
                     'issues_found': issues_found,
                     'fixes': fixes_needed,
+                    'execution_errors': execution_errors,  # Store execution errors even if fix failed
                     'no_changes': True  # Mark that no changes were made
                 })
                 break
@@ -168,7 +227,8 @@ class CodeReviewAgent:
             'fixes_applied': fixes_applied,
             'iterations': iteration,
             'review_time': review_time,
-            'success': len(fixes_applied) > 0 or iteration == 1
+            'success': len(fixes_applied) > 0 or iteration == 1,
+            'execution_tests': execution_tests if self.enable_execution_testing else []
         }
     
     def _check_static_issues(self, code: str, dataset_name: str = None) -> List[str]:
@@ -410,8 +470,175 @@ class CodeReviewAgent:
         
         return fixed_code, fixes_applied
     
+    def _test_code_on_trainium(self, code: str, paper_id: str, paper_title: Optional[str], 
+                                iteration: int) -> Dict[str, Any]:
+        """
+        Execute code on Trainium and return results.
+        
+        Args:
+            code: Code to execute
+            paper_id: Paper ID
+            paper_title: Paper title (optional)
+            iteration: Current iteration number
+            
+        Returns:
+            Execution result dictionary
+        """
+        if not self.trainium_endpoint:
+            return {
+                "success": False,
+                "error": "Trainium endpoint not configured",
+                "iteration": iteration
+            }
+        
+        endpoint = f"{self.trainium_endpoint}/execute"
+        payload = {
+            "paper_id": f"{paper_id}_review_iter_{iteration}",
+            "code": code,
+            "timeout": self.execution_timeout
+        }
+        
+        if paper_title:
+            payload["paper_title"] = paper_title
+        
+        try:
+            logger.info(f"Sending code to Trainium at {endpoint} (timeout: {self.execution_timeout}s)")
+            response = requests.post(
+                endpoint,
+                json=payload,
+                timeout=self.execution_timeout + 60  # Add buffer for HTTP overhead
+            )
+            response.raise_for_status()
+            result = response.json()
+            result["iteration"] = iteration
+            return result
+        except requests.exceptions.Timeout:
+            logger.warning(f"Execution test timed out after {self.execution_timeout}s")
+            # Timeout during review means code is hanging or taking too long - this is a real issue
+            return {
+                "success": False,
+                "error_message": f"Code execution timed out after {self.execution_timeout}s - code may be hanging, have infinite loop, or Neuron compilation is taking too long (should complete in <2min for syntax/import checks)",
+                "error_type": "timeout",
+                "stderr": f"Execution timed out after {self.execution_timeout}s. This suggests:\n1. Code has infinite loop or blocking operation\n2. Neuron compilation is taking too long (possible compilation error)\n3. Code is waiting for input or network\n\nFor code review, code should fail fast with clear errors, not hang.",
+                "iteration": iteration
+            }
+        except Exception as e:
+            logger.error(f"Error executing code on Trainium: {e}")
+            return {
+                "success": False,
+                "error_message": str(e),
+                "error_type": "execution_error",
+                "iteration": iteration
+            }
+    
+    def _extract_execution_errors(self, exec_result: Dict[str, Any]) -> List[str]:
+        """
+        Extract error messages from execution result.
+        
+        Args:
+            exec_result: Execution result dictionary
+            
+        Returns:
+            List of error message strings
+        """
+        errors = []
+        
+        if exec_result.get('success'):
+            return errors
+        
+        # Check for timeout errors first (these are important - code is hanging)
+        if exec_result.get('error_type') == 'timeout':
+            timeout_msg = exec_result.get('error_message', 'Execution timed out')
+            # For code review, timeouts indicate real problems:
+            # - Code has infinite loop
+            # - Neuron compilation hanging (possible compilation error)
+            # - Code waiting for input/network
+            errors.append(f"EXECUTION ERROR: {timeout_msg}")
+            # Add helpful context
+            if 'stderr' in exec_result and exec_result['stderr']:
+                errors.append(f"EXECUTION ERROR: Code execution timed out - this suggests code has problems (infinite loop, hanging compilation, or blocking operation)")
+            return errors[:5]  # Return timeout error immediately
+        
+        # Extract from stderr
+        stderr = exec_result.get('stderr', '')
+        if stderr:
+            # Look for Python tracebacks - capture full error message
+            # Pattern: Traceback... followed by File lines, ending with ErrorType: message
+            traceback_pattern = r'Traceback \(most recent call last\):(.*?)((?:AttributeError|TypeError|ValueError|RuntimeError|ImportError|KeyError|IndexError|NameError|ModuleNotFoundError):\s*.+?)(?=\n\n|\ntime=|$)'
+            matches = re.findall(traceback_pattern, stderr, re.DOTALL)
+            for match in matches:
+                # match[0] is the traceback body, match[1] is the error line
+                error_line = match[1].strip()
+                if error_line:
+                    # Get the last few lines of context from traceback for better understanding
+                    traceback_body = match[0].strip()
+                    traceback_lines = [l.strip() for l in traceback_body.split('\n') if l.strip() and 'File "' in l]
+                    if traceback_lines:
+                        # Prefer user code files (not site-packages or internal PyTorch files)
+                        user_code_lines = [l for l in traceback_lines if '/site-packages/' not in l and '/torch/nn/' not in l]
+                        if user_code_lines:
+                            # Use the last user code line (most relevant)
+                            last_file_line = user_code_lines[-1]
+                        else:
+                            # Fall back to last line if no user code found
+                            last_file_line = traceback_lines[-1]
+                        
+                        # Extract line number and code if available
+                        file_match = re.search(r'File ".*?", line (\d+), in (.+)', last_file_line)
+                        if file_match:
+                            line_num = file_match.group(1)
+                            func_name = file_match.group(2)
+                            # Also try to get the actual code line from traceback
+                            code_line = ""
+                            for line in traceback_body.split('\n'):
+                                if line.strip() and not line.strip().startswith('File ') and not line.strip().startswith('Traceback'):
+                                    code_line = line.strip()
+                                    break
+                            if code_line:
+                                errors.append(f"EXECUTION ERROR: {error_line} (at line {line_num} in {func_name}: {code_line})")
+                            else:
+                                errors.append(f"EXECUTION ERROR: {error_line} (at line {line_num} in {func_name})")
+                        else:
+                            errors.append(f"EXECUTION ERROR: {error_line}")
+                    else:
+                        errors.append(f"EXECUTION ERROR: {error_line}")
+            
+            # If no traceback found, look for error patterns directly
+            if not errors:
+                error_patterns = [
+                    r'(AttributeError|TypeError|ValueError|RuntimeError|ImportError|KeyError|IndexError|NameError|ModuleNotFoundError):\s*(.+?)(?=\n|$)',
+                ]
+                for pattern in error_patterns:
+                    matches = re.findall(pattern, stderr, re.IGNORECASE | re.MULTILINE)
+                    for match in matches:
+                        if isinstance(match, tuple):
+                            error_type = match[0]
+                            error_msg = match[1].strip()
+                            # Truncate very long messages
+                            if len(error_msg) > 200:
+                                error_msg = error_msg[:200] + "..."
+                            errors.append(f"EXECUTION ERROR: {error_type}: {error_msg}")
+                        else:
+                            error_msg = match.strip()
+                            if len(error_msg) > 200:
+                                error_msg = error_msg[:200] + "..."
+                            errors.append(f"EXECUTION ERROR: {error_msg}")
+        
+        # Extract from error_message if available
+        error_message = exec_result.get('error_message')
+        if error_message and error_message not in errors:
+            errors.append(f"EXECUTION ERROR: {error_message}")
+        
+        # If no specific errors found, add generic error
+        if not errors:
+            return_code = exec_result.get('return_code', -1)
+            errors.append(f"EXECUTION ERROR: Code execution failed (return code: {return_code})")
+        
+        return errors[:5]  # Limit to 5 errors
+    
     def _analyze_code_with_ai(self, code: str, dataset_name: str = None, 
-                              previous_fixes: List[Dict] = None) -> Dict[str, Any]:
+                              previous_fixes: List[Dict] = None,
+                              execution_errors: List[str] = None) -> Dict[str, Any]:
         """
         Use AI to analyze code for issues.
         
@@ -427,6 +654,16 @@ class CodeReviewAgent:
         # Use .format() instead of f-string to avoid issues with curly braces in code
         # Escape JSON braces in the template, then format with actual values
         trainium_errors_ref = self._get_trainium_error_reference()
+        
+        # Add execution errors to prompt if available
+        execution_errors_text = ""
+        if execution_errors:
+            execution_errors_text = "\n\n**⚠️ CRITICAL: REAL EXECUTION ERRORS FROM TRAINIUM:**\n"
+            execution_errors_text += "The following errors occurred when this code was executed on Trainium:\n"
+            for i, err in enumerate(execution_errors, 1):
+                execution_errors_text += f"{i}. {err}\n"
+            execution_errors_text += "\nYou MUST fix these specific errors. These are REAL runtime errors, not hypothetical issues.\n"
+        
         analysis_prompt_template = """You are an expert code reviewer for PyTorch code that will run on AWS Trainium using the Neuron SDK (XLA devices).
 
 Your task: Review this PyTorch code and identify ANY issues that would prevent it from running correctly on Trainium with the Neuron SDK. Look for ALL types of errors, not just common ones.
@@ -440,6 +677,8 @@ CRITICAL: This code MUST use the Neuron SDK (torch_xla) for Trainium execution. 
 Dataset being used: {dataset_name}
 
 {fix_history}
+
+{execution_errors}
 
 COMPREHENSIVE REVIEW CHECKLIST - Check for ALL of these:
 
@@ -584,6 +823,7 @@ If no issues found, set "no_issues": true."""
             code=code.replace('{', '{{').replace('}', '}}'),
             dataset_name=dataset_name or 'unknown',
             fix_history=fix_history,
+            execution_errors=execution_errors_text,
             trainium_errors=trainium_errors_ref
         )
 
@@ -694,14 +934,27 @@ If no issues found, set "no_issues": true."""
         if previous_fixes:
             fix_history = "\n⚠️ ITERATIVE FIXING CONTEXT - This is iteration {iteration}:\n"
             fix_history += "Previous fix attempts:\n"
+            all_previous_execution_errors = []  # Collect all previous execution errors
             for fix in previous_fixes:
                 prev_iter = fix.get('iteration', '?')
                 prev_issues = fix.get('issues_found', [])
                 prev_fixes = fix.get('fixes', [])
+                prev_execution_errors = fix.get('execution_errors', [])
                 prev_fixes_str = ', '.join(prev_fixes[:2]) if prev_fixes else 'none'
                 fix_history += "  - Iteration {}: Found {} issues, attempted fixes: {}...\n".format(
                     prev_iter, len(prev_issues), prev_fixes_str
                 )
+                # Collect execution errors from previous iterations
+                if prev_execution_errors:
+                    all_previous_execution_errors.extend(prev_execution_errors)
+                    fix_history += f"    Previous execution errors: {', '.join(prev_execution_errors[:2])}...\n"
+            
+            if all_previous_execution_errors:
+                fix_history += "\n⚠️ PREVIOUS EXECUTION ERRORS (from earlier iterations):\n"
+                for i, err in enumerate(all_previous_execution_errors[:5], 1):
+                    fix_history += f"  {i}. {err}\n"
+                fix_history += "These errors occurred in previous iterations. Make sure your fixes address them.\n"
+            
             fix_history += "\nIMPORTANT: The code below is ALREADY PARTIALLY FIXED from previous iterations. "
             fix_history += "Some issues may persist because previous fixes were incomplete or incorrect. "
             fix_history += "You must provide BETTER fixes that actually resolve the remaining issues.\n"

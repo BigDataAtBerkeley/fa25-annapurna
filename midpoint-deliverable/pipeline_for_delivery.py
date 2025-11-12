@@ -709,8 +709,15 @@ def main():
                        help='Process chunks in parallel (only with --use-chunked, may increase throttling risk)')
     parser.add_argument('--max-parallel', type=int, default=2,
                        help='Max parallel chunks (only with --use-chunked and --chunked-parallel, default: 2)')
+    parser.add_argument('--enable-execution-testing', action='store_true',
+                       help='Enable execution testing during code review (tests code on Trainium each iteration)')
     
     args = parser.parse_args()
+    
+    # Set environment variable for chunked generator if needed (must be before initialization)
+    if args.enable_execution_testing:
+        os.environ['ENABLE_EXECUTION_TESTING'] = 'true'
+        logger.info("✅ Execution testing enabled - code will be tested on Trainium during review")
     
     # Initialize generator
     if args.use_chunked:
@@ -729,7 +736,7 @@ def main():
         logger.info("✅ Using chunked approach (better for long papers)")
     else:
         logger.info("Initializing PyTorch Code Generator...")
-        generator = PyTorchCodeGenerator()
+        generator = PyTorchCodeGenerator(enable_execution_testing=args.enable_execution_testing)
         logger.info("✅ Using standard approach")
     
     # Ensure Trainium is ready before processing papers

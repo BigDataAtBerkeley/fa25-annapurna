@@ -23,14 +23,24 @@ logger = logging.getLogger(__name__)
 class PyTorchCodeGenerator:
     """Main class that orchestrates the PyTorch code generation process."""
     
-    def __init__(self):
-        """initilaize code generator"""
+    def __init__(self, enable_execution_testing: bool = False):
+        """
+        Initialize code generator.
+        
+        Args:
+            enable_execution_testing: If True, code reviewer will test code on Trainium during review
+        """
         self.opensearch_client = OpenSearchClient()
         self.bedrock_client = BedrockClient2()  # Using BedrockClient2 for extended paper content support
         self.dataset_recommender = DatasetRecommender(bedrock_client=self.bedrock_client)
-        self.code_review_agent = CodeReviewAgent(bedrock_client=self.bedrock_client)
+        self.code_review_agent = CodeReviewAgent(
+            bedrock_client=self.bedrock_client,
+            enable_execution_testing=enable_execution_testing
+        )
         
         logger.info("PyTorch Code Generator initialized with BedrockClient2 (extended paper content support)")
+        if enable_execution_testing:
+            logger.info("✅ Execution testing enabled - code will be tested on Trainium during review")
     
     def generate_code_for_paper(self, paper_id: str, include_full_content: bool = True) -> Dict[str, Any]:
         """
@@ -97,7 +107,9 @@ class PyTorchCodeGenerator:
             primary_dataset = dataset_recommendations.get("primary_dataset", "synthetic")
             review_result = self.code_review_agent.review_and_fix_code(
                 result["code"],
-                dataset_name=primary_dataset
+                dataset_name=primary_dataset,
+                paper_id=paper_id,
+                paper_title=paper.get('title', 'Unknown')
             )
             
             # Check if code review found incomplete code issues
