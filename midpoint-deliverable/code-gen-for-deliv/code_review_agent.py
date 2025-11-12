@@ -153,8 +153,8 @@ class CodeReviewAgent:
                         logger.info("✅ No issues found and execution succeeded - code is ready!")
                         break
                 else:
-                logger.info("✅ No issues found - code is ready!")
-                break
+                    logger.info("✅ No issues found - code is ready!")
+                    break
             
             # Record issues found (even if fix fails, we want to track what was found)
             issues_found = issues.get('issues', [])
@@ -417,6 +417,55 @@ class CodeReviewAgent:
             if var_name not in seen_vars:
                 seen_vars.add(var_name)
                 issues.append(f"CRITICAL: Variable '{var_name}' is assigned to ellipsis (...) placeholder - code is incomplete. Must initialize with actual value (e.g., model, tensor, or proper object).")
+        
+        # Check for LoRA/Adapter layer issues (CRITICAL - common mistakes)
+        if 'lora' in code.lower() or 'adapter' in code.lower() or 'LoRA' in code:
+            # Check for wrong layer traversal pattern
+            if 'zip(lora_layers' in code or 'zip(self.lora_layers' in code:
+                if 'self.layers' not in code or 'nn.ModuleList' not in code:
+                    issues.append("CRITICAL: LoRA code uses zip(lora_layers, model) which misaligns layers. Use unified self.layers = nn.ModuleList() that includes both LoRA-wrapped and original layers.")
+            
+            # Check for wrong LoRA math (inputs + matmul pattern)
+            if 'inputs + torch.matmul(inputs' in code or 'x + torch.matmul(x' in code:
+                if 'F.linear' not in code or 'self.layer.weight +' not in code:
+                    issues.append("CRITICAL: LoRA forward pass uses wrong pattern 'inputs + torch.matmul(inputs, A) @ B.T'. Should use 'F.linear(x, self.layer.weight + self.B @ self.A, self.layer.bias)' (W' = W + B@A formula).")
+            
+            # Check for wrong LoRA formula (B@A.T instead of B@A)
+            if 'self.B @ self.A.T' in code or 'torch.matmul(self.B, self.A.T)' in code or 'matmul(self.B, self.A.T)' in code:
+                issues.append("CRITICAL: LoRA formula uses wrong transpose. Should be 'self.B @ self.A' (W' = W + B@A), NOT 'self.B @ self.A.T' or 'torch.matmul(self.B, self.A.T)'.")
+            
+            # Check for wrapping custom models with complex forward()
+            if 'LoRAModel(' in code:
+                # Check if LoRAModel is wrapping a custom class instance (not nn.Sequential)
+                # Pattern: LoRAModel(SomeModelClass(), ...) or LoRAModel(SomeModel(), ...)
+                lora_pattern = r'LoRAModel\s*\(\s*(\w+)\s*\([^)]*\)'
+                matches = re.findall(lora_pattern, code)
+                for match in matches:
+                    # If it's wrapping a class instantiation (not nn.Sequential)
+                    if match != 'nn.Sequential' and match[0].isupper():  # Class name starts with uppercase
+                        # Check if that class has a custom forward method
+                        class_pattern = rf'class\s+{match}\s*\([^)]*\):.*?def\s+forward\s*\('
+                        if re.search(class_pattern, code, re.DOTALL):
+                            issues.append(f"CRITICAL: LoRAModel is wrapping custom model '{match}' with complex forward() method. LoRAModel can only wrap nn.Sequential or simple layer lists, not models with custom forward logic (Conv2d, flatten, etc.). Use nn.Sequential for base model instead.")
+                            break
+            
+            # Check for wrong parameter dimensions
+            if 'torch.zeros(rank, layer.weight.shape[1]' in code:
+                issues.append("CRITICAL: LoRA parameter A has wrong dimensions. Should be 'torch.zeros(rank, layer.in_features)' not 'torch.zeros(rank, layer.weight.shape[1])'.")
+            if 'torch.zeros(layer.weight.shape[0], rank' in code:
+                issues.append("CRITICAL: LoRA parameter B has wrong dimensions. Should be 'torch.zeros(layer.out_features, rank)' not 'torch.zeros(layer.weight.shape[0], rank)'.")
+            
+            # Check for manual gradient adjustment
+            if 'adjust_gradients' in code or 'A.grad.data =' in code or 'B.grad.data =' in code:
+                issues.append("CRITICAL: LoRA code has manual gradient adjustment function. LoRA gradients propagate automatically - remove adjust_gradients() function and all manual gradient manipulation.")
+            
+            # Check for .to(device) on loss function
+            if 'CrossEntropyLoss().to(device)' in code or 'MSELoss().to(device)' in code:
+                issues.append("CRITICAL: Loss function has .to(device) - loss functions don't have parameters. Use 'criterion = nn.CrossEntropyLoss()' without .to(device).")
+            
+            # Check for missing model.train()
+            if 'for epoch in range' in code and 'model.train()' not in code:
+                issues.append("CRITICAL: Training loop missing model.train() at start of each epoch. Add 'model.train()' before training loop to ensure dropout/batchnorm work correctly.")
         
         return issues
     
@@ -806,6 +855,39 @@ COMPREHENSIVE REVIEW CHECKLIST - Check for ALL of these:
    - CORRECT: Only access .grad after loss.backward() in training loop
    - CORRECT: Use param.data or param directly in forward pass, not param.grad
 
+11. **LoRA / Adaptation Layer Errors (CRITICAL - IF CODE USES LORA/ADAPTERS):**
+   - **WRONG Layer Traversal:**
+     - ❌ `for layer in model:` then `zip(lora_layers, model)` - This misaligns layers
+     - ❌ Separate `lora_layers` list that doesn't match model layer count
+     - ✅ CORRECT: Use unified `self.layers = nn.ModuleList()` that includes both LoRA-wrapped and original layers
+   - **WRONG LoRA Math:**
+     - ❌ `return inputs + torch.matmul(inputs, self.A) @ self.B.T` - Wrong dimensions and bypasses base layer
+     - ❌ `torch.matmul(self.B, self.A.T)` - Wrong: should be `self.B @ self.A` (formula is W' = W + B@A, not W + B@A^T)
+     - ❌ `self.A = nn.Parameter(torch.zeros(rank, layer.weight.shape[1]))` - Wrong: A should be `[rank, in_features]`
+     - ❌ `self.B = nn.Parameter(torch.zeros(layer.weight.shape[0], rank))` - Wrong: B should be `[out_features, rank]`
+     - ✅ CORRECT: `W' = W + B@A` where A is `[rank, in_features]`, B is `[out_features, rank]`
+     - ✅ CORRECT: `return F.linear(x, self.layer.weight + self.B @ self.A, self.layer.bias)` (NOT self.B @ self.A.T)
+   - **WRONG Model Wrapping:**
+     - ❌ Wrapping custom models with complex forward() methods (e.g., `LoRAModel(ExampleModel())` where ExampleModel has Conv2d, flatten, etc.)
+     - ❌ Using `model.children()` to iterate over custom model - breaks model structure
+     - ✅ CORRECT: Only wrap `nn.Sequential` models or simple layer lists, not models with custom forward logic
+   - **WRONG Gradient Adjustment:**
+     - ❌ Manual `adjust_gradients()` function with incorrect matrix math
+     - ❌ `A.grad.data = dL_dA - torch.matmul(dL_dA, B) * B.T` - Mixes matmul and elementwise, wrong shapes
+     - ✅ CORRECT: Remove gradient adjustment - LoRA gradients propagate automatically through the decomposition
+   - **WRONG Loss Function Device:**
+     - ❌ `criterion = nn.CrossEntropyLoss().to(device)` - Loss functions don't have parameters
+     - ✅ CORRECT: `criterion = nn.CrossEntropyLoss()` (no .to(device))
+   - **WRONG Training Loop:**
+     - ❌ Missing `model.train()` at start of each epoch - causes eval mode to persist
+     - ❌ `int(labels.size(0))` on XLA tensors - should use `.size(0)` directly or `.sum().item()`
+     - ✅ CORRECT: Call `model.train()` at start of each training epoch
+     - ✅ CORRECT: Use `total += labels.size(0)` and `correct += (predicted == labels).sum().item()`
+   - **Layer Alignment Issues:**
+     - ❌ `for lora_layer, layer in zip(self.lora_layers, self.model):` - Stops early if counts don't match
+     - ❌ Model has 4 layers (Flatten, Linear, ReLU, Linear) but lora_layers has only 2 (Linear layers)
+     - ✅ CORRECT: Use single unified `self.layers` list and iterate: `for layer in self.layers: x = layer(x)`
+
 IMPORTANT: Be thorough. Look for ANY error that would cause the code to fail, not just the common ones listed above. Think like a compiler/linter - catch everything.
 
 Respond in JSON format:
@@ -1037,7 +1119,40 @@ CRITICAL FIXES NEEDED:
    - For MNIST (28x28=784 pixels): need projection from 784 to d_model, then reshape to [batch, seq_len, d_model] before LayerNorm
    - Error "Given normalized_shape=[512], expected input with shape [*, 512], but got input of size[128, 1, 28, 28]" means LayerNorm applied to wrong shape
    - Fix: Add input projection layer and reshape before normalization in forward() method
-13. Add any missing imports
+13. LoRA / Adaptation Layer Fixes (CRITICAL - IF CODE USES LORA/ADAPTERS):
+   - **Fix Layer Traversal:**
+     - WRONG: `for layer in model:` then `zip(lora_layers, model)` - Replace with unified layers list
+     - CORRECT: Create `self.layers = nn.ModuleList()` that includes both LoRA-wrapped and original layers
+     - CORRECT: `for layer in model: if isinstance(layer, nn.Linear): self.layers.append(LoRALinear(layer, rank)) else: self.layers.append(layer)`
+     - CORRECT: `def forward(self, x): for layer in self.layers: x = layer(x); return x`
+   - **Fix LoRA Math:**
+     - WRONG: `return inputs + torch.matmul(inputs, self.A) @ self.B.T` - Replace with proper LoRA formula
+     - WRONG: `torch.matmul(self.B, self.A.T)` - Fix to `self.B @ self.A` (formula is W' = W + B@A, NOT W + B@A^T)
+     - WRONG: `self.A = nn.Parameter(torch.zeros(rank, layer.weight.shape[1]))` - Fix to `[rank, in_features]`
+     - WRONG: `self.B = nn.Parameter(torch.zeros(layer.weight.shape[0], rank))` - Fix to `[out_features, rank]`
+     - CORRECT: `self.A = nn.Parameter(torch.zeros(rank, layer.in_features))`  # [rank, in_features]
+     - CORRECT: `self.B = nn.Parameter(torch.zeros(layer.out_features, rank))`  # [out_features, rank]
+     - CORRECT: `return F.linear(x, self.layer.weight + self.B @ self.A, self.layer.bias)`  # W' = W + B@A (NOT B@A.T)
+   - **Fix Model Wrapping:**
+     - WRONG: `LoRAModel(ExampleModel())` where ExampleModel has custom forward() with Conv2d, flatten, etc.
+     - WRONG: Using `model.children()` to iterate over custom model - breaks model structure
+     - CORRECT: Use `nn.Sequential` for base model: `base_model = nn.Sequential(nn.Flatten(), nn.Linear(...), ...)`
+     - CORRECT: Then wrap: `model = LoRAModel(base_model, rank=4)` - only works with Sequential or simple layer lists
+   - **Remove Gradient Adjustment:**
+     - WRONG: `adjust_gradients(A, B)` function with manual gradient math - Remove entirely
+     - WRONG: `A.grad.data = dL_dA - torch.matmul(dL_dA, B) * B.T` - This is incorrect and causes shape errors
+     - CORRECT: Remove all gradient adjustment code - LoRA gradients propagate automatically
+     - CORRECT: Just use `loss.backward()` then `xm.optimizer_step(optimizer)` - no manual gradient adjustment
+   - **Fix Loss Function:**
+     - WRONG: `criterion = nn.CrossEntropyLoss().to(device)` - Remove .to(device)
+     - CORRECT: `criterion = nn.CrossEntropyLoss()` (loss functions don't have parameters)
+   - **Fix Training Loop:**
+     - WRONG: Missing `model.train()` at start of each epoch - Add `model.train()` before training loop
+     - WRONG: `int(labels.size(0))` on XLA tensors - Use `labels.size(0)` directly or `.sum().item()`
+     - CORRECT: `model.train()` at start of each epoch, `model.eval()` only for evaluation
+     - CORRECT: `total += labels.size(0)` and `correct += (predicted == labels).sum().item()`
+
+14. Add any missing imports
 
 CRITICAL: ONLY use VALID torch_xla.core.xla_model (xm) APIs:
    - xm.xla_device() - Get XLA device

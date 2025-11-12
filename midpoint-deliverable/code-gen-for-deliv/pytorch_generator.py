@@ -31,7 +31,7 @@ class PyTorchCodeGenerator:
             enable_execution_testing: If True, code reviewer will test code on Trainium during review
         """
         self.opensearch_client = OpenSearchClient()
-        self.bedrock_client = BedrockClient2()  # Using BedrockClient2 for extended paper content support
+        self.bedrock_client = BedrockClient2()  # Using BedrockClient2 (bedrockclient2 enables more tokens, uses chunking)
         self.dataset_recommender = DatasetRecommender(bedrock_client=self.bedrock_client)
         self.code_review_agent = CodeReviewAgent(
             bedrock_client=self.bedrock_client,
@@ -73,7 +73,7 @@ class PyTorchCodeGenerator:
             if include_full_content:
                 paper_content = self.opensearch_client.get_paper_content(paper)
             
-            # Get dataset recommendations
+            # Get dataset recommendations (calling `dataset_recommender.py`)
             dataset_recommendations = self.dataset_recommender.recommend_datasets(
                 paper, paper_content, use_llm=True
             )

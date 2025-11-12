@@ -361,6 +361,79 @@ CRITICAL REQUIREMENTS - READ CAREFULLY
    - Import ALL standard library modules you use (math, random, collections, etc.)
    - This is the #1 cause of NameError failures
 
+4. LORA / ADAPTATION LAYERS (CRITICAL - IF PAPER USES LORA/ADAPTERS):
+   If the paper describes LoRA, adapters, or similar low-rank adaptation techniques:
+   
+   **CORRECT LoRA Implementation:**
+   ```python
+   import torch.nn.functional as F
+   
+   class LoRALinear(nn.Module):
+       def __init__(self, layer, rank=4):
+           super().__init__()
+           self.layer = layer  # Original layer (e.g., nn.Linear)
+           # A: [rank, in_features], B: [out_features, rank]
+           self.A = nn.Parameter(torch.zeros(rank, layer.in_features))
+           self.B = nn.Parameter(torch.zeros(layer.out_features, rank))
+           # Initialize properly
+           nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
+           nn.init.zeros_(self.B)
+       
+       def forward(self, x):
+           # CORRECT: W' = W + B@A, then y = x @ W'^T + b
+           # NOTE: B@A (not B@A.T) - the formula is W' = W + B@A
+           return F.linear(x, self.layer.weight + self.B @ self.A, self.layer.bias)
+   ```
+   
+   **WRONG Patterns to AVOID:**
+   - ❌ `return inputs + torch.matmul(inputs, self.A) @ self.B.T` - This bypasses base layer and has wrong dimensions
+   - ❌ `torch.matmul(self.B, self.A.T)` - Wrong: should be `self.B @ self.A` (formula is W' = W + B@A, not W + B@A^T)
+   - ❌ `self.A = nn.Parameter(torch.zeros(rank, layer.weight.shape[1]))` - Wrong: should be `[rank, in_features]`
+   - ❌ `self.B = nn.Parameter(torch.zeros(layer.weight.shape[0], rank))` - Wrong: should be `[out_features, rank]`
+   - ❌ Manual gradient adjustment functions - LoRA gradients propagate automatically, no manual adjustment needed
+   - ❌ `for layer in model:` then `zip(lora_layers, model)` - This misaligns layers (model has 4 layers, lora_layers has 2)
+   - ❌ Wrapping custom models with complex forward() methods - Only wrap nn.Sequential or simple layer lists, not models with custom forward logic
+   
+   **CORRECT Layer Wrapping Pattern:**
+   ```python
+   # ONLY wrap nn.Sequential models, NOT custom models with complex forward() methods
+   base_model = nn.Sequential(
+       nn.Flatten(),
+       nn.Linear(784, 128),
+       nn.ReLU(),
+       nn.Linear(128, 10)
+   )
+   
+   class LoRAModel(nn.Module):
+       def __init__(self, model, rank=4):
+           super().__init__()
+           self.layers = nn.ModuleList()
+           # model must be nn.Sequential or iterable list of layers
+           for layer in model:
+               if isinstance(layer, nn.Linear):
+                   self.layers.append(LoRALinear(layer, rank))
+               else:
+                   self.layers.append(layer)  # Keep non-linear layers as-is
+       
+       def forward(self, x):
+           for layer in self.layers:
+               x = layer(x)
+           return x
+   
+   model = LoRAModel(base_model, rank=4)
+   ```
+   
+   **CRITICAL: Do NOT wrap custom models with complex forward() methods:**
+   - ❌ `LoRAModel(ExampleModel())` where ExampleModel has custom forward() with Conv2d, flatten, etc.
+   - ✅ Use `nn.Sequential` for base model, then wrap with LoRAModel
+   
+   **CRITICAL LoRA Requirements:**
+   - Use unified `self.layers` list that includes BOTH LoRA-wrapped and original layers
+   - Do NOT use separate `lora_layers` list that gets zipped with model layers (causes misalignment)
+   - LoRA formula: W' = W + B@A where A is [rank, in_features] and B is [out_features, rank]
+   - Do NOT manually adjust gradients - gradients propagate automatically through the decomposition
+   - Do NOT add residuals directly to inputs - LoRA modifies the weight matrix, not the input
+
 ═══════════════════════════════════════════════════════════════════════════════
 PACKAGES & ENVIRONMENT
 ═══════════════════════════════════════════════════════════════════════════════
