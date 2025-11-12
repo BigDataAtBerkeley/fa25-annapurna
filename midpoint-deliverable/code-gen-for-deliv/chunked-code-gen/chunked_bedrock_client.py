@@ -55,6 +55,135 @@ class ChunkedBedrockClient:
         logger.info(f"  - Final model: {self.final_model_id}")
         logger.info(f"  - Chunk delay: {self.chunk_delay}s")
     
+    def summarize_pdf_chunk_with_vision(self, base64_images: List[str], chunk_number: int, 
+                                       total_chunks: int, paper_summary: str, 
+                                       page_start: int, page_end: int) -> Dict[str, Any]:
+        """
+        Generate a detailed summary of a PDF chunk using vision capabilities.
+        Extracts formulas and diagrams from PDF pages.
+        
+        Args:
+            base64_images: List of base64-encoded PNG images (one per page)
+            chunk_number: Current chunk number (1-indexed)
+            total_chunks: Total number of chunks
+            paper_summary: Overall paper summary (title, authors, abstract)
+            page_start: Starting page number (0-indexed, for display)
+            page_end: Ending page number (exclusive, 0-indexed, for display)
+            
+        Returns:
+            Dictionary with summary and metadata
+        """
+        prompt = f"""
+You are analyzing a research paper PDF that has been split into {total_chunks} parts. You are analyzing part {chunk_number} of {total_chunks}, which contains pages {page_start + 1} through {page_end}.
+
+Paper Overview:
+{paper_summary}
+
+Your task is to analyze the provided PDF pages and provide a DETAILED SUMMARY that will be used to generate PyTorch code. Focus on extracting:
+
+1. MATHEMATICAL FORMULAS and equations - transcribe them exactly as they appear, including all notation
+2. DIAGRAMS and figures - describe the architecture, data flow, network structures, and visual elements in detail
+3. KEY ALGORITHMS AND METHODS described in these pages
+4. ARCHITECTURAL DETAILS (neural network structures, layer types, connections, etc.)
+5. TRAINING PROCEDURES (loss functions, optimization methods, training steps)
+6. KEY IMPLEMENTATION DETAILS (data preprocessing, specific operations, etc.)
+7. IMPORTANT CONSTANTS, HYPERPARAMETERS, or configuration details
+8. ANY CODE-RELEVANT INFORMATION that would be needed to implement this
+
+CRITICAL: Pay special attention to formulas and diagrams that may not be fully captured in text. 
+- For formulas: Write them out in LaTeX notation or clear mathematical notation
+- For diagrams: Describe the structure, connections, and flow in detail
+- For tables: Extract all numerical values and relationships
+
+Be extremely detailed and specific. Include all mathematical notation, formulas, and technical details.
+This summary will be combined with summaries from other chunks to generate complete PyTorch code.
+
+Format your response as a structured summary with clear sections.
+"""
+        
+        # Build multimodal content: images + text
+        content = []
+        
+        # Add each image with its description
+        for i, base64_image in enumerate(base64_images):
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64_image
+                }
+            })
+        
+        # Add text prompt after images
+        content.append({
+            "type": "text",
+            "text": prompt
+        })
+        
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 4096,  # Chunk summaries don't need to be as long as full code
+            "temperature": 0.2,  # Lower temperature for more accurate, detailed summaries
+            "messages": [
+                {
+                    "role": "user",
+                    "content": content
+                }
+            ]
+        }
+        
+        max_retries = 8
+        base_delay = 5  # Increased base delay to better handle rate limits
+        
+        for attempt in range(max_retries):
+            try:
+                response = self.client.invoke_model(
+                    modelId=self.chunk_model_id,
+                    body=json.dumps(body),
+                    contentType="application/json"
+                )
+                break
+            except ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', '')
+                error_msg = str(e)
+                
+                # Log the actual error for debugging
+                logger.debug(f"PDF Chunk {chunk_number} error: Code={error_code}, Message={error_msg[:200]}")
+                
+                retryable_errors = ['ThrottlingException', 'ServiceUnavailableException', 'TooManyRequestsException']
+                is_throttling = (error_code in retryable_errors or 
+                               'throttl' in error_msg.lower() or 
+                               'too many requests' in error_msg.lower() or
+                               'rate limit' in error_msg.lower() or
+                               'rate exceeded' in error_msg.lower())
+                
+                if is_throttling and attempt < max_retries - 1:
+                    # Exponential backoff with jitter
+                    delay = min(base_delay * (2 ** attempt), 60)  # Cap at 60s for chunks
+                    jitter = random.uniform(0, 1)
+                    total_delay = delay + jitter
+                    logger.warning(f"PDF Chunk {chunk_number} throttling detected (Code: {error_code}), retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(total_delay)
+                    continue
+                else:
+                    # Log non-throttling errors before raising
+                    if not is_throttling:
+                        logger.error(f"PDF Chunk {chunk_number} non-retryable error: Code={error_code}, Message={error_msg[:200]}")
+                    raise
+        
+        response_body = json.loads(response['body'].read())
+        summary_text = response_body['content'][0]['text']
+        
+        return {
+            "success": True,
+            "chunk_number": chunk_number,
+            "summary": summary_text,
+            "model_used": self.chunk_model_id,
+            "pages": f"{page_start + 1}-{page_end}",
+            "num_images": len(base64_images)
+        }
+    
     def summarize_chunk(self, chunk_text: str, chunk_number: int, total_chunks: int, 
                        paper_summary: str) -> Dict[str, Any]:
         """
@@ -362,77 +491,58 @@ CRITICAL REQUIREMENTS - READ CAREFULLY
    - This is the #1 cause of NameError failures
 
 4. LORA / ADAPTATION LAYERS (CRITICAL - IF PAPER USES LORA/ADAPTERS):
-   If the paper describes LoRA, adapters, or similar low-rank adaptation techniques:
+   If the paper describes LoRA, adapters, or similar low-rank adaptation techniques, implement based on the paper's specifications.
    
-   **CORRECT LoRA Implementation:**
-   ```python
-   import torch.nn.functional as F
+   **CRITICAL ERRORS TO AVOID:**
    
-   class LoRALinear(nn.Module):
-       def __init__(self, layer, rank=4):
-           super().__init__()
-           self.layer = layer  # Original layer (e.g., nn.Linear)
-           # A: [rank, in_features], B: [out_features, rank]
-           self.A = nn.Parameter(torch.zeros(rank, layer.in_features))
-           self.B = nn.Parameter(torch.zeros(layer.out_features, rank))
-           # Initialize properly
-           nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
-           nn.init.zeros_(self.B)
-       
-       def forward(self, x):
-           # CORRECT: W' = W + B@A, then y = x @ W'^T + b
-           # NOTE: B@A (not B@A.T) - the formula is W' = W + B@A
-           return F.linear(x, self.layer.weight + self.B @ self.A, self.layer.bias)
-   ```
+   **Layer Wrapping Errors:**
+   - ❌ DO NOT recursively process simple modules (nn.Flatten, nn.ReLU, nn.Conv2d, etc.) - they are not containers
+   - ❌ DO NOT call recursive functions on simple nn.Module instances - only on container types (nn.Sequential, nn.ModuleDict, nn.ModuleList)
+   - ❌ WRONG: `if isinstance(layer, nn.Module): self.layers.append(layer); self._add_layers(layer, rank)` - This will crash for simple modules
+   - ✅ CORRECT: Check for container types FIRST, then handle simple modules separately
+   - ✅ CORRECT: Only recursively process containers: `if isinstance(layer, (nn.Sequential, nn.ModuleDict, nn.ModuleList)): self._add_layers(layer, rank)`
+   - ✅ CORRECT: For simple modules, just append: `elif isinstance(layer, nn.Module): self.layers.append(layer)` (no recursion)
    
-   **WRONG Patterns to AVOID:**
-   - ❌ `return inputs + torch.matmul(inputs, self.A) @ self.B.T` - This bypasses base layer and has wrong dimensions
-   - ❌ `torch.matmul(self.B, self.A.T)` - Wrong: should be `self.B @ self.A` (formula is W' = W + B@A, not W + B@A^T)
-   - ❌ `self.A = nn.Parameter(torch.zeros(rank, layer.weight.shape[1]))` - Wrong: should be `[rank, in_features]`
-   - ❌ `self.B = nn.Parameter(torch.zeros(layer.weight.shape[0], rank))` - Wrong: should be `[out_features, rank]`
-   - ❌ Manual gradient adjustment functions - LoRA gradients propagate automatically, no manual adjustment needed
-   - ❌ `for layer in model:` then `zip(lora_layers, model)` - This misaligns layers (model has 4 layers, lora_layers has 2)
-   - ❌ Wrapping custom models with complex forward() methods - Only wrap nn.Sequential or simple layer lists, not models with custom forward logic
+   **Mathematical Formula Errors:**
+   - ❌ DO NOT transpose incorrectly - follow the paper's exact formula (typically W' = W + B@A, not W + B@A^T)
+   - ❌ DO NOT use wrong matrix dimensions - A should be [rank, in_features], B should be [out_features, rank]
+   - ✅ Derive dimensions from the paper's mathematical notation
+   - **CRITICAL - Tensor Shape Compatibility:**
+     - ❌ DO NOT add tensors with incompatible shapes - XLA will crash with "Check failed: dim1 == dim2"
+     - ❌ DO NOT use `layer.weight.shape[0]` or `layer.weight.shape[1]` - use `layer.in_features` and `layer.out_features` instead
+     - ✅ CORRECT: `self.A = nn.Parameter(torch.zeros(rank, layer.in_features))` - matches weight matrix dimensions
+     - ✅ CORRECT: `self.B = nn.Parameter(torch.zeros(layer.out_features, rank))` - matches weight matrix dimensions
+     - ✅ CORRECT: `W' = W + B@A` where W is [out_features, in_features], B is [out_features, rank], A is [rank, in_features]
+     - ✅ Verify: `B @ A` produces shape [out_features, in_features] to match W
+     - ❌ WRONG: `B @ A.T` or `A @ B` - these produce wrong shapes and will cause XLA dimension mismatch errors
    
-   **CORRECT Layer Wrapping Pattern:**
-   ```python
-   # ONLY wrap nn.Sequential models, NOT custom models with complex forward() methods
-   base_model = nn.Sequential(
-       nn.Flatten(),
-       nn.Linear(784, 128),
-       nn.ReLU(),
-       nn.Linear(128, 10)
-   )
+   **Architecture Errors:**
+   - ❌ DO NOT use separate lora_layers list that gets zipped with model layers - causes layer misalignment
+   - ❌ DO NOT wrap custom models with complex forward() methods - only wrap nn.Sequential or simple layer lists
+   - ✅ Use unified layers list that includes BOTH LoRA-wrapped and original layers
+   - ✅ Base model should be nn.Sequential or simple layer structure, not custom classes with complex forward()
    
-   class LoRAModel(nn.Module):
-       def __init__(self, model, rank=4):
-           super().__init__()
-           self.layers = nn.ModuleList()
-           # model must be nn.Sequential or iterable list of layers
-           for layer in model:
-               if isinstance(layer, nn.Linear):
-                   self.layers.append(LoRALinear(layer, rank))
-               else:
-                   self.layers.append(layer)  # Keep non-linear layers as-is
-       
-       def forward(self, x):
-           for layer in self.layers:
-               x = layer(x)
-           return x
+   **Gradient/Optimization Errors:**
+   - ❌ DO NOT manually adjust gradients - LoRA gradients propagate automatically
+   - ❌ DO NOT add residuals directly to inputs - LoRA modifies weight matrices, not inputs
+   - ✅ Let PyTorch's autograd handle gradient flow automatically
    
-   model = LoRAModel(base_model, rank=4)
-   ```
-   
-   **CRITICAL: Do NOT wrap custom models with complex forward() methods:**
-   - ❌ `LoRAModel(ExampleModel())` where ExampleModel has custom forward() with Conv2d, flatten, etc.
-   - ✅ Use `nn.Sequential` for base model, then wrap with LoRAModel
-   
-   **CRITICAL LoRA Requirements:**
-   - Use unified `self.layers` list that includes BOTH LoRA-wrapped and original layers
-   - Do NOT use separate `lora_layers` list that gets zipped with model layers (causes misalignment)
-   - LoRA formula: W' = W + B@A where A is [rank, in_features] and B is [out_features, rank]
-   - Do NOT manually adjust gradients - gradients propagate automatically through the decomposition
-   - Do NOT add residuals directly to inputs - LoRA modifies the weight matrix, not the input
+   **General Principles:**
+   - Implement the exact method described in the paper, not a generic template
+   - Use the paper's notation and formulas directly
+   - Handle nested module structures correctly (containers vs simple modules)
+   - Ensure layer alignment matches the base model structure
+   - **CRITICAL: Always verify tensor shapes are compatible before operations**
+   - **CRITICAL: For matrix operations, ensure dimensions match: [m, n] @ [n, p] = [m, p]**
+   - **CRITICAL: When adding tensors, they must have compatible shapes (same shape or broadcastable)**
+   - **CRITICAL - Parameter Handling in Forward Pass:**
+     - ❌ DO NOT reassign `layer.weight = nn.Parameter(...)` in forward() - this creates new Parameters each pass
+     - ❌ DO NOT create `nn.Parameter()` inside forward() method - Parameters must be created in __init__
+     - ❌ WRONG: `self.layer.weight = nn.Parameter(weight)` in forward() - breaks XLA and causes timeouts
+     - ✅ CORRECT: Store original weight in __init__: `self.original_weight = layer.weight.data.clone()`
+     - ✅ CORRECT: In forward(), compute modified weight as tensor: `weight = self.original_weight + self.B @ self.A`
+     - ✅ CORRECT: Use functional operations: `return F.linear(x, weight, self.layer.bias)` (NOT reassigning layer.weight)
+     - ✅ CORRECT: For LoRA, use `F.linear(x, self.layer.weight + self.B @ self.A, self.layer.bias)` directly
 
 ═══════════════════════════════════════════════════════════════════════════════
 PACKAGES & ENVIRONMENT

@@ -455,6 +455,38 @@ class CodeReviewAgent:
             if 'torch.zeros(layer.weight.shape[0], rank' in code:
                 issues.append("CRITICAL: LoRA parameter B has wrong dimensions. Should be 'torch.zeros(layer.out_features, rank)' not 'torch.zeros(layer.weight.shape[0], rank)'.")
             
+            # Check for tensor shape mismatches in LoRA operations
+            if 'self.B @ self.A.T' in code or 'torch.matmul(self.B, self.A.T' in code:
+                issues.append("CRITICAL: LoRA matrix multiplication uses wrong transpose. Should be 'self.B @ self.A' (produces [out_features, in_features]), not 'self.B @ self.A.T' (produces wrong shape). This will cause XLA 'Check failed: dim1 == dim2' error.")
+            if 'self.A @ self.B' in code or 'torch.matmul(self.A, self.B' in code:
+                issues.append("CRITICAL: LoRA matrix multiplication has wrong order. Should be 'self.B @ self.A' (produces [out_features, in_features] to match weight matrix), not 'self.A @ self.B' (produces wrong shape). This will cause XLA 'Check failed: dim1 == dim2' error.")
+            
+            # Check for using weight.shape instead of in_features/out_features
+            if 'layer.weight.shape[0]' in code or 'layer.weight.shape[1]' in code:
+                # Only flag if it's in LoRA context (parameter initialization or forward pass)
+                if 'LoRA' in code or 'lora' in code.lower() or 'self.A' in code or 'self.B' in code:
+                    issues.append("CRITICAL: Using 'layer.weight.shape[...]' instead of 'layer.in_features'/'layer.out_features' in LoRA. This can cause shape mismatches. Use 'layer.in_features' and 'layer.out_features' instead.")
+            
+            # Check for adding tensors without shape verification
+            if 'self.layer.weight +' in code and ('self.B @ self.A' in code or 'self.A @ self.B' in code or 'torch.matmul' in code):
+                # Verify the operation is correct
+                if 'self.B @ self.A' not in code and 'torch.matmul(self.B, self.A' not in code:
+                    issues.append("CRITICAL: Adding weight matrix to LoRA matrices but operation may have wrong shape. Ensure 'B @ A' produces [out_features, in_features] to match weight matrix shape. Wrong shapes will cause XLA 'Check failed: dim1 == dim2' error.")
+            
+            # Check for reassigning layer.weight in forward pass (CRITICAL XLA error)
+            if 'self.layer.weight =' in code or 'layer.weight =' in code:
+                # Check if it's in a forward method
+                forward_pattern = r'def\s+forward\s*\([^)]*\):.*?(?:self\.layer\.weight\s*=|layer\.weight\s*=)'
+                if re.search(forward_pattern, code, re.DOTALL):
+                    issues.append("CRITICAL: Reassigning layer.weight in forward() method. This creates a new Parameter each forward pass, breaks XLA, and causes optimizer to lose track of parameters. Use F.linear() with modified weight instead: 'return F.linear(x, self.original_weight + self.B @ self.A, self.layer.bias)'")
+            
+            # Check for creating new Parameter in forward pass
+            if 'nn.Parameter(' in code:
+                # Check if Parameter is created inside forward method
+                forward_with_param_pattern = r'def\s+forward\s*\([^)]*\):.*?nn\.Parameter\s*\('
+                if re.search(forward_with_param_pattern, code, re.DOTALL):
+                    issues.append("CRITICAL: Creating nn.Parameter inside forward() method. Parameters must be created in __init__, not forward(). Creating new Parameters in forward() breaks XLA and causes infinite loops/timeouts. Use F.linear() or functional operations instead.")
+            
             # Check for manual gradient adjustment
             if 'adjust_gradients' in code or 'A.grad.data =' in code or 'B.grad.data =' in code:
                 issues.append("CRITICAL: LoRA code has manual gradient adjustment function. LoRA gradients propagate automatically - remove adjust_gradients() function and all manual gradient manipulation.")
@@ -841,6 +873,7 @@ COMPREHENSIVE REVIEW CHECKLIST - Check for ALL of these:
    - IndexError (out of bounds access)
    - KeyError: 'module name can\'t contain "."' - ModuleDict keys with dots
    - RuntimeError: "Given normalized_shape=[X], expected input with shape [*, X], but got input of size[...]" - Shape mismatch in LayerNorm/BatchNorm
+   - RuntimeError: "Check failed: dim1 == dim2" - XLA tensor shape mismatch when adding/multiplying tensors (common in LoRA when B@A has wrong shape)
 
 9. **XLA-Specific Gotchas:**
    - Using tensor.size(0) directly in arithmetic without int() conversion
@@ -867,6 +900,23 @@ COMPREHENSIVE REVIEW CHECKLIST - Check for ALL of these:
      - ❌ `self.B = nn.Parameter(torch.zeros(layer.weight.shape[0], rank))` - Wrong: B should be `[out_features, rank]`
      - ✅ CORRECT: `W' = W + B@A` where A is `[rank, in_features]`, B is `[out_features, rank]`
      - ✅ CORRECT: `return F.linear(x, self.layer.weight + self.B @ self.A, self.layer.bias)` (NOT self.B @ self.A.T)
+   - **CRITICAL - Tensor Shape Mismatch (XLA Errors):**
+     - ❌ RuntimeError: "Check failed: dim1 == dim2" - Adding tensors with incompatible shapes
+     - ❌ Using `layer.weight.shape[0]` or `layer.weight.shape[1]` instead of `layer.in_features`/`layer.out_features`
+     - ❌ `B @ A.T` or `A @ B` instead of `B @ A` - produces wrong shape [rank, rank] or [in_features, out_features] instead of [out_features, in_features]
+     - ❌ Adding `W + B@A` where shapes don't match: W is [out_features, in_features] but B@A is wrong shape
+     - ✅ VERIFY: `B @ A` where B is [out_features, rank] and A is [rank, in_features] produces [out_features, in_features] ✓
+     - ✅ VERIFY: `W + (B @ A)` where both are [out_features, in_features] - shapes match ✓
+     - ❌ WRONG: Any operation that adds/multiplies tensors without ensuring compatible shapes
+     - ✅ CORRECT: Always use `layer.in_features` and `layer.out_features` for dimensions, never `layer.weight.shape[...]`
+   - **CRITICAL - Parameter Reassignment in Forward Pass (XLA/Timeout Errors):**
+     - ❌ `self.layer.weight = nn.Parameter(weight)` inside forward() - Creates new Parameter each forward pass
+     - ❌ `layer.weight = nn.Parameter(...)` in forward() - Breaks XLA and optimizer parameter tracking
+     - ❌ Creating `nn.Parameter()` inside forward() method - Parameters must be created in __init__
+     - ✅ CORRECT: Use `F.linear(x, self.original_weight + self.B @ self.A, self.layer.bias)` instead
+     - ✅ CORRECT: Compute modified weight as tensor, use functional operations (F.linear, F.conv2d, etc.)
+     - ❌ WRONG: Reassigning layer.weight in forward() causes infinite loops, timeouts, and XLA errors
+     - ✅ CORRECT: Store original weight in __init__, compute modified weight in forward(), use F.linear() to apply
    - **WRONG Model Wrapping:**
      - ❌ Wrapping custom models with complex forward() methods (e.g., `LoRAModel(ExampleModel())` where ExampleModel has Conv2d, flatten, etc.)
      - ❌ Using `model.children()` to iterate over custom model - breaks model structure

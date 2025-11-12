@@ -56,13 +56,34 @@ try:
 except ImportError:
     from .chunked_bedrock_client import ChunkedBedrockClient
 
+# Import PDF processor from parent directory
+try:
+    from pdf_processor import PDFProcessor
+except ImportError:
+    # Try relative import
+    try:
+        from ..pdf_processor import PDFProcessor
+    except ImportError:
+        # Fallback: try direct import from parent
+        import importlib.util
+        pdf_processor_path = os.path.join(parent_dir, 'pdf_processor.py')
+        if os.path.exists(pdf_processor_path):
+            spec = importlib.util.spec_from_file_location("pdf_processor", pdf_processor_path)
+            pdf_processor_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(pdf_processor_module)
+            PDFProcessor = pdf_processor_module.PDFProcessor
+        else:
+            PDFProcessor = None
+            logger.warning("PDF processor not available - PDF processing will be disabled")
+
 logger = logging.getLogger(__name__)
 
 class ChunkedPyTorchGenerator:
     """Generator that processes papers in chunks to handle long papers."""
     
     def __init__(self, max_chunk_size: int = 150000, use_haiku_for_chunks: bool = True, 
-                 parallel_chunks: bool = False, max_parallel: int = 2, batch_size: int = 8):
+                 parallel_chunks: bool = False, max_parallel: int = 2, batch_size: int = 8,
+                 pages_per_pdf_chunk: int = 2):
         """
         Initialize chunked code generator.
         
@@ -74,6 +95,7 @@ class ChunkedPyTorchGenerator:
             parallel_chunks: If True, process chunks in parallel (default: False, sequential)
             max_parallel: Maximum number of chunks to process in parallel (default: 2)
             batch_size: Number of chunk summaries to combine in each batch for hierarchical summarization (default: 8)
+            pages_per_pdf_chunk: Number of pages per PDF chunk when processing PDFs (default: 2)
         """
         self.opensearch_client = OpenSearchClient()
         self.chunked_bedrock_client = ChunkedBedrockClient(use_haiku=use_haiku_for_chunks)
@@ -90,6 +112,19 @@ class ChunkedPyTorchGenerator:
         self.parallel_chunks = parallel_chunks
         self.max_parallel = max_parallel
         self.batch_size = batch_size
+        self.pages_per_pdf_chunk = pages_per_pdf_chunk
+        
+        # Initialize PDF processor if available
+        try:
+            if PDFProcessor:
+                self.pdf_processor = PDFProcessor(aws_region=self.opensearch_client.aws_region)
+                logger.info("PDF processor initialized - PDF vision processing enabled")
+            else:
+                self.pdf_processor = None
+                logger.warning("PDF processor not available - PDF processing disabled")
+        except Exception as e:
+            logger.warning(f"Failed to initialize PDF processor: {e} - PDF processing disabled")
+            self.pdf_processor = None
         
         # Results directory for saving chunk results
         # Path: midpoint-deliverable/results/{paper_id}/chunk-results/
@@ -101,11 +136,83 @@ class ChunkedPyTorchGenerator:
         logger.info(f"  - Use Haiku for chunks: {use_haiku_for_chunks}")
         logger.info(f"  - Parallel processing: {parallel_chunks} (max {max_parallel} concurrent)")
         logger.info(f"  - Batch size for hierarchical summarization: {batch_size}")
+        logger.info(f"  - Pages per PDF chunk: {pages_per_pdf_chunk}")
+        logger.info(f"  - PDF vision processing: {'enabled' if self.pdf_processor else 'disabled'}")
+    
+    def _process_pdf_chunk(self, pdf_bytes: bytes, page_start: int, page_end: int, 
+                           chunk_number: int, total_chunks: int, paper_summary: str) -> Dict[str, Any]:
+        """
+        Process a single PDF chunk using vision capabilities.
+        
+        Args:
+            pdf_bytes: PDF file as bytes
+            page_start: Starting page number (0-indexed)
+            page_end: Ending page number (exclusive, 0-indexed)
+            chunk_number: Chunk number (1-indexed)
+            total_chunks: Total number of chunks
+            paper_summary: Paper summary
+            
+        Returns:
+            Dictionary with chunk result
+        """
+        chunk_start = time.time()
+        try:
+            # Extract PDF pages as images
+            base64_images = self.pdf_processor.process_pdf_chunk(
+                pdf_bytes, page_start, page_end, dpi=150
+            )
+            
+            if not base64_images:
+                return {
+                    "chunk_number": chunk_number,
+                    "success": False,
+                    "error": "Failed to extract images from PDF pages",
+                    "processing_time": time.time() - chunk_start
+                }
+            
+            # Summarize using vision
+            result = self.chunked_bedrock_client.summarize_pdf_chunk_with_vision(
+                base64_images=base64_images,
+                chunk_number=chunk_number,
+                total_chunks=total_chunks,
+                paper_summary=paper_summary,
+                page_start=page_start,
+                page_end=page_end
+            )
+            
+            if result.get("success"):
+                return {
+                    "chunk_number": chunk_number,
+                    "success": True,
+                    "summary": result["summary"],
+                    "summary_length": len(result["summary"]),
+                    "processing_time": time.time() - chunk_start,
+                    "pages": result.get("pages", f"{page_start + 1}-{page_end}"),
+                    "num_images": result.get("num_images", len(base64_images)),
+                    "chunk_type": "pdf_vision"
+                }
+            else:
+                return {
+                    "chunk_number": chunk_number,
+                    "success": False,
+                    "error": result.get("error", "Unknown error"),
+                    "processing_time": time.time() - chunk_start
+                }
+        except Exception as e:
+            logger.error(f"Error processing PDF chunk {chunk_number}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return {
+                "chunk_number": chunk_number,
+                "success": False,
+                "error": str(e),
+                "processing_time": time.time() - chunk_start
+            }
     
     def _process_chunk(self, chunk: str, chunk_number: int, total_chunks: int, 
                       paper_summary: str) -> Dict[str, Any]:
         """
-        Process a single chunk (helper method for parallel processing).
+        Process a single text chunk (helper method for parallel processing).
         
         Args:
             chunk: Chunk text
@@ -131,7 +238,8 @@ class ChunkedPyTorchGenerator:
                     "success": True,
                     "summary": result["summary"],
                     "summary_length": len(result["summary"]),
-                    "processing_time": time.time() - chunk_start
+                    "processing_time": time.time() - chunk_start,
+                    "chunk_type": "text"
                 }
             else:
                 return {
@@ -290,50 +398,122 @@ class ChunkedPyTorchGenerator:
                 }
             
             paper_summary = self.opensearch_client.get_paper_summary(paper)
-            paper_content = self.opensearch_client.get_paper_content(paper)
             
-            if not paper_content:
-                return {
-                    "success": False,
-                    "error": f"Paper {paper_id} has no content",
-                    "paper_id": paper_id
-                }
+            # Check if paper is a PDF and PDF processing is available
+            is_pdf = self.opensearch_client.is_pdf_paper(paper)
+            use_pdf_vision = is_pdf and self.pdf_processor is not None
             
-            logger.info(f"Paper content length: {len(paper_content):,} characters")
-            
-            # Step 2: Get dataset recommendations
-            dataset_recommendations = self.dataset_recommender.recommend_datasets(
-                paper, paper_content, use_llm=False  # Use rule-based for speed
-            )
-            logger.info(f"Recommended datasets: {dataset_recommendations.get('recommended_datasets', [])}")
-            
-            # Step 3: Split paper into chunks (based on max_chunk_size)
-            chunks = self.split_into_chunks(paper_content, self.max_chunk_size)
-            
-            if not chunks:
-                return {
-                    "success": False,
-                    "error": "Failed to split paper into chunks",
-                    "paper_id": paper_id
-                }
-            
-            # Step 4: Generate summaries for each chunk
-            chunk_summaries = []
-            chunk_results = []
-            
-            num_chunks = len(chunks)
-            if self.parallel_chunks:
-                # Process chunks in parallel (with rate limiting)
-                logger.info(f"Processing {num_chunks} chunks in parallel (max {self.max_parallel} concurrent)...")
-                chunk_summaries, chunk_results = self._process_chunks_parallel(
-                    chunks, paper_summary
+            if use_pdf_vision:
+                logger.info(f"📄 Paper is a PDF - using vision-based processing to extract formulas and diagrams")
+                # Get PDF bytes
+                pdf_bytes = self.opensearch_client.get_paper_pdf_bytes(paper)
+                if not pdf_bytes:
+                    return {
+                        "success": False,
+                        "error": f"Failed to retrieve PDF for paper {paper_id}",
+                        "paper_id": paper_id
+                    }
+                
+                # Get dataset recommendations (use paper summary for now)
+                dataset_recommendations = self.dataset_recommender.recommend_datasets(
+                    paper, paper_summary, use_llm=False  # Use rule-based for speed
                 )
+                logger.info(f"Recommended datasets: {dataset_recommendations.get('recommended_datasets', [])}")
+                
+                # Step 3: Split PDF into page chunks
+                pdf_chunks = self.pdf_processor.split_pdf_into_chunks(
+                    pdf_bytes, pages_per_chunk=self.pages_per_pdf_chunk
+                )
+                
+                if not pdf_chunks:
+                    return {
+                        "success": False,
+                        "error": "Failed to split PDF into chunks",
+                        "paper_id": paper_id
+                    }
+                
+                logger.info(f"Split PDF into {len(pdf_chunks)} chunks ({self.pages_per_pdf_chunk} pages per chunk)")
+                
+                # Step 4: Generate summaries for each PDF chunk using vision
+                chunk_summaries = []
+                chunk_results = []
+                num_chunks = len(pdf_chunks)
+                
+                # Add initial delay before first chunk
+                if num_chunks > 0:
+                    initial_delay = self.chunked_bedrock_client.chunk_delay
+                    logger.info(f"Waiting {initial_delay}s before starting PDF chunk processing (throttling mitigation)...")
+                    time.sleep(initial_delay)
+                
+                for i, (page_start, page_end) in enumerate(pdf_chunks, 1):
+                    logger.info(f"Processing PDF chunk {i}/{num_chunks} (pages {page_start + 1}-{page_end})...")
+                    
+                    result = self._process_pdf_chunk(
+                        pdf_bytes, page_start, page_end, i, num_chunks, paper_summary
+                    )
+                    
+                    if result.get("success"):
+                        chunk_summaries.append(result["summary"])
+                        logger.info(f"✅ PDF Chunk {i} summarized ({result['summary_length']:,} chars, pages {result.get('pages', 'N/A')})")
+                    else:
+                        logger.error(f"❌ PDF Chunk {i} summarization failed: {result.get('error')}")
+                    
+                    chunk_results.append(result)
+                    
+                    # Add delay between chunks to avoid throttling
+                    if i < num_chunks:
+                        delay = self.chunked_bedrock_client.chunk_delay
+                        logger.info(f"Waiting {delay}s before processing next PDF chunk (throttling mitigation)...")
+                        time.sleep(delay)
             else:
-                # Process chunks sequentially (with delays to avoid throttling)
-                logger.info(f"Processing {num_chunks} chunks sequentially...")
-                chunk_summaries, chunk_results = self._process_chunks_sequential(
-                    chunks, paper_summary
+                # Fall back to text-based processing
+                if is_pdf:
+                    logger.warning("Paper is a PDF but PDF processor not available - falling back to text extraction")
+                
+                paper_content = self.opensearch_client.get_paper_content(paper)
+                
+                if not paper_content:
+                    return {
+                        "success": False,
+                        "error": f"Paper {paper_id} has no content",
+                        "paper_id": paper_id
+                    }
+                
+                logger.info(f"Paper content length: {len(paper_content):,} characters")
+                
+                # Step 2: Get dataset recommendations
+                dataset_recommendations = self.dataset_recommender.recommend_datasets(
+                    paper, paper_content, use_llm=False  # Use rule-based for speed
                 )
+                logger.info(f"Recommended datasets: {dataset_recommendations.get('recommended_datasets', [])}")
+                
+                # Step 3: Split paper into chunks (based on max_chunk_size)
+                chunks = self.split_into_chunks(paper_content, self.max_chunk_size)
+                
+                if not chunks:
+                    return {
+                        "success": False,
+                        "error": "Failed to split paper into chunks",
+                        "paper_id": paper_id
+                    }
+                
+                # Step 4: Generate summaries for each chunk
+                chunk_summaries = []
+                chunk_results = []
+                
+                num_chunks = len(chunks)
+                if self.parallel_chunks:
+                    # Process chunks in parallel (with rate limiting)
+                    logger.info(f"Processing {num_chunks} chunks in parallel (max {self.max_parallel} concurrent)...")
+                    chunk_summaries, chunk_results = self._process_chunks_parallel(
+                        chunks, paper_summary
+                    )
+                else:
+                    # Process chunks sequentially (with delays to avoid throttling)
+                    logger.info(f"Processing {num_chunks} chunks sequentially...")
+                    chunk_summaries, chunk_results = self._process_chunks_sequential(
+                        chunks, paper_summary
+                    )
             
             # Check if we got enough summaries
             successful_chunks = sum(1 for r in chunk_results if r.get("success"))
@@ -434,6 +614,8 @@ class ChunkedPyTorchGenerator:
                     "num_batch_summaries": len(batch_summaries),
                     "batch_size": self.batch_size,
                     "max_chunk_size": self.max_chunk_size,
+                    "used_pdf_vision": use_pdf_vision,
+                    "pages_per_pdf_chunk": self.pages_per_pdf_chunk if use_pdf_vision else None,
                     "total_generation_time": time.time() - start_time,
                     "final_generation_time": time.time() - final_start
                 }

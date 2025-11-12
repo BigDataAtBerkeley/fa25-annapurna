@@ -220,6 +220,11 @@ class OpenSearchClient:
             response = s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
             raw_content = response['Body'].read()
             
+            # Check if it's a PDF - if so, return None (use get_paper_pdf_bytes instead)
+            if s3_key.lower().endswith('.pdf'):
+                logger.info(f"Paper is a PDF file - use get_paper_pdf_bytes() for PDF processing")
+                return None
+            
             # Try multiple encodings to handle different file formats
             encodings = ['utf-8', 'utf-16', 'latin-1', 'cp1252', 'iso-8859-1']
             content = None
@@ -243,6 +248,51 @@ class OpenSearchClient:
         except Exception as e:
             logger.error(f"Error retrieving paper content: {e}")
             return None
+    
+    def get_paper_pdf_bytes(self, paper: Dict[str, Any]) -> Optional[bytes]:
+        """
+        Retrieve the PDF file bytes from S3 (for PDF processing).
+        
+        Args:
+            paper: Paper document from OpenSearch
+            
+        Returns:
+            PDF file as bytes or None if not available
+        """
+        try:
+            s3_bucket = paper.get('s3_bucket')
+            s3_key = paper.get('s3_key')
+            
+            if not s3_bucket or not s3_key:
+                logger.warning("Paper missing S3 bucket or key information")
+                return None
+            
+            # Initialize S3 client
+            s3_client = boto3.client('s3', region_name=self.aws_region)
+            
+            # Download the PDF file
+            response = s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
+            pdf_bytes = response['Body'].read()
+            
+            logger.info(f"Retrieved PDF from s3://{s3_bucket}/{s3_key} ({len(pdf_bytes)} bytes)")
+            return pdf_bytes
+            
+        except Exception as e:
+            logger.error(f"Error retrieving PDF from S3: {e}")
+            return None
+    
+    def is_pdf_paper(self, paper: Dict[str, Any]) -> bool:
+        """
+        Check if the paper is a PDF file.
+        
+        Args:
+            paper: Paper document from OpenSearch
+            
+        Returns:
+            True if paper is a PDF
+        """
+        s3_key = paper.get('s3_key', '')
+        return s3_key.lower().endswith('.pdf')
     
     def get_paper_summary(self, paper: Dict[str, Any]) -> str:
         """
