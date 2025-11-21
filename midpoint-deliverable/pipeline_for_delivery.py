@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code-gen-for-deliv')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'trn-execute-for-deliv'))
 
 from pytorch_generator import PyTorchCodeGenerator
+from storage_utils import save_json, save_code
 try:
     # Import chunked generator from chunked-code-gen subdirectory
     # Since the directory name has hyphens, we need to import the module directly
@@ -85,7 +86,7 @@ RESULTS_DIR = Path('results')
 def save_step_result(step_name: str, paper_id: str, data: Dict[str, Any], 
                      subdir: Optional[Path] = None) -> str:
     """
-    Save result from a pipeline step to the results directory.
+    Save result from a pipeline step to storage (local or S3).
     Uses per-paper folder structure: results/{paper_id}/{step_name}/
     
     Args:
@@ -95,23 +96,9 @@ def save_step_result(step_name: str, paper_id: str, data: Dict[str, Any],
         subdir: Optional subdirectory within the step directory (not used in new structure)
         
     Returns:
-        Path to saved file
+        Path to saved file (local path or S3 key)
     """
-    # Use per-paper folder structure: results/{paper_id}/{step_name}/
-    paper_dir = RESULTS_DIR / paper_id
-    save_dir = paper_dir / step_name if step_name else paper_dir
-    
-    save_dir.mkdir(parents=True, exist_ok=True)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{paper_id}_{timestamp}.json"
-    filepath = save_dir / filename
-    
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    
-    logger.info(f"Saved {step_name} result to {filepath}")
-    return str(filepath)
+    return save_json(paper_id, step_name, data)
 
 
 def execute_code_via_http(paper_id: str, code: str, timeout: int = 1800, paper_title: Optional[str] = None) -> Dict[str, Any]:
@@ -360,23 +347,9 @@ def ensure_trainium_running() -> bool:
 
 
 def save_code_file(paper_id: str, code: str, step: str) -> str:
-    """Save code to a file in the appropriate results directory.
+    """Save code to storage (local or S3).
     Uses per-paper folder structure: results/{paper_id}/{step}/"""
-    # Use per-paper folder structure: results/{paper_id}/{step}/
-    paper_dir = RESULTS_DIR / paper_id
-    save_dir = paper_dir / step
-    
-    save_dir.mkdir(parents=True, exist_ok=True)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{paper_id}_{timestamp}.py"
-    filepath = save_dir / filename
-    
-    with open(filepath, 'w', encoding='utf-8') as f:
-        f.write(code)
-    
-    logger.info(f"Saved code to {filepath}")
-    return str(filepath)
+    return save_code(paper_id, step, code)
 
 
 def process_paper(paper_id: str, generator) -> Dict[str, Any]:

@@ -1,0 +1,70 @@
+{
+  "family": "annapurna-pipeline",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "4096",
+  "executionRoleArn": "arn:aws:iam::478852001205:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::478852001205:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "pipeline-container",
+      "image": "YOUR_ECR_REPO_URI:latest",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/annapurna-pipeline",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "environment": [
+        {
+          "name": "AWS_REGION",
+          "value": "us-east-1"
+        },
+        {
+          "name": "OPENSEARCH_ENDPOINT",
+          "value": "search-research-papers-uv3fxq76j5bkxq3bgp3nyfdtnm.us-east-1.es.amazonaws.com"
+        },
+        {
+          "name": "OPENSEARCH_INDEX",
+          "value": "research-papers-v3"
+        },
+        {
+          "name": "BEDROCK_MODEL_ID",
+          "value": "anthropic.claude-3-sonnet-20240229-v1:0"
+        },
+        {
+          "name": "TRAINIUM_ENDPOINT",
+          "value": "http://YOUR_TRAINIUM_IP:8000"
+        },
+        {
+          "name": "TRAINIUM_REGION",
+          "value": "us-east-2"
+        },
+        {
+          "name": "TRAINIUM_EXECUTION_TIMEOUT",
+          "value": "3600"
+        },
+        {
+          "name": "RESULTS_STORAGE_TYPE",
+          "value": "s3"
+        },
+        {
+          "name": "S3_RESULTS_BUCKET",
+          "value": "papers-test-outputs"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "TRAINIUM_INSTANCE_ID",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:annapurna/trainium-instance-id"
+        }
+      ],
+      "mountPoints": []
+    }
+  ]
+}
+
