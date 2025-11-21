@@ -71,7 +71,6 @@ def generate_embedding(text: str, max_retries: int = 6) -> List[float]:
             error_str = str(e)
             if "ThrottlingException" in error_str or "Too many requests" in error_str:
                 if attempt < max_retries - 1:
-                    # Exponential backoff: 2^attempt + random jitter (0-1 seconds)
                     wait_time = (2 ** attempt) + random.uniform(0, 1)
                     logger.warning(f"Titan embedding throttled, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
@@ -118,7 +117,7 @@ def search_similar_papers_with_embedding(
             "knn": {
                 "abstract_embedding": {
                     "vector": embedding,
-                    "k": size + 1 if exclude_id else size  # Request extra if filtering
+                    "k": size + 1 if exclude_id else size
                 }
             }
         }
@@ -146,7 +145,6 @@ def search_similar_papers_with_embedding(
         for hit in res.get('hits', {}).get('hits', []):
             doc_id = hit.get('_id')
             
-            # Skip the document we're testing (self-comparison guard)
             if exclude_id and doc_id == exclude_id:
                 logger.info(f"Skipping self-match: {doc_id}")
                 continue
@@ -156,7 +154,6 @@ def search_similar_papers_with_embedding(
             src['similarity_score'] = hit.get('_score')
             out.append(src)
             
-            # Stop once we have enough results
             if len(out) >= size:
                 break
                 
@@ -177,7 +174,7 @@ def retrieve_rag_context_window(
     
     if not similar:
         logger.info(f"[CRITICAL FLAG] No similar papers for RAG redundancy check.")
-        return {"is_redundant": False, "reason": "No similar papers found", "max_similarity": 0.0}
+        return ""
     
     most_similar = similar[0]
     max_sim = most_similar.get('similarity_score', 0.0) or 0.0
@@ -191,15 +188,6 @@ def retrieve_rag_context_window(
         rag_context_window += f"\n[{i}] Title: {sim.get('title', 'Unknown')}\nAbstract: {sim.get('abstract', 'No abstract')}"
 
     return rag_context_window
-    """
-    return {
-        "is_redundant": max_sim >= SIMILARITY_THRESHOLD,
-        "reason": f"Most similar has {max_sim:.3f} similarity (threshold={SIMILARITY_THRESHOLD})",
-        "max_similarity": max_sim,
-        "most_similar_paper": most_similar.get('title', 'Unknown'),
-        "most_similar_id": most_similar.get('_id', 'Unknown')
-    }
-    """
 
 def is_duplicate(title_norm: str, sha_abs: str, exclude_id: str = None) -> bool:
     """
@@ -221,7 +209,6 @@ def is_duplicate(title_norm: str, sha_abs: str, exclude_id: str = None) -> bool:
             }
         }
         
-        # Add exclusion filter if provided
         if exclude_id:
             exact_query["query"]["bool"]["must_not"] = [
                 {"term": {"_id": exclude_id}}
@@ -233,29 +220,45 @@ def is_duplicate(title_norm: str, sha_abs: str, exclude_id: str = None) -> bool:
         logger.warning(f"Duplicate check failed: {e}")
         return False
 
-def evaluate_relevance_with_claude(title: str, abstract: str, max_retries: int = 6) -> Dict[str, str]:
+
+def evaluate_initial_gates(title: str, abstract: str, max_retries: int = 6) -> Dict[str, str]:
     """
-    Evaluate relevance to LLM/AI/ML work.
+    Combined evaluation of relevance, novelty, and Trainium compatibility in a single LLM call.
     """
     prompt = f"""
-You are an expert ML research analyst embedded in an AWS AI automation pipeline.
+You are an expert ML research analyst embedded in an AWS AI automation pipeline. 
+Be conservative in your judgements - if the abstract is vague, lean towards "no" or "unclear". 
+Only chose "yes" if the paper would be valuable to implement and train on AWS Trainium in 2025.
 
-Decide whether this paper is RELEVANT to current LLM/AI/ML work.
+Evaluate this paper across three dimensions: RELEVANCE, NOVELTY, and TRAINIUM COMPATIBILITY.
 
-RELEVANCE — say "yes" only if the paper is clearly about one or more of:
-- model architectures (LLMs, Transformers, CNNs, GNNs, diffusion models, MoE, hybrid or modular systems, etc.),
+RELEVANCE — say "yes" only if the paper:
+- proposes an innovative, new model architecture (LLMs, Transformers, CNNs, GNNs, diffusion models, MoE, hybrid or modular systems, etc.),
 - training algorithms or optimization strategies (optimizers, regularization, loss design, curriculum learning, meta-learning, etc.),
 - efficiency improvements (training or inference speedups, quantization, sparsity, parallelism, mixed precision, distributed training, etc.),
 - alignment, fine-tuning, or data-centric techniques (RLHF, DPO/ORPO, synthetic data, augmentation, retrieval, multimodal alignment, etc.)
 
 The paper must implement or propose new, directly implementable ML techniques, not just analyze or survey existing ones.
 
-Say "no" if the paper is clearly about one or more of:
-- survey/position/ethics/policy piece,
-- a benchmark proposal or method of evaluation,
-- an application of an existing model to a domain without new ML techniques,
+Say "no" if the paper:
+- is a survey/position/ethics/policy piece or new analysis of existing methods,
+- proposes only benchmarks or methods of evaluation,
+- an application of an existing model or LLMs to a specific domain (e.g., healthcare, finance) without revisions to the training or architecture,
+- makes trivial modifications to existing models, such as hyperparameter tuning, dataset swaps, or adding singular layers to known architectures,
 - non-neural stats unrelated to ML or evaluation/safety methods
 - purely theoretical work without clear implementation.
+
+NOVELTY — judge relative to widely known 2024–2025 techniques (e.g., Llama-3/Mistral/Gemma/Claude-class practices).
+- novel = "yes" if it proposes a new algorithm/architecture or materially better training/inference method with credible evidence
+(theory or strong experiments), not just a dataset swap or minor tuning.
+- novel = "no" if it is mostly packaging/ablations/parameter tweaks/benchmarking of known tricks. Remember, a new benchmark is NOT considered novel. If the paper is merely about a new benchmark, it is not novel.
+
+If the abstract is too vague to tell, set novelty="no".
+
+TRAINIUM COMPATIBILITY — respond "yes" only if the method can realistically run on AWS Trainium:
+- Expressible in PyTorch/XLA; uses FP16/BF16; relies on transformer-compatible ops or ops with XLA kernels (e.g., Flash-Attention-style
+kernels that have XLA paths); no proprietary hardware requirements (TPU-only) or CUDA-only custom kernels without XLA equivalents.
+- If the abstract lacks enough detail to judge, respond "unclear". If it depends on unavailable kernels or CUDA-only custom ops, respond "no".
 
 Paper:
 Title: {title}
@@ -264,135 +267,18 @@ Abstract: {abstract}
 Respond with STRICT JSON only, exactly:
 {{
 "relevance": "yes" | "no",
-"reason": "<≤2 short sentences citing decisive factors from the abstract>"
-}}
-""".strip()
-    
-    body = json.dumps({
-        "anthropic_version": "bedrock-2023-05-31",
-        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        "max_tokens": 150,
-        "temperature": 0.3
-    })
-    
-    for attempt in range(max_retries):
-        try:
-            response = bedrock.invoke_model(
-                modelId="anthropic.claude-3-haiku-20240307-v1:0",
-                body=body
-            )
-            text = json.loads(response["body"].read())["content"][0]["text"].strip()
-            return json.loads(text)
-            
-        except Exception as e:
-            error_str = str(e)
-            if "ThrottlingException" in error_str or "Too many requests" in error_str:
-                if attempt < max_retries - 1:
-                    wait_time = (2 ** attempt) + random.uniform(0, 1)
-                    logger.warning(f"Claude throttled on relevance eval '{title[:50]}...', retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(wait_time)
-                else:
-                    logger.error(f"Claude relevance eval throttled after {max_retries} attempts")
-                    return {"relevance": "unknown", "reason": "Bedrock throttling - max retries exceeded"}
-            else:
-                logger.warning(f"Claude relevance eval failed: {e}")
-                return {"relevance": "unknown", "reason": f"Evaluation failed: {str(e)}"}
-    
-    return {"relevance": "unknown", "reason": "Unexpected error in retry loop"}
-
-
-def evaluate_novelty_with_claude(title: str, abstract: str, max_retries: int = 6) -> Dict[str, str]:
-    """
-    Evaluate novelty beyond state of the art.
-    """
-    prompt = f"""
-You are an expert ML research analyst embedded in an AWS AI automation pipeline.
-
-Decide whether this paper is NOVEL beyond the state of the art.
-
-NOVELTY — judge relative to widely known 2024–2025 techniques (e.g., Llama-3/Mistral/Gemma/Claude-class practices).
-- novel = "yes" if it proposes a new algorithm/architecture or materially better training/inference method with credible evidence
-(theory or strong experiments), not just a dataset swap or minor tuning.
-- novel = "no" if it is mostly packaging/ablations/parameter tweaks/benchmarking of known tricks. Remember, a new benchmark is NOT considered novel. If the paper is merely about a new benchmark, it is not novel.
-
-If the abstract is too vague to tell, set novelty="no".
-Keep justification short and cite the decisive claim(s) from the abstract.
-
-Paper:
-Title: {title}
-Abstract: {abstract}
-
-Respond with STRICT JSON only, exactly:
-{{
+"relevance_reason": "<≤2 short sentences>",
 "novelty": "yes" | "no",
-"reason": "<≤2 short sentences citing decisive factors from the abstract>"
-}}
-""".strip()
-    
-    body = json.dumps({
-        "anthropic_version": "bedrock-2023-05-31",
-        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        "max_tokens": 150,
-        "temperature": 0.3
-    })
-    
-    for attempt in range(max_retries):
-        try:
-            response = bedrock.invoke_model(
-                modelId="anthropic.claude-3-haiku-20240307-v1:0",
-                body=body
-            )
-            text = json.loads(response["body"].read())["content"][0]["text"].strip()
-            return json.loads(text)
-            
-        except Exception as e:
-            error_str = str(e)
-            if "ThrottlingException" in error_str or "Too many requests" in error_str:
-                if attempt < max_retries - 1:
-                    wait_time = (2 ** attempt) + random.uniform(0, 1)
-                    logger.warning(f"Claude throttled on novelty eval '{title[:50]}...', retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(wait_time)
-                else:
-                    logger.error(f"Claude novelty eval throttled after {max_retries} attempts")
-                    return {"novelty": "unknown", "reason": "Bedrock throttling - max retries exceeded"}
-            else:
-                logger.warning(f"Claude novelty eval failed: {e}")
-                return {"novelty": "unknown", "reason": f"Evaluation failed: {str(e)}"}
-    
-    return {"novelty": "unknown", "reason": "Unexpected error in retry loop"}
-
-
-def evaluate_trainium_compatibility_with_claude(title: str, abstract: str, max_retries: int = 6) -> Dict[str, str]:
-    """
-    Evaluate compatibility with AWS Trainium.
-    """
-    prompt = f"""
-You are an expert ML research analyst embedded in an AWS AI automation pipeline.
-
-Decide whether this paper's methods are COMPATIBLE with AWS Trainium for practical implementation.
-
-TRAINIUM COMPATIBILITY — respond "yes" only if the method can realistically run on Trainium:
-- Expressible in PyTorch/XLA; uses FP16/BF16; relies on transformer-compatible ops or ops with XLA kernels (e.g., Flash-Attention-style
-kernels that have XLA paths); no proprietary hardware requirements (TPU-only) or CUDA-only custom kernels without XLA equivalents.
-- If the abstract lacks enough detail to judge, respond "unclear". If it depends on unavailable kernels or CUDA-only custom ops, respond "no".
-
-Keep justification short and cite the decisive claim(s) from the abstract.
-
-Paper:
-Title: {title}
-Abstract: {abstract}
-
-Respond with STRICT JSON only, exactly:
-{{
+"novelty_reason": "<≤2 short sentences>",
 "trainium_compatibility": "yes" | "no" | "unclear",
-"reason": "<≤2 short sentences citing decisive factors from the abstract>"
+"trainium_reason": "<≤2 short sentences>"
 }}
 """.strip()
     
     body = json.dumps({
         "anthropic_version": "bedrock-2023-05-31",
         "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        "max_tokens": 150,
+        "max_tokens": 300,
         "temperature": 0.3
     })
     
@@ -410,16 +296,37 @@ Respond with STRICT JSON only, exactly:
             if "ThrottlingException" in error_str or "Too many requests" in error_str:
                 if attempt < max_retries - 1:
                     wait_time = (2 ** attempt) + random.uniform(0, 1)
-                    logger.warning(f"Claude throttled on trainium eval '{title[:50]}...', retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
+                    logger.warning(f"Claude throttled on initial eval '{title[:50]}...', retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                 else:
-                    logger.error(f"Claude trainium eval throttled after {max_retries} attempts")
-                    return {"trainium_compatibility": "unknown", "reason": "Bedrock throttling - max retries exceeded"}
+                    logger.error(f"Claude initial eval throttled after {max_retries} attempts")
+                    return {
+                        "relevance": "unknown",
+                        "relevance_reason": "Bedrock throttling - max retries exceeded",
+                        "novelty": "unknown",
+                        "novelty_reason": "Bedrock throttling - max retries exceeded",
+                        "trainium_compatibility": "unknown",
+                        "trainium_reason": "Bedrock throttling - max retries exceeded"
+                    }
             else:
-                logger.warning(f"Claude trainium eval failed: {e}")
-                return {"trainium_compatibility": "unknown", "reason": f"Evaluation failed: {str(e)}"}
+                logger.warning(f"Claude initial eval failed: {e}")
+                return {
+                    "relevance": "unknown",
+                    "relevance_reason": f"Evaluation failed: {str(e)}",
+                    "novelty": "unknown",
+                    "novelty_reason": f"Evaluation failed: {str(e)}",
+                    "trainium_compatibility": "unknown",
+                    "trainium_reason": f"Evaluation failed: {str(e)}"
+                }
     
-    return {"trainium_compatibility": "unknown", "reason": "Unexpected error in retry loop"}
+    return {
+        "relevance": "unknown",
+        "relevance_reason": "Unexpected error in retry loop",
+        "novelty": "unknown",
+        "novelty_reason": "Unexpected error in retry loop",
+        "trainium_compatibility": "unknown",
+        "trainium_reason": "Unexpected error in retry loop"
+    }
 
 
 def evaluate_similarity_with_claude(title: str, abstract: str, rag_context_window: str, max_retries: int = 6) -> Dict[str, str]:
@@ -436,8 +343,8 @@ Use the following retrieved papers as reference context:
 {rag_context_window}
 
 SIMILARITY — evaluate how closely this paper replicates or overlaps with the retrieved papers.
-Say "yes" to SIMILARITY if the current paper is **near-identical** in method, architecture, or result claims to one or more of the retrieved papers,
-without offering a substantial new improvement, extension, or validation.
+Say "yes" to SIMILARITY if the current paper is similar in method, architecture, or result claims to one or more of the retrieved papers,
+without offering a substantial new improvement, extension, or validation. 
 Say "no" if the paper is about a distinct topic, or makes a clear, material improvement (e.g., better results, new component, novel analysis, or broader applicability).
 Say "unclear" only if the overlap cannot be confidently determined from the abstract.
 
@@ -448,7 +355,7 @@ Abstract: {abstract}
 Respond with STRICT JSON only, exactly:
 {{
 "similarity": "yes" | "no" | "unclear",
-"reason": "<≤2 short sentences citing decisive factors from the abstract and RAG context>"
+"reason": "<≤2 short sentences citing decisive factors from the abstract and RAG context. If the similarity was yes, please include the title of the most similar paper.>"
 }}
 """.strip()
     
@@ -488,50 +395,45 @@ Respond with STRICT JSON only, exactly:
 def evaluate_paper_with_claude(title: str, abstract: str, rag_context_window: str, max_retries: int = 6) -> Dict[str, str]:
     """
     Orchestrator function with early termination logic.
-    Evaluates papers in order: relevance -> novelty -> trainium_compatibility -> similarity.
-    Stops early if any gate fails to save API calls.
+    Now uses combined initial evaluation (relevance, novelty, trainium) in one call,
+    then separate similarity check if needed.
     """
     reasons = []
     
-    # Step 1: Check relevance (GATE 1)
-    logger.info(f"Evaluating relevance for: {title[:50]}...")
-    relevance_eval = evaluate_relevance_with_claude(title, abstract, max_retries)
-    relevance = relevance_eval.get("relevance", "unknown").lower()
-    reasons.append(f"Relevance: {relevance_eval.get('reason', 'N/A')}")
+    # Step 1: Combined evaluation of relevance, novelty, and Trainium compatibility
+    logger.info(f"Evaluating relevance, novelty, and Trainium compatibility for: {title[:50]}...")
+    initial_eval = evaluate_initial_gates(title, abstract, max_retries)
     
+    relevance = initial_eval.get("relevance", "unknown").lower()
+    novelty = initial_eval.get("novelty", "unknown").lower()
+    trainium_compatibility = initial_eval.get("trainium_compatibility", "unknown").lower()
+    
+    reasons.append(f"Relevance: {initial_eval.get('relevance_reason', 'N/A')}")
+    reasons.append(f"Novelty: {initial_eval.get('novelty_reason', 'N/A')}")
+    reasons.append(f"Trainium: {initial_eval.get('trainium_reason', 'N/A')}")
+    
+    # Early termination checks
     if relevance != "yes":
         logger.info(f"Early termination: relevance={relevance}")
         return {
             "relevance": relevance,
-            "novelty": "not_evaluated",
-            "trainium_compatibility": "not_evaluated",
+            "novelty": novelty,
+            "trainium_compatibility": trainium_compatibility,
             "similarity": "not_evaluated",
             "reason": " | ".join(reasons),
             "early_termination": "relevance"
         }
-    
-    # Step 2: Check novelty (GATE 2)
-    logger.info(f"Evaluating novelty for: {title[:50]}...")
-    novelty_eval = evaluate_novelty_with_claude(title, abstract, max_retries)
-    novelty = novelty_eval.get("novelty", "unknown").lower()
-    reasons.append(f"Novelty: {novelty_eval.get('reason', 'N/A')}")
     
     if novelty != "yes":
         logger.info(f"Early termination: novelty={novelty}")
         return {
             "relevance": relevance,
             "novelty": novelty,
-            "trainium_compatibility": "not_evaluated",
+            "trainium_compatibility": trainium_compatibility,
             "similarity": "not_evaluated",
             "reason": " | ".join(reasons),
             "early_termination": "novelty"
         }
-    
-    # Step 3: Check Trainium compatibility (GATE 3)
-    logger.info(f"Evaluating Trainium compatibility for: {title[:50]}...")
-    trainium_eval = evaluate_trainium_compatibility_with_claude(title, abstract, max_retries)
-    trainium_compatibility = trainium_eval.get("trainium_compatibility", "unknown").lower()
-    reasons.append(f"Trainium: {trainium_eval.get('reason', 'N/A')}")
     
     if trainium_compatibility == "no":
         logger.info(f"Early termination: trainium_compatibility={trainium_compatibility}")
@@ -544,7 +446,7 @@ def evaluate_paper_with_claude(title: str, abstract: str, rag_context_window: st
             "early_termination": "trainium_compatibility"
         }
     
-    # Step 4: Check similarity (GATE 4) - only if RAG context exists
+    # Step 2: Check similarity only if RAG context exists and all gates passed
     similarity = "no"
     if rag_context_window:
         logger.info(f"Evaluating similarity for: {title[:50]}...")
@@ -554,7 +456,7 @@ def evaluate_paper_with_claude(title: str, abstract: str, rag_context_window: st
     else:
         reasons.append("Similarity: No RAG context available")
     
-    # All gates passed (or similarity is acceptable)
+    # All gates passed
     return {
         "relevance": relevance,
         "novelty": novelty,
@@ -563,7 +465,6 @@ def evaluate_paper_with_claude(title: str, abstract: str, rag_context_window: st
         "reason": " | ".join(reasons),
         "early_termination": None
     }
-
 
 
 def send_result_to_queue(result: Dict) -> bool:
@@ -594,7 +495,7 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
     s3_bucket = body.get("s3_bucket", "")
     s3_key = body.get("s3_key", "")
     date = body.get("date")
-    paper_id = body.get("paper_id")  # For self-comparison guard
+    paper_id = body.get("paper_id")
     
     title_norm = normalize_title(title)
     sha_abs = sha256_text(abstract)
@@ -610,7 +511,7 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
         "evaluated_at": datetime.utcnow().isoformat()
     }
     
-    # Exact duplicate pre-check (excluding self)
+    # Exact duplicate pre-check
     if is_duplicate(title_norm, sha_abs, exclude_id=paper_id):
         reason = "Exact duplicate by title_normalized or sha_abstract"
         result.update({
@@ -637,28 +538,11 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
         })
         return result
     
-    # RAG redundancy pre-check - use the pre-generated embedding
-    logger.info(f"Retrieving RAG context window redundancy for: {title[:50]}...")
+    # RAG context retrieval
+    logger.info(f"Retrieving RAG context window for: {title[:50]}...")
     rag_context_window = retrieve_rag_context_window(title, abstract, paper_embedding, exclude_id=paper_id)
     
-    """
-    if redundancy.get("is_redundant"):
-        reason = redundancy.get("reason", "RAG redundancy")
-        result.update({
-            "decision": "reject",
-            "rejected_by": "rag",
-            "reason": reason,
-            "max_similarity": redundancy.get("max_similarity"),
-            "most_similar_paper": redundancy.get("most_similar_paper"),
-            "most_similar_id": redundancy.get("most_similar_id"),
-            "relevance": "unknown",
-            "novelty": "unknown"
-        })
-        logger.info(f"[SIMULATION] Rejected by RAG | {title} | {reason}")
-        return result
-    """    
-    
-    # Evaluate with Claude (Bedrock)
+    # Evaluate with Claude (now condensed to 2 calls instead of 4)
     evaluation = evaluate_paper_with_claude(title, abstract, rag_context_window)
     relevance = evaluation.get("relevance", "unknown").lower()
     similarity = evaluation.get("similarity", "unknown").lower()
@@ -675,7 +559,7 @@ def simulate_paper_evaluation(body: Dict, msg_id: str) -> Dict:
     })
     
     # Only accept relevant + novel papers
-    if relevance == "yes" and novelty == "yes" and similarity != "yes" and trainium_compatibility != "no":
+    if relevance == "yes" and novelty == "yes" and similarity == "no" and trainium_compatibility != "no":
         result.update({
             "decision": "accept",
             "rejected_by": None,
