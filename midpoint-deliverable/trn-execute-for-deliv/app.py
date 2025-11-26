@@ -588,6 +588,13 @@ def health_check():
         "dataset_cache_dir": DATASET_CACHE_DIR
     })
 
+@app.route('/env', methods=['GET'])
+def get_env_vars():
+    """Print all environment variables"""
+    return jsonify({
+        "environment_variables": dict(os.environ)
+    })
+
 @app.route('/execute_batch', methods=['POST'])
 def execute_batch():
     """
@@ -732,6 +739,14 @@ if __name__ == '__main__':
     logger.info("Starting Trainium Executor Service")
     logger.info(f"Working directory: {WORKING_DIR}")
     logger.info(f"Max execution time: {MAX_EXECUTION_TIME}s")
+    
+    # Print all environment variables
+    logger.info("=" * 80)
+    logger.info("Environment Variables:")
+    logger.info("=" * 80)
+    for key, value in sorted(os.environ.items()):
+        logger.info(f"{key}={value}")
+    logger.info("=" * 80)
     
     app.run(host='0.0.0.0', port=8000, threaded=True)
 
