@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-Trainium Executor Service
+Trainium Executor Service v2
 
-HTTP server that receives batches of PyTorch code from Lambda,
-executes them on Trainium, and returns results.
-
+New architecture:
+- /execute: Executes code, saves errors to DB on failure, calls /code_review
+- /code_review: Reads errors from DB, fixes code, saves to S3, re-calls /execute
+- Errors stored in database (not in-memory)
+- Code stored in S3 bucket papers-code-artifacts
 """
 
+from sys import stdout
+from urllib.request import CacheFTPHandler
 from flask import Flask, request, jsonify
 import subprocess
 import tempfile
@@ -15,15 +19,22 @@ import time
 import logging
 import json
 import traceback
+import threading
+import requests
 from datetime import datetime
 from typing import Dict, List, Any, Optional
-import resource
 import psutil
 import shutil
+import boto3
+from botocore.exceptions import ClientError
+
+# Import local modules
+from error_db import save_error, get_errors, clear_errors
+from s3_code_storage import save_code, get_code, code_exists
 
 app = Flask(__name__)
 
-# Configure logging first
+# Configure logging
 log_dir = os.path.join(os.path.expanduser('~'), 'trainium-executor', 'logs')
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, 'trainium-executor.log')
@@ -38,7 +49,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import SageMaker metrics logger (after logger is configured)
+# Import SageMaker metrics logger
 try:
     from sagemaker_metrics import SageMakerMetricsLogger, create_metrics_logger
     SAGEMAKER_METRICS_ENABLED = os.getenv('SAGEMAKER_METRICS_ENABLED', 'true').lower() == 'true'
@@ -46,178 +57,115 @@ except ImportError:
     SAGEMAKER_METRICS_ENABLED = False
     logger.warning("sagemaker_metrics module not found. Metrics logging to CloudWatch will be disabled.")
 
-MAX_EXECUTION_TIME = int(os.getenv('MAX_EXECUTION_TIME', '1800'))  # 30 minutes (increased for Neuron compilation)
+# Configuration
+MAX_EXECUTION_TIME = int(os.getenv('MAX_EXECUTION_TIME', '1800'))  # 30 minutes
+SUCCESS_ASSUMPTION_TIME = int(os.getenv('SUCCESS_ASSUMPTION_TIME', '300'))  # 5 minutes - assume success if running this long
 WORKING_DIR = os.getenv('WORKING_DIR', '/tmp/trainium_jobs')
 DATASET_CACHE_DIR = os.getenv('DATASET_CACHE_DIR', '/tmp/datasets')
 NEURON_PROFILER_ENABLED = os.getenv('NEURON_PROFILER_ENABLED', 'true').lower() == 'true'
 PROFILER_OUTPUT_DIR = os.getenv('PROFILER_OUTPUT_DIR', '/tmp/neuron_profiler')
+RESULTS_BUCKET = os.getenv('RESULTS_BUCKET', 'trainium-execution-results')
+MAX_REVIEW_ITERATIONS = int(os.getenv('MAX_REVIEW_ITERATIONS', '5'))  # Max code review iterations
+
+# DynamoDB Error Database Configuration
+# Set ERROR_DB_TABLE_NAME environment variable with your DynamoDB table name
+# Table structure: Partition key = DOC#<docId>, Sort key = ITER#<iteration>#ERR#<errorId>
+ERROR_DB_TABLE_NAME = os.getenv('ERROR_DB_TABLE_NAME', 'docRunErrors')
+
+# Bedrock configuration for code review
+AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
+BEDROCK_MODEL_ID = os.getenv('BEDROCK_MODEL_ID', 'anthropic.claude-3-sonnet-20240229-v1:0')
+
+# Initialize Bedrock client for code review
+bedrock_client = None
+try:
+    from botocore.config import Config
+    config = Config(read_timeout=150, retries={'max_attempts': 0})
+    bedrock_client = boto3.client("bedrock-runtime", region_name=AWS_REGION, config=config)
+    logger.info(f"Bedrock client initialized for code review: {BEDROCK_MODEL_ID}")
+except Exception as e:
+    logger.error(f"Failed to initialize Bedrock client: {e}")
 
 os.makedirs(WORKING_DIR, exist_ok=True)
 os.makedirs(DATASET_CACHE_DIR, exist_ok=True)
 os.makedirs(PROFILER_OUTPUT_DIR, exist_ok=True)
 
-def measure_resources_before():
-    """Measure system resources before execution"""
-    try:
-        mem = psutil.virtual_memory()
-        return {
-            "memory_available_mb": mem.available / (1024 * 1024),
-            "memory_used_mb": mem.used / (1024 * 1024)
-        }
-    except Exception as e:
-        logger.warning(f"Failed to measure resources: {e}")
-        return {}
+# Track running executions (for 5-minute success assumption)
+running_executions = {}
+execution_lock = threading.Lock()
 
-def measure_resources_after():
-    """Measure system resources after execution"""
-    try:
-        mem = psutil.virtual_memory()
-        return {
-            "memory_available_mb": mem.available / (1024 * 1024),
-            "memory_used_mb": mem.used / (1024 * 1024),
-            "peak_memory_mb": mem.used / (1024 * 1024)  # Simplified, ideally track peak
-        }
-    except Exception as e:
-        logger.warning(f"Failed to measure resources: {e}")
-        return {}
-
-def setup_dataset_loader(job_dir: str):
-    """Copy dataset_loader.py to job directory for use by generated code"""
-    loader_source = os.path.join(os.path.dirname(__file__), 'dataset_loader.py')
-    loader_dest = os.path.join(job_dir, 'dataset_loader.py')
+def collect_profiler_artifacts(paper_id: str, profiler_path: str):
+    if not os.path.exists(profiler_path):
+        return
     
-    if os.path.exists(loader_source):
-        shutil.copy2(loader_source, loader_dest)
-        logger.debug(f"Copied dataset_loader.py to {job_dir}")
-    else:
-        logger.warning("dataset_loader.py not found, generated code won't have dataset utilities")
-
-def ensure_synthetic_dataset():
-    """
-    Ensure synthetic dataset is downloaded from S3.
-    This is called before execution to prevent missing dataset errors.
-    """
     try:
-        # Import dataset_loader from the same directory as this script
-        loader_path = os.path.join(os.path.dirname(__file__), 'dataset_loader.py')
-        if not os.path.exists(loader_path):
-            logger.warning("dataset_loader.py not found, cannot download synthetic dataset")
-            return False
-        
-        # Add the directory to sys.path temporarily for import
-        import sys
-        script_dir = os.path.dirname(__file__)
-        if script_dir not in sys.path:
-            sys.path.insert(0, script_dir)
-        
-        try:
-            from dataset_loader import DatasetManager
-            
-            manager = DatasetManager(cache_dir=DATASET_CACHE_DIR)
-            
-            # Check if synthetic dataset exists
-            synthetic_dir = os.path.join(DATASET_CACHE_DIR, 'synthetic')
-            required_files = ['synthetic_small.pt', 'synthetic_medium.pt', 'synthetic_tabular.pt']
-            all_exist = all(os.path.exists(os.path.join(synthetic_dir, f)) for f in required_files)
-            
-            if all_exist:
-                logger.info("✓ Synthetic dataset already available")
-                return True
-            
-            # Download synthetic dataset
-            logger.info("Synthetic dataset not found, downloading from S3...")
-            try:
-                dataset_dir = manager.download_dataset('synthetic', force=False)
-                logger.info(f"✓ Synthetic dataset downloaded to {dataset_dir}")
-                
-                # Verify all files were downloaded
-                all_exist = all(os.path.exists(os.path.join(dataset_dir, f)) for f in required_files)
-                if all_exist:
-                    logger.info(f"✓ Verified all synthetic dataset files are present")
-                    return True
-                else:
-                    missing = [f for f in required_files if not os.path.exists(os.path.join(dataset_dir, f))]
-                    logger.error(f"✗ Some synthetic dataset files are missing: {missing}")
-                    return False
-            except Exception as e:
-                logger.error(f"Failed to download synthetic dataset: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-                logger.error("  Code requiring synthetic dataset will fail")
-                return False
-        finally:
-            # Remove the directory from sys.path if we added it
-            if script_dir in sys.path:
-                sys.path.remove(script_dir)
-            
+        s3_client = boto3.client('s3')
+        for root, dirs, files in os.walk(profiler_path):
+            for file in files:
+                local_path = os.path.join(root, file)
+                s3_key = f"profiler/{paper_id}/{file}"
+                s3_client.upload_file(local_path, RESULTS_BUCKET, s3_key)
+        logger.info(f"Uploaded profiler artifacts for {paper_id}")
     except Exception as e:
-        logger.error(f"Failed to ensure synthetic dataset: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
+        logger.error(f"Failed to upload profiler artifacts: {e}")
 
-def execute_code(paper_id: str, code: str, timeout: int = MAX_EXECUTION_TIME, paper_title: Optional[str] = None) -> Dict[str, Any]:
+def upload_execution_results(paper_id: str, result: Dict[str, Any]):
+    try:
+        s3_client = boto3.client('s3')
+        s3_key = f"results/{paper_id}/execution_result.json"
+        s3_client.put_object(
+            Bucket=RESULTS_BUCKET,
+            Key=s3_key,
+            Body=json.dumps(result, indent=2)
+        )
+        logger.info(f"Uploaded execution results for {paper_id}")
+    except Exception as e:
+        logger.error(f"Failed to upload results: {e}")
+
+def execute_code_sync(paper_id: str, code: str, timeout: int, paper_title: Optional[str] = None) -> Dict[str, Any]:
     """
-    Execute Python code in isolated environment with Neuron support.
-    
-    NEW APPROACH: Use a completely fresh temporary directory that only contains
-    main.py and dataset_loader.py. Run Python from that directory so it finds
-    dataset_loader.py automatically without needing PYTHONPATH manipulation.
+    Execute code synchronously (blocking).
+    This is the core execution function used by both /execute and /code_review.
     
     Args:
-        paper_id: Unique paper identifier
+        paper_id: Paper/document ID
         code: Python code to execute
-        timeout: Maximum execution time in seconds
-        paper_title: Paper title (optional, for metrics logging)
+        timeout: Maximum execution time
+        paper_title: Paper title (optional)
         
     Returns:
-        Dictionary with execution results
+        Execution result dictionary
     """
-    # Create a completely fresh temporary directory for this execution
-    # This ensures no torch conflicts or leftover files
     exec_dir = tempfile.mkdtemp(prefix=f'trainium_exec_{paper_id}_', dir='/tmp')
     
     try:
-        # Write main.py to the fresh execution directory
-        # Add sys.path manipulation to ensure correct imports
+        # Write main.py
         main_py_path = os.path.join(exec_dir, 'main.py')
         with open(main_py_path, 'w') as f:
             f.write(f"""
 import sys
 import os
-# Remove exec_dir from sys.path if it's there (shouldn't be, but just in case)
-if '{exec_dir}' in sys.path:
-    sys.path.remove('{exec_dir}')
-# Add exec_dir to the END of sys.path for dataset_loader imports
-# This ensures venv site-packages (where torch is) are searched first
 sys.path.append('{exec_dir}')
 
-# Now execute the actual code
 {code}
 """)
         
-        # Copy dataset_loader.py to the execution directory
-        # This way it's in the same directory as main.py and can be imported normally
+        # Copy dataset_loader.py
         loader_source = os.path.join(os.path.dirname(__file__), 'dataset_loader.py')
         loader_dest = os.path.join(exec_dir, 'dataset_loader.py')
         if os.path.exists(loader_source):
             shutil.copy2(loader_source, loader_dest)
-        else:
-            logger.warning("dataset_loader.py not found, generated code won't have dataset utilities")
         
-        # CRITICAL: Check for and remove any torch-related directories/files in exec_dir
-        # Python adds exec_dir to sys.path[0] when running a script, which can cause
-        # PyTorch to find a local torch directory instead of the installed package
+        # Remove any torch conflicts
         for item in os.listdir(exec_dir):
             item_path = os.path.join(exec_dir, item)
             if item.lower() in ['torch', '_torch', 'torch.py', '_torch.py']:
-                logger.warning(f"Found conflicting {item} in exec_dir, removing it")
                 if os.path.isdir(item_path):
                     shutil.rmtree(item_path)
                 else:
                     os.remove(item_path)
         
-        # Initialize SageMaker metrics logger if enabled
+        # Initialize metrics logger
         metrics_logger = None
         if SAGEMAKER_METRICS_ENABLED:
             try:
@@ -227,27 +175,14 @@ sys.path.append('{exec_dir}')
                     paper_title=paper_title,
                     instance_type=instance_type
                 )
-                logger.info(f"Initialized SageMaker metrics logger for {paper_id}")
             except Exception as e:
-                logger.warning(f"Failed to initialize SageMaker metrics logger: {e}")
+                logger.warning(f"Failed to initialize metrics logger: {e}")
         
-        # Ensure synthetic dataset is available only if code uses it
-        # Check if code references 'synthetic' dataset to avoid unnecessary downloads
-        code_lower = code.lower()
-        if 'synthetic' in code_lower and ('load_dataset' in code_lower or 'dataset' in code_lower):
-            ensure_synthetic_dataset()
-        
-        logger.info(f"Executing code for paper {paper_id} in isolated directory {exec_dir} (timeout: {timeout}s)")
-        
-        resources_before = measure_resources_before()
-        start_time = time.time()
-
-        # Set up environment with Neuron runtime in PATH
+        # Set up Neuron environment
         user_home = os.path.expanduser('~')
         neuron_bin_paths = [
             '/opt/aws_neuronx_venv_pytorch_2_8_nxd_training/bin',
             '/opt/aws_neuronx_venv_pytorch_2_8/bin',
-            '/opt/aws_neuronx_venv_pytorch_2_8_nxd_inference/bin',
             f'{user_home}/.local/bin',
             '/opt/aws/neuron/bin',
             '/usr/local/bin',
@@ -256,53 +191,52 @@ sys.path.append('{exec_dir}')
         ]
         current_path = os.environ.get('PATH', '')
         neuron_path = ':'.join(neuron_bin_paths + [current_path])
-        current_pythonpath = os.environ.get('PYTHONPATH', '')
-        pythonpath = current_pythonpath if current_pythonpath else ''
         neuron_python = '/opt/aws_neuronx_venv_pytorch_2_8_nxd_training/bin/python3'
         
-        # Set up Neuron Profiler if enabled
+        # Set up profiler
         profiler_output_path = None
         if NEURON_PROFILER_ENABLED:
             profiler_output_path = os.path.join(PROFILER_OUTPUT_DIR, f'{paper_id}_{int(time.time())}')
             os.makedirs(profiler_output_path, exist_ok=True)
-            logger.info(f"Neuron Profiler enabled - output will be saved to {profiler_output_path}")
         
-        # Build environment for execution
         exec_env = {
             **os.environ,
             'PATH': neuron_path,
-            'PYTHONPATH': pythonpath,  # Keep minimal - venv Python already has correct paths
-            'NEURON_RT_LOG_LEVEL': 'ERROR',  
             'PYTHONUNBUFFERED': '1',
             'DATASET_CACHE_DIR': DATASET_CACHE_DIR,
-            'PYTHONDONTWRITEBYTECODE': '1'
+            'PYTHONDONTWRITEBYTECODE': '1',
+            'NEURON_RT_LOG_LEVEL': 'ERROR'
         }
         
-        # Use neuron-profile inspect to wrap execution if profiler is enabled
-        # This provides hardware-level profiling for Trainium devices
-        # neuron-profile inspect runs the command and captures hardware profiling data
-        if NEURON_PROFILER_ENABLED:
+        # Build command
+        if NEURON_PROFILER_ENABLED and profiler_output_path:
             neuron_profile_cmd = '/opt/aws/neuron/bin/neuron-profile'
             if os.path.exists(neuron_profile_cmd):
-                # Use neuron-profile inspect to wrap Python execution
-                # This captures hardware-level profiling data (Neuron cores, memory, etc.)
                 cmd = [
                     neuron_profile_cmd,
                     'inspect',
                     '-o', profiler_output_path,
                     neuron_python, main_py_path
                 ]
-                logger.info(f"Neuron Profiler enabled - using neuron-profile inspect to capture hardware profiling to {profiler_output_path}")
             else:
-                # Fallback if neuron-profile not found
-                logger.warning(f"neuron-profile not found at {neuron_profile_cmd}, running without profiler")
                 cmd = [neuron_python, main_py_path]
         else:
             cmd = [neuron_python, main_py_path]
         
+        # Track execution start
+        start_time = time.time()
+        with execution_lock:
+            running_executions[paper_id] = {
+                'start_time': start_time,
+                'paper_id': paper_id
+            }
+        
+        logger.info(f"Executing code for {paper_id} (timeout: {timeout}s)")
+        
+        # Execute
         result = subprocess.run(
             cmd,
-            cwd='/tmp',  # Run from /tmp
+            cwd='/tmp',
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -311,113 +245,33 @@ sys.path.append('{exec_dir}')
         
         execution_time = time.time() - start_time
         
-        resources_after = measure_resources_after()
+        # Remove from running executions
+        with execution_lock:
+            running_executions.pop(paper_id, None)
         
         success = result.returncode == 0
         
-        metrics = extract_metrics_from_output(result.stdout)
+        # Extract metrics
+        metrics = {}
+        try:
+            for line in result.stdout.split('\n'):
+                if line.startswith('METRICS:'):
+                    json_str = line.replace('METRICS:', '').strip()
+                    metrics.update(json.loads(json_str))
+        except:
+            pass
         
-        # Log metrics to SageMaker/CloudWatch if enabled
+        # Log metrics
         if metrics_logger:
             try:
-                # Extract and log training metrics from stdout
                 metrics_logger.extract_and_log_metrics_from_output(result.stdout)
-                
-                # Log execution-level metrics
-                additional_metrics = {k: v for k, v in metrics.items() 
-                                    if k not in ['training_loss', 'accuracy', 'validation_accuracy', 
-                                                'test_accuracy', 'epoch', 'step']}
-                
                 metrics_logger.log_execution_metrics(
                     execution_time=execution_time,
                     success=success,
-                    peak_memory_mb=resources_after.get("peak_memory_mb"),
-                    additional_metrics=additional_metrics
+                    peak_memory_mb=0
                 )
-                logger.info(f"Logged metrics to CloudWatch for {paper_id}")
             except Exception as e:
-                logger.warning(f"Failed to log metrics to CloudWatch: {e}")
-        
-        # Collect profiler results if available
-        # neuron-profile inspect creates subdirectories (instance_id_pid), so we need to search recursively
-        profiler_results = None
-        if NEURON_PROFILER_ENABLED and profiler_output_path and os.path.exists(profiler_output_path):
-            profiler_files = []
-            profiler_subdirs = []
-            try:
-                # Search recursively for profiler files
-                for root, dirs, files in os.walk(profiler_output_path):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        if os.path.isfile(file_path):
-                            # Store relative path from profiler_output_path
-                            rel_path = os.path.relpath(file_path, profiler_output_path)
-                            profiler_files.append(rel_path)
-                    # Track subdirectories (neuron-profile creates instance_id_pid subdirs)
-                    for dir_name in dirs:
-                        dir_path = os.path.join(root, dir_name)
-                        if os.path.isdir(dir_path):
-                            rel_dir = os.path.relpath(dir_path, profiler_output_path)
-                            profiler_subdirs.append(rel_dir)
-                
-                if profiler_files:
-                    # Convert profiler files to Perfetto format
-                    perfetto_file_path = None
-                    try:
-                        # Find the subdirectory with profiler files (usually instance_id_pid)
-                        if profiler_subdirs:
-                            profiler_subdir = profiler_subdirs[0]  # Use first subdirectory
-                            profiler_session_dir = os.path.join(profiler_output_path, profiler_subdir)
-                            
-                            if os.path.exists(profiler_session_dir):
-                                # Convert to Perfetto format
-                                perfetto_file = os.path.join(profiler_output_path, f"{paper_id}_profile.pftrace")
-                                neuron_profile_cmd = '/opt/aws/neuron/bin/neuron-profile'
-                                
-                                if os.path.exists(neuron_profile_cmd):
-                                    convert_cmd = [
-                                        neuron_profile_cmd,
-                                        'view',
-                                        '--session-dir', profiler_session_dir,
-                                        '--output-format', 'perfetto',
-                                        '--output-file', perfetto_file
-                                    ]
-                                    
-                                    convert_result = subprocess.run(
-                                        convert_cmd,
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=300  # 5 minute timeout for conversion
-                                    )
-                                    
-                                    if convert_result.returncode == 0 and os.path.exists(perfetto_file):
-                                        perfetto_file_path = perfetto_file
-                                        file_size = os.path.getsize(perfetto_file) / (1024 * 1024)
-                                        logger.info(f"✓ Converted profiler to Perfetto format: {perfetto_file} ({file_size:.2f} MB)")
-                                    else:
-                                        logger.warning(f"Failed to convert profiler to Perfetto: {convert_result.stderr}")
-                                else:
-                                    logger.warning("neuron-profile command not found, cannot convert to Perfetto")
-                    except Exception as e:
-                        logger.warning(f"Failed to convert profiler to Perfetto format: {e}")
-                        import traceback
-                        logger.debug(traceback.format_exc())
-                    
-                    profiler_results = {
-                        "profiler_output_dir": profiler_output_path,
-                        "profiler_files": profiler_files,
-                        "profiler_subdirs": profiler_subdirs,
-                        "profiler_enabled": True,
-                        "total_files": len(profiler_files),
-                        "perfetto_file": perfetto_file_path  # Path to Perfetto file on Trainium
-                    }
-                    logger.info(f"Neuron Profiler results available: {len(profiler_files)} files in {profiler_output_path}")
-                else:
-                    logger.warning(f"Neuron Profiler directory exists but contains no files: {profiler_output_path}")
-            except Exception as e:
-                logger.warning(f"Failed to collect profiler results: {e}")
-                import traceback
-                logger.debug(traceback.format_exc())
+                logger.warning(f"Failed to log metrics: {e}")
         
         execution_result = {
             "success": success,
@@ -426,30 +280,18 @@ sys.path.append('{exec_dir}')
             "stdout": result.stdout,
             "stderr": result.stderr,
             "timeout": False,
-            "peak_memory_mb": resources_after.get("peak_memory_mb"),
-            "detailed_metrics": metrics,  # Store metrics in detailed_metrics for test script
-            "profiler": profiler_results,  # Neuron Profiler results
-            **metrics  # Also spread for backward compatibility
+            "profiler_output_path": profiler_output_path,
+            "detailed_metrics": metrics,
+            **metrics
         }
-        
-        if success:
-            logger.info(f"Paper {paper_id} executed successfully in {execution_time:.1f}s")
-        else:
-            logger.warning(f"Paper {paper_id} failed with return code {result.returncode}")
-            # Log detailed error information
-            if result.stderr:
-                logger.error(f"STDERR for {paper_id}:\n{result.stderr}")
-            if result.stdout:
-                # Log last 50 lines of stdout for context
-                stdout_lines = result.stdout.split('\n')
-                last_lines = '\n'.join(stdout_lines[-50:])
-                logger.error(f"Last 50 lines of STDOUT for {paper_id}:\n{last_lines}")
         
         return execution_result
         
     except subprocess.TimeoutExpired as e:
         execution_time = time.time() - start_time
-        logger.error(f"⏱Paper {paper_id} timed out after {timeout}s")
+        with execution_lock:
+            running_executions.pop(paper_id, None)
+        
         return {
             "success": False,
             "execution_time": timeout,
@@ -462,253 +304,230 @@ sys.path.append('{exec_dir}')
         }
         
     except Exception as e:
-        logger.error(f"Error executing code for paper {paper_id}: {e}")
-        logger.error(traceback.format_exc())
+        with execution_lock:
+            running_executions.pop(paper_id, None)
+        
+        logger.error(f"Error executing code for {paper_id}: {e}")
         return {
             "success": False,
             "execution_time": 0,
             "return_code": -1,
             "stdout": "",
             "stderr": str(e),
-            "timeout": False,
             "error_message": f"Execution error: {str(e)}",
             "error_type": "execution_error"
         }
     
     finally:
-        # Cleanup: Remove the entire temporary execution directory
+        # Cleanup
         try:
             if os.path.exists(exec_dir):
                 shutil.rmtree(exec_dir)
-                logger.debug(f"Cleaned up execution directory: {exec_dir}")
         except Exception as e:
-            logger.warning(f"Failed to cleanup execution directory {exec_dir}: {e}")
+            logger.warning(f"Failed to cleanup {exec_dir}: {e}")
+            
 
-def extract_metrics_from_output(stdout: str) -> Dict[str, Any]:
-    """
-    Extract metrics from code output.
+def extract_errors_from_result(exec_result: Dict[str, Any]) -> List[str]:
     
-    Looks for JSON lines starting with "METRICS:" in stdout.
-    Also parses common printed patterns like "Epoch X/Y, Average Loss: X.XXXX" and "Test Accuracy: XX.XX%"
+    stderr = exec_result.get('stderr', '')
+    message = exec_result.get('error_message', '')
+    stdout = exec_result.get('stdout', '')
     
-    Args:
-        stdout: Standard output from code execution
-        
-    Returns:
-        Dictionary of extracted metrics
-    """
-    metrics = {}
-    import re
+    if not (stderr or message or stdout):
+        return ''
+    
+    if exec_result.get('timeout') or exec_result.get('error_type') == 'timeout':
+        return f"EXECUTION ERROR: Execution timed out - {exec_result.get('error_message', 'Timeout')}"
+    
+    error_message += f"Error Message: {message if message else "Code execution failed."}. Standard Error: {stderr if stderr else -1}"
+    
+    return error_message
+
+
+def fix_code_with_bedrock(code: str, error_message: str, iteration: int) -> Optional[str]:
+
+    if not bedrock_client:
+        logger.error("Bedrock client not available for code fixing")
+        return None
+    
+    prompt = f"""You are fixing PyTorch code that failed execution on AWS Trainium.
+
+The code failed with these REAL execution errors:
+{error_message}
+
+Current code (iteration {iteration}):
+```python
+{code}
+```
+
+CRITICAL REQUIREMENTS:
+1. Fix ALL the errors listed above
+2. Code MUST use torch_xla (Neuron SDK) for Trainium
+3. Use xm.xla_device(), xm.optimizer_step(), xm.mark_step()
+4. Do NOT use non-existent xm APIs (xm.XlaModule, xm.dot_general, etc.)
+5. Ensure all imports are present
+6. Fix any syntax errors, type errors, attribute errors
+
+Return ONLY the complete fixed code in a Python code block. Do not include explanations outside the code block.
+
+Fixed code:
+```python
+"""
     
     try:
-        # First, try to find METRICS: lines (preferred format)
-        for line in stdout.split('\n'):
-            if line.startswith('METRICS:'):
-                json_str = line.replace('METRICS:', '').strip()
-                parsed_metrics = json.loads(json_str)
-                metrics.update(parsed_metrics)
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 8192,
+            "temperature": 0.3,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        }
         
-        # If no METRICS: lines found, parse common printed patterns
-        if not metrics:
-            # Extract epoch losses: "Epoch X/Y, Average Loss: X.XXXX"
-            epoch_losses = []
-            for line in stdout.split('\n'):
-                match = re.search(r'Epoch\s+\d+/\d+.*?Loss:\s*([\d.]+)', line, re.IGNORECASE)
-                if match:
-                    epoch_losses.append(float(match.group(1)))
-            
-            if epoch_losses:
-                metrics['training_loss'] = epoch_losses[-1]  # Last epoch loss
-                metrics['final_epoch_loss'] = epoch_losses[-1]
-                metrics['initial_epoch_loss'] = epoch_losses[0] if epoch_losses else None
-                metrics['num_epochs'] = len(epoch_losses)
-            
-            # Extract test accuracy: "Test Accuracy: XX.XX%"
-            for line in stdout.split('\n'):
-                match = re.search(r'Test\s+Accuracy:\s*([\d.]+)%', line, re.IGNORECASE)
-                if match:
-                    metrics['test_accuracy'] = float(match.group(1))
-                    break
-            
-            # Extract training accuracy if present
-            for line in stdout.split('\n'):
-                match = re.search(r'Training\s+Accuracy:\s*([\d.]+)%', line, re.IGNORECASE)
-                if match:
-                    metrics['training_accuracy'] = float(match.group(1))
-                    break
-            
-            # Extract validation accuracy if present
-            for line in stdout.split('\n'):
-                match = re.search(r'Validation\s+Accuracy:\s*([\d.]+)%', line, re.IGNORECASE)
-                if match:
-                    metrics['validation_accuracy'] = float(match.group(1))
-                    break
-            
+        response = bedrock_client.invoke_model(
+            modelId=BEDROCK_MODEL_ID,
+            body=json.dumps(body),
+            contentType="application/json"
+        )
+        
+        response_body = json.loads(response['body'].read())
+        generated_text = response_body['content'][0]['text']
+        
+        # Extract code from response
+        import re
+        code_match = re.search(r'```python\n(.*?)\n```', generated_text, re.DOTALL)
+        if code_match:
+            fixed_code = code_match.group(1)
+            logger.info(f"Fixed code extracted (length: {len(fixed_code)})")
+            return fixed_code
+        else:
+            # Try to extract without markdown
+            fixed_code = generated_text.strip()
+            if fixed_code.startswith('import') or fixed_code.startswith('from'):
+                logger.info(f"Fixed code extracted (no markdown, length: {len(fixed_code)})")
+                return fixed_code
+        
+        logger.warning("Failed to extract code from Bedrock response")
+        return None
+        
     except Exception as e:
-        logger.warning(f"Failed to extract metrics from output: {e}")
-    
-    return metrics
+        logger.error(f"Failed to fix code with Bedrock: {e}")
+        return None
 
-def count_lines_of_code(code: str) -> int:
-    """Count non-empty, non-comment lines of code"""
-    lines = code.split('\n')
-    loc = 0
-    for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith('#'):
-            loc += 1
-    return loc
-
-def analyze_code(code: str) -> Dict[str, Any]:
-    """Analyze code to extract metadata"""
-    code_lower = code.lower()
-    
-    return {
-        "lines_of_code": count_lines_of_code(code),
-        "has_training_loop": any(x in code_lower for x in ['for epoch', 'train(', 'training_loop']),
-        "has_evaluation": any(x in code_lower for x in ['eval(', 'evaluate(', 'test(']),
-        "uses_distributed_training": any(x in code_lower for x in ['distributeddataparallel', 'ddp', 'torch.distributed']),
-    }
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    # Check synthetic dataset availability
-    synthetic_dir = os.path.join(DATASET_CACHE_DIR, 'synthetic')
-    required_files = ['synthetic_small.pt', 'synthetic_medium.pt', 'synthetic_tabular.pt']
-    synthetic_available = all(os.path.exists(os.path.join(synthetic_dir, f)) for f in required_files)
-    
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "neuron_available": os.path.exists('/opt/aws/neuron'),
-        "working_dir": WORKING_DIR,
-        "max_execution_time": MAX_EXECUTION_TIME,
-        "synthetic_dataset_available": synthetic_available,
-        "dataset_cache_dir": DATASET_CACHE_DIR
+        "bedrock_available": bedrock_client is not None
     })
 
-@app.route('/execute_batch', methods=['POST'])
-def execute_batch():
-    """
-    Execute a batch of code files.
-    
-    Request body:
-    {
-        "batch": [
-            {
-                "paper_id": "paper_123",
-                "paper_title": "ResNet Paper",
-                "code": "import torch\n...",
-                "s3_code_key": "paper_123/code.py"
-            },
-            ...
-        ],
-        "timeout": 600  # Optional, per-code timeout
-    }
-    
-    Response:
-    {
-        "success": true,
-        "batch_size": 10,
-        "results": {
-            "paper_123": {
-                "success": true,
-                "execution_time": 45.2,
-                "return_code": 0,
-                "stdout": "...",
-                "stderr": "",
-                ...
-            },
-            ...
-        }
-    }
-    """
-    try:
-        data = request.get_json()
-        batch = data.get('batch', [])
-        timeout = data.get('timeout', MAX_EXECUTION_TIME)
-        
-        if not batch:
-            return jsonify({
-                "success": False,
-                "error": "Empty batch"
-            }), 400
-        
-        logger.info(f"📦 Received batch of {len(batch)} code files")
-        
-        results = {}
-        
-        for item in batch:
-            paper_id = item['paper_id']
-            paper_title = item.get('paper_title', 'Unknown')
-            code = item.get('code', '')
-            
-            logger.info(f"Executing: {paper_title} ({paper_id})")
-            
-            # Wrap each paper execution in try-except to prevent one failure from breaking the batch
-            try:
-                if not code:
-                    raise ValueError("Code is empty or missing")
-                
-                code_analysis = analyze_code(code)
-                exec_result = execute_code(paper_id, code, timeout, paper_title=paper_title)
-                exec_result.update(code_analysis)
-                
-                results[paper_id] = exec_result
-                
-            except Exception as e:
-                logger.error(f"Error executing paper {paper_id}: {e}")
-                logger.error(traceback.format_exc())
-                # Return error result for this paper, but continue with others
-                results[paper_id] = {
-                    "success": False,
-                    "execution_time": 0,
-                    "return_code": -1,
-                    "stdout": "",
-                    "stderr": str(e),
-                    "error_message": f"Execution error: {str(e)}",
-                    "error_type": "execution_error",
-                    "timeout": False
-                }
 
-        successful = sum(1 for r in results.values() if r['success'])
-        failed = len(results) - successful
+def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Internal execute function (can be called directly or via HTTP endpoint).
+    Returns dictionary instead of Flask response.
+    """
+    logger.info(f"Executing code for {paper_id}")
+    
+    # Save code to S3 first
+    s3_key = save_code(paper_id, code)
+    if not s3_key:
+        logger.warning(f"Failed to save code to S3 for {paper_id}, continuing anyway")
+    
+    # Execute code in background thread
+    def execute_and_handle():
+        exec_result = execute_code_sync(paper_id, code, timeout, paper_title)
         
-        logger.info(f"Batch complete: {successful} succeeded, {failed} failed")
-        
-        return jsonify({
-            "success": True,
-            "batch_size": len(batch),
-            "successful": successful,
-            "failed": failed,
-            "results": results
-        })
-        
-    except Exception as e:
-        logger.error(f"Error processing batch: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        if exec_result.get('success'):
+            logger.info(f"Execution succeeded for {paper_id}")
+            upload_execution_results(paper_id, exec_result)
+            profiler_trace = "profiler_output_path"
+            if profiler_trace:
+                collect_profiler_artifacts(paper_id, exec_result.get("profiler_output_path"))
+            # Success - clear any previous errors
+            clear_errors(paper_id)
+        else:
+            # Failure - save error to DB and trigger code review
+            logger.warning(f"Execution failed for {paper_id}, saving error and triggering review")
+            error_data = {
+                "stderr": exec_result.get('stderr', ''),
+                "stdout": exec_result.get('stdout', ''),
+                "error_message": exec_result.get('error_message', ''),
+                "error_type": exec_result.get('error_type', 'execution_error'),
+                "return_code": exec_result.get('return_code', -1),
+                "execution_time": exec_result.get('execution_time', 0)
+            }
+            save_error(paper_id, error_data)
+            
+            # Call code_review endpoint
+            try:
+                review_response = requests.post(
+                    f"http://localhost:8000/code_review",
+                    json={"paper_id": paper_id, "paper_title": paper_title},
+                    timeout=300  # 5 minute timeout for review
+                )
+                logger.info(f"Code review triggered for {paper_id}: {review_response.status_code}")
+            except Exception as e:
+                logger.error(f"Failed to trigger code review: {e}")
+    
+    # Start execution in background
+    thread = threading.Thread(target=execute_and_handle, daemon=True)
+    thread.start()
+    
+    # Check if execution is still running after SUCCESS_ASSUMPTION_TIME
+    def check_success_assumption():
+        time.sleep(SUCCESS_ASSUMPTION_TIME)
+        with execution_lock:
+            if paper_id in running_executions:
+                # Still running after 5 minutes - assume success
+                logger.info(f"Execution for {paper_id} running > {SUCCESS_ASSUMPTION_TIME}s, assuming success")
+    
+    # Start success assumption check in background
+    check_thread = threading.Thread(target=check_success_assumption, daemon=True)
+    check_thread.start()
+    
+    # Return status
+    return {
+        "success": True,
+        "status": "running",
+        "job_id": paper_id,
+        "status_url": f"/status/{paper_id}",
+        "message": f"Execution started. If running > {SUCCESS_ASSUMPTION_TIME}s, assume success. ECS should track via /status endpoint."
+    }
+
 
 @app.route('/execute', methods=['POST'])
-def execute_single():
+def execute():
     """
-    Execute a single code file (for testing).
+    Execute code on Trainium.
     
     Request body:
     {
         "paper_id": "paper_123",
-        "code": "import torch\n..."
+        "code": "import torch\n...",
+        "timeout": 1800,
+        "paper_title": "Paper Title"
     }
+    
+    Behavior:
+    - Executes code
+    - If fails: saves error to DB, calls /code_review
+    - If runs > 5 minutes: assumes success, returns job_id for ECS to track
+    - If succeeds quickly: returns results immediately
     """
     try:
         data = request.get_json()
         paper_id = data.get('paper_id')
         code = data.get('code')
         timeout = data.get('timeout', MAX_EXECUTION_TIME)
+        paper_title = data.get('paper_title')
         
         if not paper_id or not code:
             return jsonify({
@@ -716,22 +535,181 @@ def execute_single():
                 "error": "paper_id and code are required"
             }), 400
         
-        result = execute_code(paper_id, code, timeout)
-        result.update(analyze_code(code))
-        
-        return jsonify(result)
+        # Call internal execute function
+        result = execute_internal(paper_id, code, timeout, paper_title)
+        return jsonify(result), 202
         
     except Exception as e:
-        logger.error(f"Error executing single code: {e}")
+        logger.error(f"Error in /execute: {e}")
         return jsonify({
             "success": False,
             "error": str(e)
         }), 500
 
+
+@app.route('/code_review', methods=['POST'])
+def code_review():
+    """
+    Review and fix code based on errors in database.
+    
+    Request body:
+    {
+        "paper_id": "paper_123"
+    }
+    
+    Behavior:
+    - Reads errors from database for paper_id
+    - Gets current code from S3
+    - Uses Bedrock to fix code
+    - Saves fixed code to S3 (replaces old)
+    - Re-calls /execute with fixed code
+    """
+    try:
+        data = request.get_json()
+        paper_id = data.get('paper_id')
+        
+        if not paper_id:
+            return jsonify({
+                "success": False,
+                "error": "paper_id is required"
+            }), 400
+        
+        logger.info(f"Starting code review for {paper_id}")
+        
+        errors_list = get_errors(paper_id)
+        
+        error_count = len(errors_list)
+        logger.info(f"Retrieved {error_count} errors for this paper. Passing in the most recent.")
+        
+        if error_count >= MAX_REVIEW_ITERATIONS:
+            logger.warning(f"Max code review depth reached for {paper_id} ({error_count})")
+            return jsonify({
+                "success": False,
+                "error": f"Max review iterations ({MAX_REVIEW_ITERATIONS}) reached",
+                "paper_id": paper_id,
+                "error_count": error_count
+            }), 400
+            
+        # Possibly explore providing context including more than just the most recent error?    
+        latest_error = errors_list[-1].get('error_data', {})
+        error_message = extract_errors_from_result(latest_error)
+        if not error_message:
+            return jsonify({
+                "success": False,
+                "error": "No extractable errors found"
+            }), 400
+
+        
+        # Get current code from S3
+        code = get_code(paper_id)
+        if not code:
+            return jsonify({
+                "success": False,
+                "error": f"No code found in S3 for {paper_id}"
+            }), 404
+        
+        # Fix code with Bedrock
+        logger.info(f"Fixing code with Bedrock (iteration {error_count})...")
+        fixed_code = fix_code_with_bedrock(code, errors, error_count)
+        
+        if not fixed_code:
+            return jsonify({
+                "success": False,
+                "error": "Failed to fix code with Bedrock"
+            }), 500
+        
+        # Save fixed code to S3 (replaces old)
+        s3_key = save_code(paper_id, fixed_code)
+        if not s3_key:
+            return jsonify({
+                "success": False,
+                "error": "Failed to save fixed code to S3"
+            }), 500
+        
+        logger.info(f"Fixed code saved to S3: {s3_key}")
+        
+        # Re-call /execute with fixed code (recursive call)
+        logger.info(f"Re-executing fixed code for {paper_id}...")
+        try:
+            # Call internal execute function directly (not HTTP)
+            exec_result = execute_internal(
+                paper_id=paper_id,
+                code=fixed_code,
+                timeout=MAX_EXECUTION_TIME,
+                paper_title=data.get('paper_title')
+            )
+            
+            return jsonify({
+                "success": True,
+                "message": f"Code fixed and re-execution triggered (iteration {error_count})",
+                "paper_id": paper_id,
+                "iteration": error_count,
+                "errors_fixed": errors,
+                "execution_status": exec_result
+            })
+                
+        except Exception as e:
+            logger.error(f"Failed to re-execute code: {e}")
+            logger.error(traceback.format_exc())
+            return jsonify({
+                "success": False,
+                "error": f"Failed to re-execute: {str(e)}",
+                "paper_id": paper_id
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"Error in /code_review: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route('/status/<paper_id>', methods=['GET'])
+def get_status(paper_id: str):
+    """Get execution status for a paper_id."""
+    with execution_lock:
+        if paper_id in running_executions:
+            exec_info = running_executions[paper_id]
+            elapsed = time.time() - exec_info['start_time']
+            return jsonify({
+                "paper_id": paper_id,
+                "status": "running",
+                "elapsed_seconds": round(elapsed, 2),
+                "assumed_success": elapsed > SUCCESS_ASSUMPTION_TIME
+            })
+    
+    # Check if code exists in S3 (indicates execution completed)
+    if code_exists(paper_id):
+        errors = get_errors(paper_id)
+        if errors:
+            return jsonify({
+                "paper_id": paper_id,
+                "status": "failed",
+                "error_count": len(errors),
+                "latest_error": errors[-1].get('error_data', {})
+            })
+        else:
+            return jsonify({
+                "paper_id": paper_id,
+                "status": "completed",
+                "success": True
+            })
+    
+    return jsonify({
+        "paper_id": paper_id,
+        "status": "not_found"
+    }), 404
+
+
 if __name__ == '__main__':
-    logger.info("Starting Trainium Executor Service")
+    logger.info("Starting Trainium Executor Service v2")
     logger.info(f"Working directory: {WORKING_DIR}")
     logger.info(f"Max execution time: {MAX_EXECUTION_TIME}s")
+    logger.info(f"Success assumption time: {SUCCESS_ASSUMPTION_TIME}s")
+    logger.info(f"Code storage bucket: papers-code-artifacts")
+    logger.info(f"Max review iterations: {MAX_REVIEW_ITERATIONS}")
     
     app.run(host='0.0.0.0', port=8000, threaded=True)
 
