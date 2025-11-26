@@ -83,7 +83,8 @@ class ChunkedPyTorchGenerator:
     
     def __init__(self, max_chunk_size: int = 150000, use_haiku_for_chunks: bool = True, 
                  parallel_chunks: bool = False, max_parallel: int = 2, batch_size: int = 8,
-                 pages_per_pdf_chunk: int = 2):
+                 pages_per_pdf_chunk: int = 2, use_smart_pdf_chunking: bool = True, 
+                 max_pdf_chunks: int = 15):
         """
         Initialize chunked code generator.
         
@@ -96,6 +97,8 @@ class ChunkedPyTorchGenerator:
             max_parallel: Maximum number of chunks to process in parallel (default: 2)
             batch_size: Number of chunk summaries to combine in each batch for hierarchical summarization (default: 8)
             pages_per_pdf_chunk: Number of pages per PDF chunk when processing PDFs (default: 2)
+            use_smart_pdf_chunking: If True, only process relevant PDF pages (abstract, formulas, diagrams, etc.) (default: True)
+            max_pdf_chunks: Maximum number of PDF chunks to process when using smart chunking (default: 15)
         """
         self.opensearch_client = OpenSearchClient()
         self.chunked_bedrock_client = ChunkedBedrockClient(use_haiku=use_haiku_for_chunks)
@@ -113,6 +116,8 @@ class ChunkedPyTorchGenerator:
         self.max_parallel = max_parallel
         self.batch_size = batch_size
         self.pages_per_pdf_chunk = pages_per_pdf_chunk
+        self.use_smart_pdf_chunking = use_smart_pdf_chunking
+        self.max_pdf_chunks = max_pdf_chunks
         
         # Initialize PDF processor if available
         try:
@@ -137,6 +142,7 @@ class ChunkedPyTorchGenerator:
         logger.info(f"  - Parallel processing: {parallel_chunks} (max {max_parallel} concurrent)")
         logger.info(f"  - Batch size for hierarchical summarization: {batch_size}")
         logger.info(f"  - Pages per PDF chunk: {pages_per_pdf_chunk}")
+        logger.info(f"  - Smart PDF chunking: {use_smart_pdf_chunking} (max {max_pdf_chunks} chunks)")
         logger.info(f"  - PDF vision processing: {'enabled' if self.pdf_processor else 'disabled'}")
     
     def _process_pdf_chunk(self, pdf_bytes: bytes, page_start: int, page_end: int, 
@@ -414,15 +420,12 @@ class ChunkedPyTorchGenerator:
                         "paper_id": paper_id
                     }
                 
-                # Get dataset recommendations (use paper summary for now)
-                dataset_recommendations = self.dataset_recommender.recommend_datasets(
-                    paper, paper_summary, use_llm=False  # Use rule-based for speed
-                )
-                logger.info(f"Recommended datasets: {dataset_recommendations.get('recommended_datasets', [])}")
-                
-                # Step 3: Split PDF into page chunks
+                # Step 3: Split PDF into page chunks (using smart chunking to prioritize relevant sections)
                 pdf_chunks = self.pdf_processor.split_pdf_into_chunks(
-                    pdf_bytes, pages_per_chunk=self.pages_per_pdf_chunk
+                    pdf_bytes, 
+                    pages_per_chunk=self.pages_per_pdf_chunk,
+                    use_smart_chunking=self.use_smart_pdf_chunking,
+                    max_chunks=self.max_pdf_chunks
                 )
                 
                 if not pdf_chunks:
@@ -529,6 +532,19 @@ class ChunkedPyTorchGenerator:
             
             # Save chunk results
             self._save_chunk_results(paper_id, chunk_results, chunk_summaries)
+            
+            # Get dataset recommendations using chunk summaries for better context
+            # Combine first few chunk summaries (usually contain abstract, intro, methods) for dataset detection
+            context_for_dataset = paper_summary
+            if chunk_summaries:
+                # Use first 3-5 chunk summaries (typically contain methods, datasets, domain info)
+                early_chunks = "\n\n".join(chunk_summaries[:min(5, len(chunk_summaries))])
+                context_for_dataset = f"{paper_summary}\n\nAdditional Context from Paper:\n{early_chunks[:50000]}"  # Limit to 50k chars
+            
+            dataset_recommendations = self.dataset_recommender.recommend_datasets(
+                paper, context_for_dataset, use_llm=False  # Use rule-based for speed
+            )
+            logger.info(f"Recommended datasets: {dataset_recommendations.get('recommended_datasets', [])}")
             
             # Step 5: Two-stage hierarchical summarization
             # Stage 5a: Group chunk summaries into batches and summarize each batch
