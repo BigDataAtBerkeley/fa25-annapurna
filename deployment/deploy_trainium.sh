@@ -83,14 +83,16 @@ fi
 echo "✅ SSH connection OK"
 echo ""
 
+SSH_KEY=$(cd "$(dirname "$SSH_KEY")" && pwd)/$(basename "$SSH_KEY")
+
 # Step 1: Upload files
 echo "📦 Step 1: Uploading app files..."
-cd "$SCRIPT_DIR/../trainium_executor" || exit 1
+cd "$SCRIPT_DIR/../midpoint-deliverable/trn-execute-for-deliv" || exit 1
 
 # Check files exist
 for file in app.py requirements.txt sagemaker_metrics.py dataset_loader.py; do
     if [ ! -f "$file" ]; then
-        echo "❌ Error: $file not found in trainium_executor/"
+        echo "❌ Error: $file not found in midpoint-deliverable/trn-execute-for-deliv"
         exit 1
     fi
 done

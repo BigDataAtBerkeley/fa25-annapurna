@@ -327,7 +327,7 @@ sys.path.append('{exec_dir}')
             logger.warning(f"Failed to cleanup {exec_dir}: {e}")
             
 
-def extract_errors_from_result(exec_result: Dict[str, Any]) -> List[str]:
+def extract_errors_from_result(exec_result: Dict[str, Any]) -> str:
     
     stderr = exec_result.get('stderr', '')
     message = exec_result.get('error_message', '')
@@ -339,7 +339,10 @@ def extract_errors_from_result(exec_result: Dict[str, Any]) -> List[str]:
     if exec_result.get('timeout') or exec_result.get('error_type') == 'timeout':
         return f"EXECUTION ERROR: Execution timed out - {exec_result.get('error_message', 'Timeout')}"
     
-    error_message += f"Error Message: {message if message else "Code execution failed."}. Standard Error: {stderr if stderr else -1}"
+    error_message = (
+        f"Error Message: {message if message else 'Code execution failed.'}. "
+        f"Standard Error: {stderr if stderr else -1}"
+    )
     
     return error_message
 
@@ -426,6 +429,13 @@ def health_check():
         "timestamp": datetime.now().isoformat(),
         "neuron_available": os.path.exists('/opt/aws/neuron'),
         "bedrock_available": bedrock_client is not None
+    })
+
+@app.route('/env', methods=['GET'])
+def get_env_vars():
+    """Print all environment variables"""
+    return jsonify({
+        "environment_variables": dict(os.environ)
     })
 
 
@@ -528,6 +538,7 @@ def execute():
         code = data.get('code')
         timeout = data.get('timeout', MAX_EXECUTION_TIME)
         paper_title = data.get('paper_title')
+        logger.info(f"Recieved code for {paper_id}, Title: {paper_title}")
         
         if not paper_id or not code:
             return jsonify({
@@ -536,6 +547,7 @@ def execute():
             }), 400
         
         # Call internal execute function
+        logger.info(f"Beginning internal execution.")
         result = execute_internal(paper_id, code, timeout, paper_title)
         return jsonify(result), 202
         
@@ -579,7 +591,7 @@ def code_review():
         errors_list = get_errors(paper_id)
         
         error_count = len(errors_list)
-        logger.info(f"Retrieved {error_count} errors for this paper. Passing in the most recent.")
+        logger.info(f"Retrieved {error_count} previous iterations for this paper. Passing in the most recent.")
         
         if error_count >= MAX_REVIEW_ITERATIONS:
             logger.warning(f"Max code review depth reached for {paper_id} ({error_count})")
@@ -590,7 +602,7 @@ def code_review():
                 "error_count": error_count
             }), 400
             
-        # Possibly explore providing context including more than just the most recent error?    
+        # Possibly explore providing context including more than just the most recent error?   
         latest_error = errors_list[-1].get('error_data', {})
         error_message = extract_errors_from_result(latest_error)
         if not error_message:
@@ -610,7 +622,7 @@ def code_review():
         
         # Fix code with Bedrock
         logger.info(f"Fixing code with Bedrock (iteration {error_count})...")
-        fixed_code = fix_code_with_bedrock(code, errors, error_count)
+        fixed_code = fix_code_with_bedrock(code, error_message, error_count)
         
         if not fixed_code:
             return jsonify({
@@ -644,7 +656,7 @@ def code_review():
                 "message": f"Code fixed and re-execution triggered (iteration {error_count})",
                 "paper_id": paper_id,
                 "iteration": error_count,
-                "errors_fixed": errors,
+                "errors_fixed": error_message,
                 "execution_status": exec_result
             })
                 
@@ -710,6 +722,14 @@ if __name__ == '__main__':
     logger.info(f"Success assumption time: {SUCCESS_ASSUMPTION_TIME}s")
     logger.info(f"Code storage bucket: papers-code-artifacts")
     logger.info(f"Max review iterations: {MAX_REVIEW_ITERATIONS}")
+    
+    # Print all environment variables
+    logger.info("=" * 80)
+    logger.info("Environment Variables:")
+    logger.info("=" * 80)
+    for key, value in sorted(os.environ.items()):
+        logger.info(f"{key}={value}")
+    logger.info("=" * 80)
     
     app.run(host='0.0.0.0', port=8000, threaded=True)
 

@@ -10,7 +10,7 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger(__name__)
 
 # DynamoDB Table for storing execution errors.
-ERROR_DB_TABLE_NAME = os.getenv('ERROR_DB_TABLE_NAME')
+ERROR_DB_TABLE_NAME = os.getenv('ERROR_DB_TABLE_NAME', 'docRunErrors')
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
 
 # Initialize DynamoDB client
@@ -49,6 +49,43 @@ def _parse_sort_key(sort_key: str) -> tuple:
         logger.warning(f"Failed to parse sort key {sort_key}: {e}")
     return None, None
 
+def get_error_count(paper_id: str) -> int:
+    """
+    Get the count of errors for a given paper.
+    
+    Args:
+        paper_id: Paper/document ID
+        
+    Returns:
+        Number of errors stored for this paper
+    """
+    if not ERROR_DB_TABLE_NAME or not dynamodb_client:
+        logger.error("DynamoDB table name not configured")
+        return 0
+    
+    try:
+        partition_key = _get_partition_key(paper_id)
+        
+        # Query DynamoDB with Select='COUNT' for efficiency
+        table = dynamodb_resource.Table(ERROR_DB_TABLE_NAME)
+        response = table.query(
+            KeyConditionExpression='partition_key = :pk',
+            ExpressionAttributeValues={
+                ':pk': partition_key
+            },
+            Select='COUNT'
+        )
+        
+        count = response.get('Count', 0)
+        logger.debug(f"Error count for {paper_id}: {count}")
+        return count
+        
+    except ClientError as e:
+        logger.error(f"DynamoDB error getting error count for {paper_id}: {e}")
+        return 0
+    except Exception as e:
+        logger.error(f"Unexpected error getting error count for {paper_id}: {e}")
+        return 0
 
 def save_error(paper_id: str, error_data: Dict[str, Any]) -> str:
     """
@@ -160,8 +197,6 @@ def get_errors(paper_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Unexpected error getting errors for {paper_id}: {e}")
         return []
-
-
 
 def clear_errors(paper_id: str) -> bool:
     

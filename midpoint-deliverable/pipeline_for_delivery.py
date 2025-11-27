@@ -704,7 +704,9 @@ def main():
             use_haiku_for_chunks=True,
             parallel_chunks=args.chunked_parallel,
             max_parallel=args.max_parallel,
-            batch_size=8  # Group 8 chunk summaries into each batch for hierarchical summarization
+            batch_size=8,  # Group 8 chunk summaries into each batch for hierarchical summarization
+            use_smart_pdf_chunking=True,  # Enable smart chunking to prioritize relevant sections
+            max_pdf_chunks=15  # Maximum number of PDF chunks to process (prioritizes abstract, formulas, diagrams)
         )
         logger.info("✅ Using chunked approach (better for long papers)")
     else:

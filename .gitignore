@@ -1,4 +1,6 @@
 # --- Environment & dependencies ---
+.ssh
+.ssh/
 .env
 .env/
 aws_env/

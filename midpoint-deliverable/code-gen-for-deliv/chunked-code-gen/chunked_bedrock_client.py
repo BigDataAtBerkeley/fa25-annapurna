@@ -88,12 +88,19 @@ Your task is to analyze the provided PDF pages and provide a DETAILED SUMMARY th
 5. TRAINING PROCEDURES (loss functions, optimization methods, training steps)
 6. KEY IMPLEMENTATION DETAILS (data preprocessing, specific operations, etc.)
 7. IMPORTANT CONSTANTS, HYPERPARAMETERS, or configuration details
-8. ANY CODE-RELEVANT INFORMATION that would be needed to implement this
+8. DATASET INFORMATION (dataset names, data types, task types mentioned)
+9. ANY CODE-RELEVANT INFORMATION that would be needed to implement this
 
 CRITICAL: Pay special attention to formulas and diagrams that may not be fully captured in text. 
 - For formulas: Write them out in LaTeX notation or clear mathematical notation
 - For diagrams: Describe the structure, connections, and flow in detail
 - For tables: Extract all numerical values and relationships
+- For datasets: Note any dataset names, data types (images, text, etc.), or task types (classification, regression, etc.)
+
+PRIORITY: Focus on content that can be directly implemented in code. If the pages contain only:
+- Theoretical proofs without implementation details → Note this but focus on any implementable aspects
+- Examples or qualitative discussions → Extract any concrete details that could inform implementation
+- Evaluation results → Note key metrics but prioritize implementation details
 
 Be extremely detailed and specific. Include all mathematical notation, formulas, and technical details.
 This summary will be combined with summaries from other chunks to generate complete PyTorch code.
