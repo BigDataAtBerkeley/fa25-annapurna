@@ -182,6 +182,12 @@ class CodeReviewAgent:
             elif fixed_code == current_code:
                 # Fix returned same code - might mean no changes needed or fix failed
                 logger.warning(f"⚠️ Fix returned same code - no changes applied")
+                logger.warning(f"   This usually means:")
+                logger.warning(f"   1. AI extracted the original code block instead of the fixed one")
+                logger.warning(f"   2. AI didn't understand how to fix the issues")
+                logger.warning(f"   3. AI response format was incorrect")
+                if issues_found:
+                    logger.warning(f"   Issues that should have been fixed: {', '.join(issues_found[:3])}...")
                 # Still record issues found and execution errors
                 fixes_applied.append({
                     'iteration': iteration,
@@ -190,7 +196,13 @@ class CodeReviewAgent:
                     'execution_errors': execution_errors,  # Store execution errors even if fix failed
                     'no_changes': True  # Mark that no changes were made
                 })
-                break
+                # If we have issues but AI didn't fix them, break to avoid infinite loop
+                if issues_found or execution_errors:
+                    logger.error("❌ Code fix failed - AI returned identical code despite issues found")
+                    break
+                else:
+                    # No issues found, so same code is fine
+                    break
             elif fixed_code is None:
                 # Fix failed - record issues but warn
                 logger.error(f"❌ Code fix failed - AI could not generate fixed code")
@@ -1279,7 +1291,9 @@ IMPORTANT: The next iteration will review YOUR fixed code. If you don't actually
 
 {iterative_note}
 
-Return ONLY the complete fixed Python code in a code block. Do not include explanations outside the code block."""
+⚠️ CRITICAL: The code you return MUST be DIFFERENT from the code above. If you return identical code, the fix will be considered failed. You MUST make actual changes to address the issues listed. Do NOT return the same code - make real modifications.
+
+Return ONLY the complete fixed Python code in a code block. Do not include explanations outside the code block. The code block should contain the ENTIRE fixed file."""
         
         # Format the prompt with actual values (escaping braces in code)
         iteration_minus_one = max(0, iteration - 1)
@@ -1349,23 +1363,40 @@ Return ONLY the complete fixed Python code in a code block. Do not include expla
             logger.info(f"AI fix response length: {len(fixed_text)} characters")
             
             # Extract code from response - try multiple patterns
+            # IMPORTANT: Use findall to get ALL code blocks, then use the LAST one (which should be the fixed code)
+            # The AI might include the original code for context, so we want the final code block
             code_patterns = [
-                r'```python\n(.*?)\n```',  # Python code block with python tag
-                r'```python\n(.*?)```',  # Python code block without closing newline
-                r'```\n(.*?)\n```',  # Generic code block
-                r'```(.*?)```',  # Code block without newlines
+                r'```python\n(.*?)```',  # Python code block (non-greedy to match each block separately)
+                r'```\n(.*?)```',  # Generic code block
             ]
             
             extracted_code = None
+            all_code_blocks = []
+            
+            # Find all code blocks using each pattern
             for pattern in code_patterns:
-                code_match = re.search(pattern, fixed_text, re.DOTALL)
-                if code_match:
-                    candidate = code_match.group(1).strip()
+                matches = re.findall(pattern, fixed_text, re.DOTALL)
+                for match in matches:
+                    candidate = match.strip()
                     # Validate it's actually code (has imports or def/class)
-                    if 'import' in candidate or 'def ' in candidate or 'class ' in candidate:
-                        extracted_code = candidate
-                        logger.info(f"✅ Extracted code using pattern: {pattern[:20]}...")
-                        break
+                    if ('import' in candidate or 'def ' in candidate or 'class ' in candidate) and len(candidate) > 100:
+                        all_code_blocks.append(candidate)
+            
+            # If we found multiple code blocks, use the LAST one (should be the fixed code)
+            # Also prefer longer code blocks (more likely to be complete)
+            if all_code_blocks:
+                if len(all_code_blocks) > 1:
+                    logger.info(f"Found {len(all_code_blocks)} code blocks in response, using the last one (should be fixed code)")
+                    # Use the last code block, but prefer longer ones if they're significantly different
+                    extracted_code = all_code_blocks[-1]
+                    # Check if any block is significantly longer (likely the complete fixed code)
+                    longest_block = max(all_code_blocks, key=len)
+                    if len(longest_block) > len(extracted_code) * 1.2:  # 20% longer
+                        logger.info(f"Using longest code block instead (length: {len(longest_block)} vs {len(extracted_code)})")
+                        extracted_code = longest_block
+                else:
+                    extracted_code = all_code_blocks[0]
+                logger.info(f"✅ Extracted code block ({len(extracted_code)} chars)")
             
             # Fallback: if no code block found, check if entire response looks like code
             if not extracted_code:
@@ -1387,14 +1418,33 @@ Return ONLY the complete fixed Python code in a code block. Do not include expla
             
             if extracted_code:
                 # Validate the extracted code is different from original
-                if extracted_code != code:
-                    logger.info(f"✅ Successfully extracted fixed code ({len(extracted_code)} chars)")
-                    return extracted_code
+                # Use normalized comparison (strip whitespace differences)
+                original_normalized = code.strip()
+                extracted_normalized = extracted_code.strip()
+                
+                if extracted_normalized != original_normalized:
+                    # Additional check: ensure it's not just whitespace differences
+                    # Compare without whitespace to catch cases where only formatting changed
+                    original_no_ws = ''.join(original_normalized.split())
+                    extracted_no_ws = ''.join(extracted_normalized.split())
+                    
+                    if extracted_no_ws != original_no_ws:
+                        logger.info(f"✅ Successfully extracted fixed code ({len(extracted_code)} chars, original: {len(code)} chars)")
+                        return extracted_code
+                    else:
+                        logger.warning("Extracted code differs only in whitespace - no substantive changes made")
+                        logger.debug(f"Original length: {len(code)}, Extracted length: {len(extracted_code)}")
                 else:
                     logger.warning("Extracted code is identical to original - no changes made")
+                    logger.debug(f"Both codes are {len(extracted_code)} characters")
+                    # Log a snippet to help debug what the AI returned
+                    if len(fixed_text) > 1000:
+                        logger.debug(f"AI response preview (first 500 chars): {fixed_text[:500]}...")
+                        logger.debug(f"AI response preview (last 500 chars): ...{fixed_text[-500:]}")
             else:
                 logger.error("Could not extract fixed code from AI response")
-                logger.error(f"Response preview: {fixed_text[:500]}...")
+                logger.error(f"Response preview (first 500 chars): {fixed_text[:500]}...")
+                logger.error(f"Response preview (last 500 chars): ...{fixed_text[-500:]}")
             
             # If we can't extract code, return None (fix failed)
             return None

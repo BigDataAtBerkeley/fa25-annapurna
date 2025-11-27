@@ -527,14 +527,38 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
             paper_title=code_gen_result.get("paper_title")
         )
         
-        step4_result = {
-            "success": execution_result.get("success", False),
-            "execution_time": execution_result.get("execution_time", 0),
-            "return_code": execution_result.get("return_code", -1),
-            "timeout": execution_result.get("timeout", False),
-            "metrics": execution_result.get("detailed_metrics", {}),
-            "execution_time_seconds": time.time() - step4_start
-        }
+        # Check if this is an async response (job started, not completed)
+        is_async_response = execution_result.get("status") == "running" or execution_result.get("job_id")
+        
+        if is_async_response:
+            # This is an async "job started" response - execution is still running
+            # Don't use default values for return_code/execution_time since execution hasn't completed
+            logger.info(f"Execution started asynchronously for {paper_id}")
+            logger.info(f"Status URL: {execution_result.get('status_url', 'N/A')}")
+            logger.info(f"Message: {execution_result.get('message', 'N/A')}")
+            
+            step4_result = {
+                "success": True,  # Job started successfully
+                "status": "running",
+                "job_id": execution_result.get("job_id", paper_id),
+                "status_url": execution_result.get("status_url"),
+                "execution_time": None,  # Not available yet - execution still running
+                "return_code": None,  # Not available yet - execution still running
+                "timeout": False,
+                "metrics": {},
+                "execution_time_seconds": time.time() - step4_start,
+                "note": "Execution started asynchronously. Use status_url to check completion status."
+            }
+        else:
+            # This is a synchronous execution result (or error response)
+            step4_result = {
+                "success": execution_result.get("success", False),
+                "execution_time": execution_result.get("execution_time", 0),
+                "return_code": execution_result.get("return_code", -1),
+                "timeout": execution_result.get("timeout", False),
+                "metrics": execution_result.get("detailed_metrics", {}),
+                "execution_time_seconds": time.time() - step4_start
+            }
         
         # Save execution results
         save_step_result('trn-execution', paper_id, {
@@ -616,8 +640,17 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
         
         pipeline_results["steps"]["trn_execution"] = step4_result
         
-        if execution_result.get("success"):
-            logger.info(f"✅ Execution successful ({step4_result['execution_time']:.1f}s)")
+        # Check execution result
+        if is_async_response:
+            logger.info(f"⏳ Execution started asynchronously for {paper_id}")
+            logger.info(f"   Status URL: {execution_result.get('status_url')}")
+            logger.info(f"   Execution is running in background - check status endpoint for completion")
+        elif execution_result.get("success"):
+            exec_time = step4_result.get("execution_time", 0)
+            if exec_time:
+                logger.info(f"✅ Execution successful ({exec_time:.1f}s)")
+            else:
+                logger.info(f"✅ Execution successful")
         else:
             # Extract error message from stderr if available
             error_msg = execution_result.get('error_message')
@@ -644,10 +677,12 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
             logger.error(f"❌ Execution failed: {error_msg}")
         
         # Overall pipeline result
+        # For async execution, "success" means job started successfully, not that execution completed
+        # So we consider it successful if code generation/review succeeded and execution started
         pipeline_results["success"] = (
             step2_result.get("success") and 
             step3_result.get("success") and 
-            step4_result.get("success")
+            step4_result.get("success")  # True if job started (async) or completed successfully (sync)
         )
         pipeline_results["pipeline_end"] = datetime.now().isoformat()
         pipeline_results["total_pipeline_time"] = time.time() - pipeline_start

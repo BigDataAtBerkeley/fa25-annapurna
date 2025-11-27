@@ -90,15 +90,15 @@ echo "📦 Step 1: Uploading app files..."
 cd "$SCRIPT_DIR/../midpoint-deliverable/trn-execute-for-deliv" || exit 1
 
 # Check files exist
-for file in app.py requirements.txt sagemaker_metrics.py dataset_loader.py; do
+for file in app.py error_db.py s3_code_storage.py requirements.txt sagemaker_metrics.py dataset_loader.py; do
     if [ ! -f "$file" ]; then
         echo "❌ Error: $file not found in midpoint-deliverable/trn-execute-for-deliv"
         exit 1
     fi
 done
 
-echo "  Uploading: app.py, requirements.txt, sagemaker_metrics.py, dataset_loader.py"
-scp -i "$SSH_KEY" -o ConnectTimeout=30 -v app.py requirements.txt sagemaker_metrics.py dataset_loader.py "$TRAINIUM_USER@$TRAINIUM_IP:~/" 2>&1 | grep -E "(Sending|100%)" || true
+echo "  Uploading: app.py, error_db.py, s3_code_storage.py, requirements.txt, sagemaker_metrics.py, dataset_loader.py"
+scp -i "$SSH_KEY" -o ConnectTimeout=30 -v app.py error_db.py s3_code_storage.py requirements.txt sagemaker_metrics.py dataset_loader.py "$TRAINIUM_USER@$TRAINIUM_IP:~/" 2>&1 | grep -E "(Sending|100%)" || true
 echo "✅ Files uploaded"
 echo ""
 
@@ -130,6 +130,8 @@ ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" << 'EOF'
     mv ~/requirements.txt ~/trainium-executor/ 2>/dev/null || true
     mv ~/sagemaker_metrics.py ~/trainium-executor/ 2>/dev/null || true
     mv ~/dataset_loader.py ~/trainium-executor/ 2>/dev/null || true
+    mv ~/error_db.py ~/trainium-executor/ 2>/dev/null || true
+    mv ~/s3_code_storage.py ~/trainium-executor/ 2>/dev/null || true
     
     echo "✅ System installation complete"
 EOF
@@ -157,6 +159,10 @@ EOF
 echo ""
 echo "🔧 Step 3: Setting up systemd service..."
 ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" << 'EOF'
+    # Create logs directory first (before systemd service)
+    mkdir -p ~/trainium-executor/logs
+    chmod 755 ~/trainium-executor/logs
+    
     # Create systemd service file
     sudo tee /etc/systemd/system/trainium-executor.service > /dev/null << 'SERVICE'
 [Unit]
@@ -166,37 +172,91 @@ After=network.target
 [Service]
 Type=simple
 User=ec2-user
+Group=ec2-user
 WorkingDirectory=/home/ec2-user/trainium-executor
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
 ExecStart=/usr/bin/python3 /home/ec2-user/trainium-executor/app.py
 Restart=always
 RestartSec=10
-StandardOutput=append:/home/ec2-user/trainium-executor/logs/app.log
-StandardError=append:/home/ec2-user/trainium-executor/logs/error.log
+# Log to both journal and file
+StandardOutput=journal+append:/home/ec2-user/trainium-executor/logs/app.log
+StandardError=journal+append:/home/ec2-user/trainium-executor/logs/error.log
 
 [Install]
 WantedBy=multi-user.target
 SERVICE
 
-    # Create logs directory
-    mkdir -p ~/trainium-executor/logs
-    
-    # Enable and start service
+    # Reload systemd and enable service
     sudo systemctl daemon-reload
     sudo systemctl enable trainium-executor
-    sudo systemctl start trainium-executor
     
-    echo "✅ Service started"
+    # Stop service if it's running (to restart cleanly)
+    sudo systemctl stop trainium-executor 2>/dev/null || true
+    
+    # Start service
+    if sudo systemctl start trainium-executor; then
+        echo "✅ Service started successfully"
+        sleep 2
+        # Check if it's actually running
+        if sudo systemctl is-active --quiet trainium-executor; then
+            echo "✅ Service is active"
+        else
+            echo "⚠️  Service started but may have failed - check logs:"
+            echo "   sudo journalctl -u trainium-executor -n 50 --no-pager"
+            echo "   tail -50 ~/trainium-executor/logs/error.log"
+        fi
+    else
+        echo "❌ Failed to start service"
+        echo "Check logs:"
+        echo "   sudo journalctl -u trainium-executor -n 50 --no-pager"
+        exit 1
+    fi
 EOF
 
 echo ""
 echo "✅ Deployment complete!"
 echo ""
 echo "📊 Service Status:"
-ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" "sudo systemctl status trainium-executor --no-pager"
+ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" "sudo systemctl status trainium-executor --no-pager -l"
+echo ""
+
+# Wait a bit for service to fully start
+echo "⏳ Waiting for service to start..."
+sleep 5
+
+# Check service status
+echo "📋 Checking service status..."
+if ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" "sudo systemctl is-active --quiet trainium-executor"; then
+    echo "✅ Service is running"
+else
+    echo "❌ Service is not running!"
+    echo ""
+    echo "📋 Recent service logs:"
+    ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" "sudo journalctl -u trainium-executor -n 30 --no-pager -l" || true
+    echo ""
+    echo "📋 Error log file:"
+    ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" "tail -50 ~/trainium-executor/logs/error.log 2>/dev/null || echo 'Error log file not found'" || true
+    echo ""
+    echo "📋 App log file:"
+    ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" "tail -50 ~/trainium-executor/logs/app.log 2>/dev/null || echo 'App log file not found'" || true
+    echo ""
+    exit 1
+fi
+
 echo ""
 echo "🧪 Testing health endpoint..."
-sleep 3
-curl -s "http://$TRAINIUM_IP:8000/health" | python3 -m json.tool || echo "⚠️  Health check failed - may need to configure security group"
+sleep 2
+if curl -s --max-time 10 "http://$TRAINIUM_IP:8000/health" | python3 -m json.tool; then
+    echo "✅ Health check passed!"
+else
+    echo "⚠️  Health check failed"
+    echo "   This might be a security group issue (port 8000 not open)"
+    echo "   Or the service might still be starting up"
+    echo ""
+    echo "   Check service logs:"
+    echo "   ssh -i $SSH_KEY $TRAINIUM_USER@$TRAINIUM_IP 'sudo journalctl -u trainium-executor -f'"
+fi
 echo ""
 echo "============================================================"
 echo "📋 Next Steps:"

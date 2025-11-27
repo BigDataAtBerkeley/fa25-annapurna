@@ -303,3 +303,5 @@ ls -la /tmp/neuron_profiler/{paper_id}_*
 3. `ssh -i ~/.ssh/trainium-deploy-key.pem -L 6006:localhost:6006 -N ec2-user@3.21.7.129`
 4. open http://localhost:6006 in browser
 
+Checking Logs for Trainium Files
+`tail -f -n +1  ~/trainium-executor/logs/trainium-executor.log

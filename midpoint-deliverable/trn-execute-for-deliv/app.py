@@ -9,12 +9,18 @@ New architecture:
 - Code stored in S3 bucket papers-code-artifacts
 """
 
-from sys import stdout
-from urllib.request import CacheFTPHandler
+import sys
+import os
+
+# Add script directory to Python path so we can import local modules
+# This is critical when running via systemd where the working directory might differ
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
+
 from flask import Flask, request, jsonify
 import subprocess
 import tempfile
-import os
 import time
 import logging
 import json
@@ -28,24 +34,46 @@ import shutil
 import boto3
 from botocore.exceptions import ClientError
 
-# Import local modules
-from error_db import save_error, get_errors, clear_errors
-from s3_code_storage import save_code, get_code, code_exists
+# Import local modules with error handling
+try:
+    from error_db import save_error, get_errors, clear_errors
+except ImportError as e:
+    print(f"ERROR: Failed to import error_db module: {e}", file=sys.stderr)
+    print(f"ERROR: Script directory: {script_dir}", file=sys.stderr)
+    print(f"ERROR: Python path: {sys.path}", file=sys.stderr)
+    raise
+
+try:
+    from s3_code_storage import save_code, get_code, code_exists
+except ImportError as e:
+    print(f"ERROR: Failed to import s3_code_storage module: {e}", file=sys.stderr)
+    print(f"ERROR: Script directory: {script_dir}", file=sys.stderr)
+    print(f"ERROR: Python path: {sys.path}", file=sys.stderr)
+    raise
 
 app = Flask(__name__)
 
-# Configure logging
+# Configure logging with fallback if log directory can't be created
 log_dir = os.path.join(os.path.expanduser('~'), 'trainium-executor', 'logs')
-os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, 'trainium-executor.log')
+
+# Try to create log directory, but don't fail if it doesn't work
+try:
+    os.makedirs(log_dir, exist_ok=True)
+    handlers = [
+        logging.FileHandler(log_file),
+        logging.StreamHandler()
+    ]
+except Exception as e:
+    # If we can't create log directory, just use console logging
+    print(f"WARNING: Could not create log directory {log_dir}: {e}", file=sys.stderr)
+    print("WARNING: Logging to console only", file=sys.stderr)
+    handlers = [logging.StreamHandler()]
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_file),
-        logging.StreamHandler()
-    ]
+    handlers=handlers
 )
 logger = logging.getLogger(__name__)
 
@@ -249,7 +277,27 @@ sys.path.append('{exec_dir}')
         with execution_lock:
             running_executions.pop(paper_id, None)
         
+        # Check return code first
         success = result.returncode == 0
+        
+        # Check stderr for critical errors even if return code is 0
+        # Some errors (like Neuron internal errors) may not set non-zero return code
+        stderr_lower = result.stderr.lower() if result.stderr else ""
+        critical_errors = [
+            "internal error",
+            "fatal error",
+            "segmentation fault",
+            "core dumped",
+            "abort",
+            "assertion failed",
+            "improper teardown",
+            "object(s) leaked"
+        ]
+        
+        has_critical_error = any(error in stderr_lower for error in critical_errors)
+        if has_critical_error:
+            logger.warning(f"Critical error detected in stderr despite return_code={result.returncode}")
+            success = False
         
         # Extract metrics
         metrics = {}
@@ -284,6 +332,16 @@ sys.path.append('{exec_dir}')
             "detailed_metrics": metrics,
             **metrics
         }
+        
+        # Add error information if critical error detected
+        if has_critical_error and result.returncode == 0:
+            # Extract the critical error message
+            error_lines = [line for line in result.stderr.split('\n') 
+                          if any(err in line.lower() for err in critical_errors)]
+            if error_lines:
+                execution_result["error_message"] = error_lines[-1].strip()
+                execution_result["error_type"] = "critical_runtime_error"
+                logger.error(f"Critical error in execution: {execution_result['error_message']}")
         
         return execution_result
         
@@ -716,20 +774,65 @@ def get_status(paper_id: str):
 
 
 if __name__ == '__main__':
-    logger.info("Starting Trainium Executor Service v2")
-    logger.info(f"Working directory: {WORKING_DIR}")
-    logger.info(f"Max execution time: {MAX_EXECUTION_TIME}s")
-    logger.info(f"Success assumption time: {SUCCESS_ASSUMPTION_TIME}s")
-    logger.info(f"Code storage bucket: papers-code-artifacts")
-    logger.info(f"Max review iterations: {MAX_REVIEW_ITERATIONS}")
-    
-    # Print all environment variables
-    logger.info("=" * 80)
-    logger.info("Environment Variables:")
-    logger.info("=" * 80)
-    for key, value in sorted(os.environ.items()):
-        logger.info(f"{key}={value}")
-    logger.info("=" * 80)
-    
-    app.run(host='0.0.0.0', port=8000, threaded=True)
+    try:
+        logger.info("Starting Trainium Executor Service v2")
+        logger.info(f"Script directory: {script_dir}")
+        logger.info(f"Working directory: {WORKING_DIR}")
+        logger.info(f"Max execution time: {MAX_EXECUTION_TIME}s")
+        logger.info(f"Success assumption time: {SUCCESS_ASSUMPTION_TIME}s")
+        logger.info(f"Code storage bucket: papers-code-artifacts")
+        logger.info(f"Max review iterations: {MAX_REVIEW_ITERATIONS}")
+        
+        # Validate critical directories exist and are writable
+        try:
+            os.makedirs(WORKING_DIR, exist_ok=True)
+            test_file = os.path.join(WORKING_DIR, '.write_test')
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+            logger.info(f"✅ Working directory is writable: {WORKING_DIR}")
+        except Exception as e:
+            logger.error(f"❌ Working directory not writable: {WORKING_DIR} - {e}")
+            sys.exit(1)
+        
+        # Validate log directory
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            logger.info(f"✅ Log directory ready: {log_dir}")
+        except Exception as e:
+            logger.error(f"❌ Cannot create log directory: {log_dir} - {e}")
+            sys.exit(1)
+        
+        # Print all environment variables (but not sensitive ones)
+        logger.info("=" * 80)
+        logger.info("Environment Variables:")
+        logger.info("=" * 80)
+        for key, value in sorted(os.environ.items()):
+            # Mask sensitive values
+            if any(sensitive in key.lower() for sensitive in ['key', 'secret', 'token', 'password', 'credential']):
+                logger.info(f"{key}=***MASKED***")
+            else:
+                logger.info(f"{key}={value}")
+        logger.info("=" * 80)
+        
+        # Validate AWS credentials are available (warn if not, but don't fail)
+        try:
+            import boto3
+            sts = boto3.client('sts')
+            identity = sts.get_caller_identity()
+            logger.info(f"✅ AWS credentials available: {identity.get('Arn', 'unknown')}")
+        except Exception as e:
+            logger.warning(f"⚠️  AWS credentials not available: {e}")
+            logger.warning("   Some features (S3, DynamoDB, Bedrock) may not work")
+        
+        logger.info("=" * 80)
+        logger.info("Starting Flask server on 0.0.0.0:8000")
+        logger.info("=" * 80)
+        
+        app.run(host='0.0.0.0', port=8000, threaded=True)
+    except Exception as e:
+        logger.error(f"FATAL: Failed to start application: {e}", exc_info=True)
+        print(f"FATAL ERROR: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
 

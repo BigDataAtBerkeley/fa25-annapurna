@@ -4,6 +4,7 @@ import logging
 import uuid
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+from decimal import Decimal
 import boto3
 from botocore.exceptions import ClientError
 
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # DynamoDB Table for storing execution errors.
 ERROR_DB_TABLE_NAME = os.getenv('ERROR_DB_TABLE_NAME', 'docRunErrors')
-AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
+AWS_REGION = os.getenv('AWS_REGION', 'us-east-2')
 
 # Initialize DynamoDB client
 dynamodb_client = None
@@ -69,7 +70,7 @@ def get_error_count(paper_id: str) -> int:
         # Query DynamoDB with Select='COUNT' for efficiency
         table = dynamodb_resource.Table(ERROR_DB_TABLE_NAME)
         response = table.query(
-            KeyConditionExpression='partition_key = :pk',
+            KeyConditionExpression='docID = :pk',
             ExpressionAttributeValues={
                 ':pk': partition_key
             },
@@ -117,20 +118,19 @@ def save_error(paper_id: str, error_data: Dict[str, Any]) -> str:
         # Prepare item
         timestamp = datetime.now().isoformat()
         item = {
-            'partition_key': partition_key,
-            'sort_key': sort_key,
+            'docID': partition_key,  # Use 'docID' to match table schema
+            'interationNum': sort_key,
             'paper_id': paper_id,
             'iteration': iteration,
             'error_id': error_id,
             'timestamp': timestamp,
             'error_data': json.dumps(error_data) if isinstance(error_data, dict) else str(error_data),
-            # Store individual error fields for easier querying
             'stderr': error_data.get('stderr', ''),
             'stdout': error_data.get('stdout', ''),
             'error_message': error_data.get('error_message', ''),
             'error_type': error_data.get('error_type', 'execution_error'),
-            'return_code': error_data.get('return_code', -1),
-            'execution_time': error_data.get('execution_time', 0)
+            'return_code': int(error_data.get('return_code', -1)),
+            'execution_time': Decimal(str(error_data.get('execution_time', 0)))
         }
         
         # Write to DynamoDB
@@ -160,7 +160,7 @@ def get_errors(paper_id: str) -> List[Dict[str, Any]]:
         # Query DynamoDB by partition key
         table = dynamodb_resource.Table(ERROR_DB_TABLE_NAME)
         response = table.query(
-            KeyConditionExpression='partition_key = :pk',
+            KeyConditionExpression='docID = :pk',
             ExpressionAttributeValues={
                 ':pk': partition_key
             },
@@ -175,13 +175,14 @@ def get_errors(paper_id: str) -> List[Dict[str, Any]]:
                 error_data = json.loads(error_data_str) if isinstance(error_data_str, str) else error_data_str
             except json.JSONDecodeError:
                 # Fallback: reconstruct from individual fields
+                # Convert Decimal back to float for execution_time
                 error_data = {
                     'stderr': item.get('stderr', ''),
                     'stdout': item.get('stdout', ''),
                     'error_message': item.get('error_message', ''),
                     'error_type': item.get('error_type', 'execution_error'),
-                    'return_code': item.get('return_code', -1),
-                    'execution_time': item.get('execution_time', 0)
+                    'return_code': int(item.get('return_code', -1)),
+                    'execution_time': float(item.get('execution_time', 0))
                 }
             
             errors.append({
@@ -210,7 +211,7 @@ def clear_errors(paper_id: str) -> bool:
         # Query to get all items
         table = dynamodb_resource.Table(ERROR_DB_TABLE_NAME)
         response = table.query(
-            KeyConditionExpression='partition_key = :pk',
+            KeyConditionExpression='docID = :pk',
             ExpressionAttributeValues={
                 ':pk': partition_key
             }
@@ -227,8 +228,8 @@ def clear_errors(paper_id: str) -> bool:
             for item in items:
                 batch.delete_item(
                     Key={
-                        'partition_key': item['partition_key'],
-                        'sort_key': item['sort_key']
+                        'docID': item['docID'],  
+                        'interationNum': item['interationNum']
                     }
                 )
         
