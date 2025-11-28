@@ -35,10 +35,10 @@ class ChunkedBedrockClient:
         if use_haiku:
             self.chunk_model_id = os.getenv("BEDROCK_CHUNK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
         else:
-            self.chunk_model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0")
+            self.chunk_model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-sonnet-4-5-20251101-v1:0")
         
         # Always use Sonnet for final code generation (better quality)
-        self.final_model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0")
+        self.final_model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-sonnet-4-5-20251101-v1:0")
         
         from botocore.config import Config
         config = Config(

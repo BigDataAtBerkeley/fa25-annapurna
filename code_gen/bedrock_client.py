@@ -23,7 +23,7 @@ class BedrockClient:
         """Initialize  Bedrock client"""
         self.aws_region = os.getenv("AWS_REGION", "us-east-1")
         # Upgraded to Claude 3.5 Sonnet for better code generation quality
-        self.model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20240620-v1:0")
+        self.model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-sonnet-4-5-20251101-v1:0")
         
         # Initialize Bedrock client with timeout matching per-paper timeout
         # Per-paper timeout is 180s, so we set Bedrock timeout to 150s to ensure

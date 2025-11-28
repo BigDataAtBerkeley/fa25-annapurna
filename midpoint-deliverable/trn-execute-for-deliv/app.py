@@ -18,6 +18,21 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
+code_gen_dir = os.path.join(os.path.dirname(script_dir), 'code-gen-for-deliv')
+home_code_gen = os.path.join(os.path.expanduser('~'), 'code-gen-for-deliv')
+
+code_gen_dir_used = None
+for path in [code_gen_dir, home_code_gen]:
+    if os.path.exists(path) and path not in sys.path:
+        sys.path.insert(0, path)
+        code_gen_dir_used = path
+        break
+
+if code_gen_dir_used:
+    code_gen_dir = code_gen_dir_used
+elif os.path.exists(home_code_gen):
+    code_gen_dir = home_code_gen
+
 from flask import Flask, request, jsonify
 import subprocess
 import tempfile
@@ -36,7 +51,7 @@ from botocore.exceptions import ClientError
 
 # Import local modules with error handling
 try:
-    from error_db import save_error, get_errors, clear_errors
+    from error_db import save_error, get_errors, get_all_errors, clear_errors
 except ImportError as e:
     print(f"ERROR: Failed to import error_db module: {e}", file=sys.stderr)
     print(f"ERROR: Script directory: {script_dir}", file=sys.stderr)
@@ -50,6 +65,60 @@ except ImportError as e:
     print(f"ERROR: Script directory: {script_dir}", file=sys.stderr)
     print(f"ERROR: Python path: {sys.path}", file=sys.stderr)
     raise
+
+OPENSEARCH_AVAILABLE = False
+SLACK_AVAILABLE = False
+OpenSearchClient = None
+SlackNotifier = None
+
+try:
+    # Try importing with explicit path check
+    import importlib.util
+    opensearch_path = os.path.join(code_gen_dir, 'opensearch_client.py')
+    slack_path = os.path.join(code_gen_dir, 'slack_notifier.py')
+    
+    if not os.path.exists(opensearch_path):
+        opensearch_path = os.path.join(home_code_gen, 'opensearch_client.py')
+        slack_path = os.path.join(home_code_gen, 'slack_notifier.py')
+    
+    if os.path.exists(opensearch_path) and os.path.exists(slack_path):
+        # Load modules explicitly
+        spec1 = importlib.util.spec_from_file_location("opensearch_client", opensearch_path)
+        opensearch_module = importlib.util.module_from_spec(spec1)
+        spec1.loader.exec_module(opensearch_module)
+        OpenSearchClient = opensearch_module.OpenSearchClient
+        
+        spec2 = importlib.util.spec_from_file_location("slack_notifier", slack_path)
+        slack_module = importlib.util.module_from_spec(spec2)
+        spec2.loader.exec_module(slack_module)
+        SlackNotifier = slack_module.SlackNotifier
+        
+        OPENSEARCH_AVAILABLE = True
+        SLACK_AVAILABLE = True
+    else:
+        # Fallback to regular import
+        from opensearch_client import OpenSearchClient
+        from slack_notifier import SlackNotifier
+        OPENSEARCH_AVAILABLE = True
+        SLACK_AVAILABLE = True
+except ImportError as e:
+    print(f"WARNING: OpenSearch/Slack modules not available: {e}. Slack notifications will be disabled.", file=sys.stderr)
+    print(f"WARNING: Code gen directory: {code_gen_dir}", file=sys.stderr)
+    print(f"WARNING: Home code gen: {home_code_gen}", file=sys.stderr)
+    print(f"WARNING: Code gen directory exists: {os.path.exists(code_gen_dir)}", file=sys.stderr)
+    print(f"WARNING: Home code gen exists: {os.path.exists(home_code_gen)}", file=sys.stderr)
+    if os.path.exists(code_gen_dir):
+        print(f"WARNING: Files in code-gen-for-deliv: {os.listdir(code_gen_dir)[:10]}", file=sys.stderr)
+    if os.path.exists(home_code_gen):
+        print(f"WARNING: Files in home code-gen-for-deliv: {os.listdir(home_code_gen)[:10]}", file=sys.stderr)
+except Exception as e:
+    print(f"WARNING: Error loading OpenSearch/Slack modules: {e}. Slack notifications will be disabled.", file=sys.stderr)
+    import traceback
+    traceback.print_exc(file=sys.stderr)
+    if not OPENSEARCH_AVAILABLE:
+        OPENSEARCH_AVAILABLE = False
+    if not SLACK_AVAILABLE:
+        SLACK_AVAILABLE = False
 
 app = Flask(__name__)
 
@@ -77,6 +146,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Log OpenSearch/Slack availability after logger is initialized
+if OPENSEARCH_AVAILABLE and SLACK_AVAILABLE:
+    logger.info("✅ OpenSearch and Slack modules imported successfully")
+else:
+    logger.warning(f"⚠️ OpenSearch/Slack modules not available - Slack notifications will be disabled")
+    logger.warning(f"   OPENSEARCH_AVAILABLE: {OPENSEARCH_AVAILABLE}, SLACK_AVAILABLE: {SLACK_AVAILABLE}")
+    logger.warning(f"   Code gen directory: {code_gen_dir}")
+    logger.warning(f"   Code gen exists: {os.path.exists(code_gen_dir)}")
+    if os.path.exists(code_gen_dir):
+        py_files = [f for f in os.listdir(code_gen_dir) if f.endswith('.py')]
+        logger.warning(f"   Code gen Python files: {', '.join(py_files[:5])}")
+
 # Import SageMaker metrics logger
 try:
     from sagemaker_metrics import SageMakerMetricsLogger, create_metrics_logger
@@ -93,7 +174,8 @@ DATASET_CACHE_DIR = os.getenv('DATASET_CACHE_DIR', '/tmp/datasets')
 NEURON_PROFILER_ENABLED = os.getenv('NEURON_PROFILER_ENABLED', 'true').lower() == 'true'
 PROFILER_OUTPUT_DIR = os.getenv('PROFILER_OUTPUT_DIR', '/tmp/neuron_profiler')
 RESULTS_BUCKET = os.getenv('RESULTS_BUCKET', 'trainium-execution-results')
-MAX_REVIEW_ITERATIONS = int(os.getenv('MAX_REVIEW_ITERATIONS', '5'))  # Max code review iterations
+MAX_REVIEW_ITERATIONS = int(os.getenv('MAX_REVIEW_ITERATIONS', '50'))  # Increased limit for new strategy
+CODE_REVIEW_STABILITY_TIME = int(os.getenv('CODE_REVIEW_STABILITY_TIME', '120'))  # 2 minutes - if code runs this long without errors, consider it stable
 
 # DynamoDB Error Database Configuration
 # Set ERROR_DB_TABLE_NAME environment variable with your DynamoDB table name
@@ -102,6 +184,7 @@ ERROR_DB_TABLE_NAME = os.getenv('ERROR_DB_TABLE_NAME', 'docRunErrors')
 
 # Bedrock configuration for code review
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
+# Using Claude 3 Sonnet (supports on-demand, widely available, not legacy)
 BEDROCK_MODEL_ID = os.getenv('BEDROCK_MODEL_ID', 'anthropic.claude-3-sonnet-20240229-v1:0')
 
 # Initialize Bedrock client for code review
@@ -149,6 +232,105 @@ def upload_execution_results(paper_id: str, result: Dict[str, Any]):
         logger.info(f"Uploaded execution results for {paper_id}")
     except Exception as e:
         logger.error(f"Failed to upload results: {e}")
+
+def send_slack_notification(paper_id: str, execution_result: Dict[str, Any]):
+    """
+    Send Slack notification with paper info, execution results, and code links.
+    Excludes embeddings and other large binary fields.
+    
+    Args:
+        paper_id: Paper/document ID
+        execution_result: Execution result dictionary
+    """
+    if not SLACK_AVAILABLE or not OPENSEARCH_AVAILABLE:
+        logger.warning(f"⚠️ Slack/OpenSearch not available - skipping notification for {paper_id}")
+        logger.warning(f"   SLACK_AVAILABLE={SLACK_AVAILABLE}, OPENSEARCH_AVAILABLE={OPENSEARCH_AVAILABLE}")
+        logger.warning(f"   To enable Slack notifications, ensure opensearch_client and slack_notifier modules are available")
+        return
+    
+    try:
+        # Initialize clients
+        opensearch_client = OpenSearchClient()
+        slack_notifier = SlackNotifier()
+        
+        # Get paper from OpenSearch
+        try:
+            paper = opensearch_client.get_paper_by_id(paper_id)
+            if not paper:
+                logger.warning(f"Paper {paper_id} not found in OpenSearch (index: {opensearch_client.opensearch_index}), skipping Slack notification")
+                return
+        except Exception as e:
+            logger.error(f"Error retrieving paper {paper_id} from OpenSearch: {e}")
+            logger.error(traceback.format_exc())
+            return
+        
+        # Filter out embeddings and other large binary fields
+        fields_to_exclude = {
+            'embedding', 'embeddings', 'vector', 'vectors', 
+            'pdf_bytes', 'pdf_content', 'raw_content',
+            's3_bucket', 's3_key'  # We'll add formatted S3 link instead
+        }
+        
+        # Create filtered paper dict with key fields
+        filtered_paper = {
+            '_id': paper_id,
+            'title': paper.get('title', 'Unknown Title'),
+            'authors': paper.get('authors', []),
+            'abstract': paper.get('abstract', ''),
+            'date': paper.get('date', ''),
+            'venue': paper.get('venue', ''),
+            'url': paper.get('url', ''),
+            'arxiv_id': paper.get('arxiv_id', ''),
+        }
+        
+        # Add other non-excluded fields
+        for key, value in paper.items():
+            if key not in fields_to_exclude and key not in filtered_paper:
+                # Skip very large fields
+                if isinstance(value, str) and len(value) > 2000:
+                    continue
+                if isinstance(value, (dict, list)) and len(str(value)) > 2000:
+                    continue
+                filtered_paper[key] = value
+        
+        # Add execution result info
+        filtered_paper['execution_success'] = execution_result.get('success', False)
+        filtered_paper['execution_time_seconds'] = round(execution_result.get('execution_time', 0), 2)
+        filtered_paper['execution_return_code'] = execution_result.get('return_code', -1)
+        
+        # Add execution details
+        if execution_result.get('success'):
+            filtered_paper['execution_status'] = '✅ SUCCESS'
+            if execution_result.get('stdout'):
+                stdout_preview = execution_result.get('stdout', '')[:1000]
+                filtered_paper['execution_stdout_preview'] = stdout_preview + ('...' if len(execution_result.get('stdout', '')) > 1000 else '')
+        else:
+            filtered_paper['execution_status'] = '❌ FAILED'
+            filtered_paper['execution_error'] = execution_result.get('error_message', 'Unknown error')
+            if execution_result.get('stderr'):
+                stderr_preview = execution_result.get('stderr', '')[:1000]
+                filtered_paper['execution_stderr_preview'] = stderr_preview + ('...' if len(execution_result.get('stderr', '')) > 1000 else '')
+        
+        # Add S3 code link
+        code_s3_key = f"code/{paper_id}.py"
+        filtered_paper['code_s3_location'] = f"s3://papers-code-artifacts/{code_s3_key}"
+        filtered_paper['code_s3_url'] = f"https://s3.console.aws.amazon.com/s3/object/papers-code-artifacts?prefix={code_s3_key}"
+        
+        # Add execution results S3 link if available
+        if execution_result.get('s3_results_key'):
+            filtered_paper['results_s3_location'] = execution_result.get('s3_results_key')
+        
+        # Send to Slack using custom formatting
+        success = slack_notifier.send_execution_notification(filtered_paper, execution_result)
+        if success:
+            logger.info(f"✅ Sent Slack notification for {paper_id}")
+        else:
+            logger.warning(f"Failed to send Slack notification for {paper_id}")
+            
+    except Exception as e:
+        logger.error(f"Error sending Slack notification for {paper_id}: {e}")
+        logger.error(traceback.format_exc())
+
 
 def execute_code_sync(paper_id: str, code: str, timeout: int, paper_title: Optional[str] = None) -> Dict[str, Any]:
     """
@@ -405,15 +587,77 @@ def extract_errors_from_result(exec_result: Dict[str, Any]) -> str:
     return error_message
 
 
-def fix_code_with_bedrock(code: str, error_message: str, iteration: int) -> Optional[str]:
+def fix_code_with_bedrock(code: str, error_message: str, iteration: int, paper_summary: Optional[str] = None, error_history: Optional[str] = None, all_past_errors: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
 
     if not bedrock_client:
         logger.error("Bedrock client not available for code fixing")
         return None
     
+    # Build paper context section
+    paper_context = ""
+    if paper_summary:
+        paper_context = f"""
+PAPER CONTEXT (for better understanding of what the code should implement):
+{paper_summary}
+
+"""
+    
+    # Build error history section
+    history_context = ""
+    if error_history:
+        history_context = f"""
+═══════════════════════════════════════════════════════════════════════════════
+PREVIOUS ERRORS (from earlier code review iterations for THIS paper):
+═══════════════════════════════════════════════════════════════════════════════
+{error_history}
+
+IMPORTANT: The errors above were from previous fix attempts for this paper. The fixes applied did not resolve these issues. Make sure your fix addresses BOTH the previous errors AND the current error below.
+
+═══════════════════════════════════════════════════════════════════════════════
+CURRENT ERROR (most recent execution):
+═══════════════════════════════════════════════════════════════════════════════
+"""
+    
+    # Build past errors from all papers section
+    past_errors_context = ""
+    if all_past_errors:
+        # Extract unique error patterns from all past errors
+        unique_errors = []
+        seen_patterns = set()
+        
+        for past_error in all_past_errors[:50]:  # Limit to 50 most recent for prompt size
+            error_data = past_error.get('error_data', {})
+            error_msg = error_data.get('error_message', '') or error_data.get('stderr', '')[:200]
+            
+            # Extract key error patterns (first line of error message)
+            if error_msg:
+                first_line = error_msg.split('\n')[0].strip()
+                # Create a pattern key to avoid duplicates
+                pattern_key = first_line[:100]  # Use first 100 chars as pattern
+                
+                if pattern_key and pattern_key not in seen_patterns:
+                    seen_patterns.add(pattern_key)
+                    paper_id = past_error.get('paper_id', 'unknown')
+                    unique_errors.append(f"  - {first_line[:150]} (from paper: {paper_id})")
+        
+        if unique_errors:
+            past_errors_context = f"""
+═══════════════════════════════════════════════════════════════════════════════
+PAST ERRORS FROM ALL PAPERS (proactive checking):
+═══════════════════════════════════════════════════════════════════════════════
+The following errors occurred in OTHER papers when running on Trainium. 
+Check your code to ensure these errors will NOT occur:
+
+{chr(10).join(unique_errors[:30])}  # Limit to 30 for prompt size
+
+CRITICAL: Review your code carefully and ensure it does NOT contain patterns that would cause these errors. This is proactive error prevention.
+
+═══════════════════════════════════════════════════════════════════════════════
+"""
+    
     prompt = f"""You are fixing PyTorch code that failed execution on AWS Trainium.
 
-The code failed with these REAL execution errors:
+{paper_context}{past_errors_context}{history_context}The code failed with these REAL execution errors:
 {error_message}
 
 Current code (iteration {iteration}):
@@ -421,13 +665,55 @@ Current code (iteration {iteration}):
 {code}
 ```
 
-CRITICAL REQUIREMENTS:
-1. Fix ALL the errors listed above
-2. Code MUST use torch_xla (Neuron SDK) for Trainium
-3. Use xm.xla_device(), xm.optimizer_step(), xm.mark_step()
-4. Do NOT use non-existent xm APIs (xm.XlaModule, xm.dot_general, etc.)
-5. Ensure all imports are present
-6. Fix any syntax errors, type errors, attribute errors
+═══════════════════════════════════════════════════════════════════════════════
+CRITICAL REQUIREMENTS - READ CAREFULLY
+═══════════════════════════════════════════════════════════════════════════════
+
+1. **FIX ALL ERRORS**: Address EVERY error listed above. These are REAL runtime errors from Trainium execution.
+
+2. **AWS NEURON SDK (MANDATORY - CRITICAL)**:
+   - MUST use `torch_xla.core.xla_model as xm` - this is the Neuron SDK XLA interface
+   - MUST use `device = xm.xla_device()` to get Trainium device (NOT torch.device('cuda') or 'cpu')
+   - MUST use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` - this is Neuron SDK requirement
+   - MUST call `xm.mark_step()` after each backward pass to synchronize XLA computation
+   - MUST move ALL tensors to device BEFORE any operations: `inputs = inputs.to(device)`, `labels = labels.to(device)`
+   - DO NOT move loss functions: `criterion = nn.CrossEntropyLoss()` (no .to(device))
+   - DO NOT use CUDA: no `.cuda()`, no `device='cuda'`, no `torch.device('cuda')`
+
+3. **COMMON TRAINIUM ERRORS TO FIX**:
+   - **Import errors**: Ensure ALL imports are present (math, random, collections, etc.)
+   - **XLA tensor size**: `tensor.size(0)` returns a tensor in XLA, use `int(tensor.size(0))` for arithmetic
+   - **Model output tuples**: Check `isinstance(model_output, tuple)` and unpack correctly
+   - **Dataset tokenization**: IMDB returns text strings - MUST tokenize before use
+   - **Shape mismatches**: LayerNorm/BatchNorm expect specific shapes - ensure input shape matches normalized_shape
+   - **LoRA errors**: If using LoRA, ensure `B @ A` produces `[out_features, in_features]` (NOT `B @ A.T`)
+   - **Parameter reassignment**: NEVER reassign `layer.weight = ...` in forward() - use `F.linear()` instead
+   - **Ellipsis placeholders**: Replace any `variable = ...` with actual initialization
+   - **ModuleDict keys**: Keys cannot contain dots - replace with underscores
+
+4. **DO NOT USE NON-EXISTENT APIs**:
+   - ❌ `xm.optimizer.SGD` - DOES NOT EXIST (use `torch.optim.SGD` then `xm.optimizer_step(optimizer)`)
+   - ❌ `xm.XlaModule` - DOES NOT EXIST (use regular `nn.Module`)
+   - ❌ `xm.dot()` or `xm.dot_general()` - DO NOT EXIST (use `torch.matmul()` or `torch.mm()`)
+   - ❌ `xm.tensor()` - DOES NOT EXIST (use `torch.tensor()`)
+   - ❌ `xm.xla_device_context()` - DOES NOT EXIST (use `device = xm.xla_device()` and `model.to(device)`)
+   - ❌ `xm.optimizer_step(optimizer, sync=True)` - sync parameter DOES NOT EXIST
+
+5. **VALID torch_xla APIs ONLY**:
+   - ✅ `xm.xla_device()` - Get XLA device
+   - ✅ `xm.optimizer_step(optimizer)` - XLA optimizer step (NO sync parameter)
+   - ✅ `xm.mark_step()` - Synchronize XLA computation
+   - ✅ `xm.rendezvous(tag)` - Synchronization barrier (requires tag string)
+
+6. **DATA HANDLING**:
+   - MUST use `from dataset_loader import load_dataset` - DO NOT use torchvision.datasets
+   - Move tensors to device INSIDE training loop: `inputs = inputs.to(device)`, NOT the DataLoader
+   - IMDB dataset: Returns (text_strings, labels) - MUST tokenize text strings before use
+
+7. **CODE COMPLETENESS**:
+   - Ensure all functions/classes have complete bodies (no ellipsis `...` placeholders)
+   - All variables must be initialized with actual values, not placeholders
+   - Ensure proper error handling and type checking
 
 Return ONLY the complete fixed code in a Python code block. Do not include explanations outside the code block.
 
@@ -513,6 +799,15 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
     def execute_and_handle():
         exec_result = execute_code_sync(paper_id, code, timeout, paper_title)
         
+        # Send Slack notification after execution completes (success or failure)
+        logger.info(f"Execution completed for {paper_id}, sending Slack notification...")
+        try:
+            send_slack_notification(paper_id, exec_result)
+            logger.info(f"Slack notification attempt completed for {paper_id}")
+        except Exception as e:
+            logger.error(f"Failed to send Slack notification for {paper_id}: {e}")
+            logger.error(traceback.format_exc())
+        
         if exec_result.get('success'):
             logger.info(f"Execution succeeded for {paper_id}")
             upload_execution_results(paper_id, exec_result)
@@ -534,11 +829,16 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
             }
             save_error(paper_id, error_data)
             
-            # Call code_review endpoint
+            # Call code_review endpoint with error_data as fallback
             try:
+                review_payload = {
+                    "paper_id": paper_id, 
+                    "paper_title": paper_title,
+                    "error_data": error_data  # Pass error directly in case DynamoDB fails
+                }
                 review_response = requests.post(
                     f"http://localhost:8000/code_review",
-                    json={"paper_id": paper_id, "paper_title": paper_title},
+                    json=review_payload,
                     timeout=300  # 5 minute timeout for review
                 )
                 logger.info(f"Code review triggered for {paper_id}: {review_response.status_code}")
@@ -622,6 +922,9 @@ def code_review():
     """
     Review and fix code based on errors in database.
     
+    NEW STRATEGY: Keep running until code executes for 2 minutes without errors.
+    This replaces the fixed 4-iteration limit.
+    
     Request body:
     {
         "paper_id": "paper_123"
@@ -631,8 +934,9 @@ def code_review():
     - Reads errors from database for paper_id
     - Gets current code from S3
     - Uses Bedrock to fix code
-    - Saves fixed code to S3 (replaces old)
-    - Re-calls /execute with fixed code
+    - Tests fixed code with 2-minute timeout
+    - If code runs 2 minutes without errors, consider it stable and stop reviewing
+    - Otherwise, save error and continue fixing
     """
     try:
         data = request.get_json()
@@ -646,11 +950,21 @@ def code_review():
         
         logger.info(f"Starting code review for {paper_id}")
         
+        # Try to get errors from DynamoDB
         errors_list = get_errors(paper_id)
-        
         error_count = len(errors_list)
-        logger.info(f"Retrieved {error_count} previous iterations for this paper. Passing in the most recent.")
         
+        # Also check if error was passed directly in request (fallback if DynamoDB fails)
+        direct_error = data.get('error_data')
+        if direct_error and not errors_list:
+            # DynamoDB might have failed, but we have error from previous iteration
+            logger.info(f"DynamoDB unavailable, using error passed directly in request")
+            errors_list = [{'error_data': direct_error}]
+            error_count = 1
+        
+        logger.info(f"Retrieved {error_count} previous iterations for this paper.")
+        
+        # Safety limit to prevent infinite loops
         if error_count >= MAX_REVIEW_ITERATIONS:
             logger.warning(f"Max code review depth reached for {paper_id} ({error_count})")
             return jsonify({
@@ -660,15 +974,29 @@ def code_review():
                 "error_count": error_count
             }), 400
             
-        # Possibly explore providing context including more than just the most recent error?   
-        latest_error = errors_list[-1].get('error_data', {})
-        error_message = extract_errors_from_result(latest_error)
-        if not error_message:
-            return jsonify({
-                "success": False,
-                "error": "No extractable errors found"
-            }), 400
-
+        # Build error message from all previous errors (not just latest)
+        # This gives the AI context about what was tried before
+        error_message = ""
+        error_history = ""
+        if errors_list:
+            # Extract errors from all previous iterations
+            all_error_messages = []
+            for i, error_item in enumerate(errors_list):
+                error_data = error_item.get('error_data', {})
+                extracted = extract_errors_from_result(error_data)
+                if extracted:
+                    iteration_num = i + 1
+                    all_error_messages.append(f"--- Iteration {iteration_num} Error ---\n{extracted}")
+            
+            if all_error_messages:
+                # Use latest error as primary, but include history
+                error_message = all_error_messages[-1]  # Latest error
+                if len(all_error_messages) > 1:
+                    # Include previous errors for context
+                    error_history = "\n\n".join(all_error_messages[:-1])  # All except latest
+                    logger.info(f"Including {len(all_error_messages) - 1} previous error(s) for context")
+            else:
+                logger.warning(f"No extractable errors found for {paper_id}, but errors list is not empty")
         
         # Get current code from S3
         code = get_code(paper_id)
@@ -678,54 +1006,143 @@ def code_review():
                 "error": f"No code found in S3 for {paper_id}"
             }), 404
         
-        # Fix code with Bedrock
-        logger.info(f"Fixing code with Bedrock (iteration {error_count})...")
-        fixed_code = fix_code_with_bedrock(code, error_message, error_count)
+        # Get paper summary from OpenSearch for better context
+        paper_summary = None
+        if OPENSEARCH_AVAILABLE:
+            try:
+                opensearch_client = OpenSearchClient()
+                paper = opensearch_client.get_paper_by_id(paper_id)
+                if paper:
+                    paper_summary = opensearch_client.get_paper_summary(paper)
+                    logger.info(f"Retrieved paper summary for {paper_id} ({len(paper_summary)} chars)")
+            except Exception as e:
+                logger.warning(f"Could not retrieve paper summary for {paper_id}: {e}")
         
-        if not fixed_code:
-            return jsonify({
-                "success": False,
-                "error": "Failed to fix code with Bedrock"
-            }), 500
+        # Get ALL errors from ALL papers for proactive error checking
+        all_past_errors = get_all_errors(limit=200)  # Get up to 200 past errors from all papers
+        logger.info(f"Retrieved {len(all_past_errors)} past errors from all papers for proactive checking")
         
-        # Save fixed code to S3 (replaces old)
-        s3_key = save_code(paper_id, fixed_code)
-        if not s3_key:
-            return jsonify({
-                "success": False,
-                "error": "Failed to save fixed code to S3"
-            }), 500
-        
-        logger.info(f"Fixed code saved to S3: {s3_key}")
-        
-        # Re-call /execute with fixed code (recursive call)
-        logger.info(f"Re-executing fixed code for {paper_id}...")
-        try:
-            # Call internal execute function directly (not HTTP)
-            exec_result = execute_internal(
-                paper_id=paper_id,
-                code=fixed_code,
-                timeout=MAX_EXECUTION_TIME,
-                paper_title=data.get('paper_title')
-            )
+        # If we have errors, fix the code with Bedrock
+        if error_message:
+            logger.info(f"Fixing code with Bedrock (iteration {error_count})...")
+            fixed_code = fix_code_with_bedrock(code, error_message, error_count, paper_summary, error_history, all_past_errors)
             
-            return jsonify({
-                "success": True,
-                "message": f"Code fixed and re-execution triggered (iteration {error_count})",
-                "paper_id": paper_id,
-                "iteration": error_count,
-                "errors_fixed": error_message,
-                "execution_status": exec_result
-            })
+            if not fixed_code:
+                return jsonify({
+                    "success": False,
+                    "error": "Failed to fix code with Bedrock"
+                }), 500
+            
+            # Save fixed code to S3 (replaces old)
+            s3_key = save_code(paper_id, fixed_code)
+            if not s3_key:
+                return jsonify({
+                    "success": False,
+                    "error": "Failed to save fixed code to S3"
+                }), 500
+            
+            logger.info(f"Fixed code saved to S3: {s3_key}")
+            code = fixed_code  # Use fixed code for testing
+        else:
+            logger.info(f"No errors to fix, testing current code for stability...")
+        
+        # Test code with 2-minute timeout to check for immediate errors
+        # If it runs for 2 minutes without errors, consider it stable
+        logger.info(f"Testing code stability: running for {CODE_REVIEW_STABILITY_TIME}s to check for errors...")
+        test_result = execute_code_sync(
+            paper_id=f"{paper_id}_review_test",
+            code=code,
+            timeout=CODE_REVIEW_STABILITY_TIME,
+            paper_title=data.get('paper_title')
+        )
+        
+        # Check if code ran successfully for the stability period
+        if test_result.get('success') and test_result.get('execution_time', 0) >= CODE_REVIEW_STABILITY_TIME - 10:
+            # Code ran successfully for ~2 minutes - consider it stable
+            logger.info(f"✅ Code is stable! Ran for {test_result.get('execution_time')}s without errors.")
+            
+            # Save stable code to S3 and trigger full execution
+            s3_key = save_code(paper_id, code)
+            logger.info(f"Stable code saved to S3: {s3_key}")
+            
+            # Trigger full execution with the stable code
+            try:
+                exec_result = execute_internal(
+                    paper_id=paper_id,
+                    code=code,
+                    timeout=MAX_EXECUTION_TIME,
+                    paper_title=data.get('paper_title')
+                )
                 
-        except Exception as e:
-            logger.error(f"Failed to re-execute code: {e}")
-            logger.error(traceback.format_exc())
-            return jsonify({
-                "success": False,
-                "error": f"Failed to re-execute: {str(e)}",
-                "paper_id": paper_id
-            }), 500
+                return jsonify({
+                    "success": True,
+                    "message": f"Code is stable after {error_count} iterations. Full execution triggered.",
+                    "paper_id": paper_id,
+                    "iteration": error_count,
+                    "stability_test_time": test_result.get('execution_time'),
+                    "execution_status": exec_result
+                })
+            except Exception as e:
+                logger.error(f"Failed to trigger full execution: {e}")
+                return jsonify({
+                    "success": False,
+                    "error": f"Code is stable but failed to trigger execution: {str(e)}",
+                    "paper_id": paper_id
+                }), 500
+        
+        # Code failed or didn't run long enough - save error and continue in background thread
+        logger.warning(f"Code test failed or didn't run long enough. Execution time: {test_result.get('execution_time', 0)}s")
+        
+        # Extract error from test result
+        test_error_message = extract_errors_from_result(test_result)
+        if not test_error_message:
+            test_error_message = f"Code execution failed or timed out early (ran for {test_result.get('execution_time', 0)}s)"
+        
+        # Save error to DB
+        error_data = {
+            "stderr": test_result.get('stderr', ''),
+            "stdout": test_result.get('stdout', ''),
+            "error_message": test_error_message,
+            "error_type": test_result.get('error_type', 'execution_error'),
+            "return_code": test_result.get('return_code', -1),
+            "execution_time": test_result.get('execution_time', 0)
+        }
+        save_error(paper_id, error_data)
+        
+        # Continue code review in background thread to avoid blocking and infinite loops
+        def continue_review():
+            try:
+                logger.info(f"Continuing code review for {paper_id} (iteration {error_count + 1}) in background...")
+                time.sleep(2)  # Small delay to avoid immediate retry
+                
+                # Pass error_data directly in case DynamoDB is unavailable
+                review_payload = {
+                    "paper_id": paper_id, 
+                    "paper_title": data.get('paper_title'),
+                    "error_data": error_data  # Pass error directly as fallback
+                }
+                
+                review_response = requests.post(
+                    f"http://localhost:8000/code_review",
+                    json=review_payload,
+                    timeout=300  # 5 minute timeout
+                )
+                logger.info(f"Code review iteration {error_count + 1} completed: {review_response.status_code}")
+            except Exception as e:
+                logger.error(f"Failed to continue code review in background: {e}")
+        
+        # Start background thread
+        review_thread = threading.Thread(target=continue_review, daemon=True)
+        review_thread.start()
+        
+        # Return immediately to avoid blocking
+        return jsonify({
+            "success": True,
+            "message": f"Code review iteration {error_count + 1} triggered in background",
+            "paper_id": paper_id,
+            "iteration": error_count + 1,
+            "test_result": test_result
+        })
         
     except Exception as e:
         logger.error(f"Error in /code_review: {e}")
@@ -771,6 +1188,54 @@ def get_status(paper_id: str):
         "paper_id": paper_id,
         "status": "not_found"
     }), 404
+
+
+@app.route('/notify/<paper_id>', methods=['POST'])
+def trigger_slack_notification(paper_id: str):
+    """
+    Manually trigger Slack notification for a paper.
+    Useful if notification was missed during execution.
+    """
+    try:
+        logger.info(f"Manually triggering Slack notification for {paper_id}")
+        logger.info(f"OPENSEARCH_AVAILABLE: {OPENSEARCH_AVAILABLE}, SLACK_AVAILABLE: {SLACK_AVAILABLE}")
+        logger.info(f"OpenSearchClient: {OpenSearchClient}, SlackNotifier: {SlackNotifier}")
+        logger.info(f"OpenSearchClient is None: {OpenSearchClient is None}, SlackNotifier is None: {SlackNotifier is None}")
+        
+        if not SLACK_AVAILABLE or not OPENSEARCH_AVAILABLE or OpenSearchClient is None or SlackNotifier is None:
+            return jsonify({
+                "success": False,
+                "error": f"Slack/OpenSearch not available (SLACK_AVAILABLE={SLACK_AVAILABLE}, OPENSEARCH_AVAILABLE={OPENSEARCH_AVAILABLE}, OpenSearchClient={OpenSearchClient}, SlackNotifier={SlackNotifier})",
+                "paper_id": paper_id
+            }), 503
+        
+        # Try to get execution result from S3 or reconstruct from status
+        # For now, create a basic success result
+        execution_result = {
+            "success": True,
+            "execution_time": 0,
+            "return_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "error_message": ""
+        }
+        
+        # Use the module-level classes
+        send_slack_notification(paper_id, execution_result)
+        
+        return jsonify({
+            "success": True,
+            "message": f"Slack notification triggered for {paper_id}",
+            "paper_id": paper_id
+        })
+    except Exception as e:
+        logger.error(f"Error triggering Slack notification: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "paper_id": paper_id
+        }), 500
 
 
 if __name__ == '__main__':
@@ -825,6 +1290,15 @@ if __name__ == '__main__':
             logger.warning(f"⚠️  AWS credentials not available: {e}")
             logger.warning("   Some features (S3, DynamoDB, Bedrock) may not work")
         
+        # Log OpenSearch/Slack availability
+        logger.info("=" * 80)
+        logger.info("Service Status:")
+        logger.info(f"  OPENSEARCH_AVAILABLE: {OPENSEARCH_AVAILABLE}")
+        logger.info(f"  SLACK_AVAILABLE: {SLACK_AVAILABLE}")
+        logger.info(f"  Code gen directory: {code_gen_dir}")
+        logger.info(f"  Code gen exists: {os.path.exists(code_gen_dir)}")
+        if os.path.exists(code_gen_dir):
+            logger.info(f"  Code gen files: {', '.join([f for f in os.listdir(code_gen_dir) if f.endswith('.py')][:5])}")
         logger.info("=" * 80)
         logger.info("Starting Flask server on 0.0.0.0:8000")
         logger.info("=" * 80)

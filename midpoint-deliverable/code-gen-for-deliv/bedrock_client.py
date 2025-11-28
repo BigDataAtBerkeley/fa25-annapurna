@@ -22,7 +22,6 @@ class BedrockClient:
     def __init__(self):
         """Initialize  Bedrock client"""
         self.aws_region = os.getenv("AWS_REGION", "us-east-1")
-        # Using Claude 3 Sonnet (base version) for better rate limits - less throttling than 3.5
         self.model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0")
         
         # Per-paper timeout is 180s, so we set Bedrock timeout to 150s to ensure
@@ -266,6 +265,19 @@ CRITICAL REQUIREMENTS - READ CAREFULLY
    - DO NOT move loss functions: `criterion = nn.CrossEntropyLoss()` (no .to(device))
    - DO NOT use CUDA: no `.cuda()`, no `device='cuda'`, no `torch.device('cuda')`
    - DO NOT use regular PyTorch device operations - this code runs on Trainium via Neuron SDK
+   
+   **CRITICAL: DO NOT USE NON-EXISTENT APIs** (common mistakes that cause AttributeError):
+   - ❌ `xm.optimizer.SGD` - DOES NOT EXIST (use `torch.optim.SGD` then `xm.optimizer_step(optimizer)`)
+   - ❌ `xm.XlaModule` - DOES NOT EXIST (use regular `nn.Module`)
+   - ❌ `xm.dot()` or `xm.dot_general()` - DO NOT EXIST (use `torch.matmul()` or `torch.mm()`)
+   - ❌ `xm.tensor()` - DOES NOT EXIST (use `torch.tensor()`)
+   - ❌ `xm.xla_device_context()` - DOES NOT EXIST (use `device = xm.xla_device()` and `model.to(device)`)
+   - ❌ `xm.optimizer_step(optimizer, sync=True)` - sync parameter DOES NOT EXIST
+   
+   **XLA TENSOR OPERATIONS**:
+   - `tensor.size(0)` returns a tensor in XLA, use `int(tensor.size(0))` for arithmetic
+   - Model outputs may be tuples - check `isinstance(model_output, tuple)` and unpack correctly
+   - All standard PyTorch operations (torch.matmul, nn.Linear, etc.) work in XLA - compatibility comes from device placement
 
 3. IMPORTS (MOST COMMON ERROR):
    ```python

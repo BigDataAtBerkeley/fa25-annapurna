@@ -39,6 +39,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'trn-execute-for-deli
 
 from pytorch_generator import PyTorchCodeGenerator
 from storage_utils import save_json, save_code
+
+try:
+    from error_db import save_error
+    ERROR_DB_AVAILABLE = True
+except ImportError:
+    ERROR_DB_AVAILABLE = False
+    logger.warning("error_db module not available - code review errors won't be saved to DynamoDB")
 try:
     # Import chunked generator from chunked-code-gen subdirectory
     # Since the directory name has hyphens, we need to import the module directly
@@ -487,6 +494,34 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
         
         pipeline_results["steps"]["code_review"] = step3_result
         logger.info(f"✅ Code review complete ({step3_result['iterations']} iterations)")
+        
+        # Save code review errors/issues to DynamoDB for future reviewers
+        if ERROR_DB_AVAILABLE and code_review.get("fixes_applied"):
+            fixes_applied = code_review.get("fixes_applied", [])
+            for i, fix in enumerate(fixes_applied, start=1):
+                # Extract issues and execution errors from this iteration
+                issues_found = fix.get("issues_found", [])
+                execution_errors = fix.get("execution_errors", [])
+                fixes_needed = fix.get("fixes", [])
+                
+                if issues_found or execution_errors:
+                    # Create error data for DynamoDB
+                    error_data = {
+                        "error_type": "code_review_error",
+                        "error_message": f"Code review iteration {i} found {len(issues_found)} issues",
+                        "issues_found": issues_found,
+                        "execution_errors": execution_errors,
+                        "fixes_needed": fixes_needed,
+                        "iteration": i,
+                        "source": "code_review_agent"
+                    }
+                    
+                    # Save to DynamoDB with iteration number
+                    try:
+                        save_error(paper_id, error_data, iteration=i)
+                        logger.info(f"Saved code review error for {paper_id} (iteration {i}) to DynamoDB")
+                    except Exception as e:
+                        logger.warning(f"Failed to save code review error to DynamoDB: {e}")
         
         # Step 4: Execute on Trainium via HTTP
         if not TRAINIUM_ENDPOINT:

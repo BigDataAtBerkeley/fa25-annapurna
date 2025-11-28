@@ -40,11 +40,12 @@ class CodeReviewAgent:
                               If code takes longer, that's a problem we should know about.
         """
         self.bedrock_client = bedrock_client or BedrockClient()
-        self.max_iterations = 4  # Run up to 3 iterations to catch and fix issues
+        self.max_iterations = int(os.getenv('CODE_REVIEW_MAX_ITERATIONS', '6'))  # Max iterations (default 6)
         self.fix_history = []  # Track fixes applied
         self.enable_execution_testing = enable_execution_testing
         self.trainium_endpoint = trainium_endpoint or os.getenv('TRAINIUM_ENDPOINT')
         self.execution_timeout = execution_timeout
+        self.stability_time = int(os.getenv('CODE_REVIEW_STABILITY_TIME', '120'))  # 2 minutes - if code runs this long without errors, consider it stable
     
     def _get_trainium_error_reference(self) -> str:
         """
@@ -111,16 +112,21 @@ class CodeReviewAgent:
             # If execution testing is enabled, test the code on Trainium first
             execution_errors = []
             if self.enable_execution_testing and self.trainium_endpoint and paper_id:
-                logger.info(f"🧪 Testing code on Trainium (iteration {iteration})...")
+                logger.info(f"🧪 Testing code on Trainium (iteration {iteration}) with {self.stability_time}s stability check...")
                 exec_result = self._test_code_on_trainium(
                     current_code, paper_id, paper_title, iteration
                 )
                 execution_tests.append(exec_result)
                 
-                if exec_result.get('success'):
-                    logger.info("✅ Code executed successfully on Trainium!")
-                    # If execution succeeded, we can still do AI analysis to catch potential issues
-                    # but we know it at least runs
+                # Check if code ran for stability_time without errors
+                exec_time = exec_result.get('execution_time', 0)
+                if exec_result.get('success') and exec_time >= self.stability_time:
+                    logger.info(f"✅ Code executed successfully for {exec_time}s (>= {self.stability_time}s stability threshold) - code is stable!")
+                    # Code is stable - stop reviewing
+                    break
+                elif exec_result.get('success') and exec_time < self.stability_time:
+                    logger.info(f"⚠️ Code executed but only ran for {exec_time}s (< {self.stability_time}s) - continuing review...")
+                    # Code runs but didn't reach stability threshold - continue reviewing
                 else:
                     # Extract errors from execution
                     execution_errors = self._extract_execution_errors(exec_result)
@@ -584,11 +590,13 @@ class CodeReviewAgent:
                 "iteration": iteration
             }
         
+        # Use stability_time + buffer for the test (we want to see if it runs for stability_time)
+        test_timeout = self.stability_time + 30  # Add 30s buffer
         endpoint = f"{self.trainium_endpoint}/execute"
         payload = {
             "paper_id": f"{paper_id}_review_iter_{iteration}",
             "code": code,
-            "timeout": self.execution_timeout
+            "timeout": test_timeout
         }
         
         if paper_title:
