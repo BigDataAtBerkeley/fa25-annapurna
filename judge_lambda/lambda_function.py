@@ -689,7 +689,13 @@ def lambda_handler(event, context):
                 #index_paper_document(reject_doc)
                 logger.info(f"Skipped (exact duplicate) | {title} | {reason}")
                 continue
-
+            redundancy = is_paper_redundant_rag(title, abstract)
+            if redundancy.get("is_redundant"):
+                reason = redundancy.get("reason", "RAG redundancy")
+                write_discard_record(doc_id, "rag", reason, body, msg_id)
+                logger.info(f"Rejected by RAG | {title} | {reason}")
+                continue
+            
             rag_context_window = retrieve_rag_context_window(title, abstract, precomputed_embedding, paper_id)
 
             # Evaluate with Claude (Bedrock)
