@@ -564,7 +564,7 @@ def extract_errors_from_result(exec_result: Dict[str, Any]) -> str:
     return error_message
 
 
-def fix_code_with_bedrock(code: str, error_message: str, iteration: int, paper_id: str, errors_list: List[Dict[str, Any]], paper_summary: Optional[str] = None, similar_paper_errors: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+def fix_code_with_bedrock(code: str, error_message: str, iteration: int, paper_id: str, errors_list: List[Dict[str, Any]], paper_summary: Optional[str] = None, similar_paper_errors: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
 
     if not bedrock_client:
         logger.error("Bedrock client not available for code fixing")
@@ -593,6 +593,9 @@ def fix_code_with_bedrock(code: str, error_message: str, iteration: int, paper_i
                         error_fix_history += f"  Fixes Applied: {fixes_str}\n"
             error_fix_history += "\n"
     
+    # Remove logger this once done debugging
+    logger.info(f"Error fix history: {error_fix_history}")
+    
     # Build paper context section
     paper_context = ""
     if paper_summary:
@@ -601,7 +604,9 @@ PAPER CONTEXT (for better understanding of what the code should implement):
 {paper_summary}
 
 """
-    
+# Remove logger this once done debugging
+    logger.info(f"Paper context: {paper_context}")
+    # Remove logger this once done debugging
     # Build similar paper errors context
     similar_errors_context = ""
     if similar_paper_errors:
@@ -629,6 +634,8 @@ The following errors occurred in similar papers. Check your code to ensure these
 
 ═══════════════════════════════════════════════════════════════════════════════
 """
+    # Remove logger this once done debugging
+    logger.info(f"Similar errors context: {similar_errors_context}")
     
     # Comprehensive review checklist from code_review_agent
     trainium_errors_ref = """**⚠️ CRITICAL: REAL TRAINIUM ERRORS - MUST PREVENT/FIX:**
@@ -803,10 +810,22 @@ Current code (iteration {iteration}):
 
 {comprehensive_checklist}
 
-Return ONLY the complete fixed code in a Python code block. Do not include explanations outside the code block.
+CRITICAL: You must return BOTH the fixed code AND a summary of fixes in the following exact format:
 
-Fixed code:
 ```python
+[FIXED CODE HERE - complete Python code]
+```
+
+---FIXES_SUMMARY_START---
+[Summary of fixes made - concise list of what was changed]
+---FIXES_SUMMARY_END---
+
+The fixes summary should be a brief list (3-5 items max) of the key changes made. Example:
+- Fixed XLA tensor size conversion by adding int() wrapper
+- Replaced xm.optimizer.SGD with torch.optim.SGD
+- Added missing xm.mark_step() call after backward pass
+
+IMPORTANT: The code block must come FIRST, followed by the fixes summary between the markers.
 """
     
     try:
@@ -831,16 +850,32 @@ Fixed code:
         response_body = json.loads(response['body'].read())
         generated_text = response_body['content'][0]['text']
         
-        # Extract code from response
+        # Extract code and summary separately
         import re
+        fixed_code = None
+        fixes_summary = ["Code fixes applied via Bedrock"]  # Default
+        
+        # Extract code block (must come first)
         code_match = re.search(r'```python\n(.*?)\n```', generated_text, re.DOTALL)
         if code_match:
-            fixed_code = code_match.group(1)
+            fixed_code = code_match.group(1).strip()
         else:
-            # Try to extract without markdown
-            fixed_code = generated_text.strip()
-            if not (fixed_code.startswith('import') or fixed_code.startswith('from')):
-                fixed_code = None
+            # Fallback: try to extract code without markdown
+            text_before_summary = generated_text.split('---FIXES_SUMMARY_START---')[0].strip()
+            if text_before_summary.startswith('import') or text_before_summary.startswith('from'):
+                fixed_code = text_before_summary
+        
+        # Extract fixes summary (between markers)
+        summary_match = re.search(r'---FIXES_SUMMARY_START---\s*(.*?)\s*---FIXES_SUMMARY_END---', generated_text, re.DOTALL)
+        if summary_match:
+            summary_text = summary_match.group(1).strip()
+            if summary_text:
+                # Parse summary into list if it's bullet points or lines
+                summary_lines = [line.strip().lstrip('- ').strip() for line in summary_text.split('\n') if line.strip()]
+                if summary_lines:
+                    fixes_summary = summary_lines
+                else:
+                    fixes_summary = [summary_text]
         
         if fixed_code:
             # Log fixes made
@@ -848,10 +883,15 @@ Fixed code:
             if code_changed:
                 logger.info(f"✅ Fixed code extracted (iteration {iteration}, length: {len(fixed_code)} chars)")
                 logger.info(f"   Code length: {len(code)} → {len(fixed_code)} chars")
+                summary_str = ', '.join(fixes_summary) if isinstance(fixes_summary, list) else str(fixes_summary)
+                logger.info(f"   Fixes summary: {summary_str[:150]}")
             else:
                 logger.warning(f"⚠️ Fixed code is identical to original (iteration {iteration})")
             
-            return fixed_code
+            return {
+                "code": fixed_code,
+                "fixes_summary": fixes_summary
+            }
         
         logger.warning("Failed to extract code from Bedrock response")
         return None
@@ -1066,45 +1106,13 @@ def code_review():
         # Safety limit to prevent infinite loops
         if error_count >= MAX_REVIEW_ITERATIONS:
             logger.warning(f"Max code review depth reached for {paper_id} ({error_count}). Triggering final execution attempt to send Slack notification...")
-            
-            # Get current code from S3
-            code = get_code(paper_id)
-            if not code:
-                return jsonify({
-                    "success": False,
-                    "error": f"Max review iterations ({MAX_REVIEW_ITERATIONS}) reached, but no code found in S3"
-                }), 400
-            
-            # Get paper title and slack_thread_ts from request if available
-            paper_title = data.get('paper_title')
-            slack_thread_ts = data.get('slack_thread_ts')
-            
-            # Trigger final execution attempt (even if it will likely fail) to send Slack notification
-            def trigger_final_execution():
-                try:
-                    logger.info(f"Triggering final execution for {paper_id} after max iterations reached")
-                    exec_result = execute_internal(
-                        paper_id=paper_id,
-                        code=code,
-                        timeout=MAX_EXECUTION_TIME,
-                        paper_title=paper_title,
-                        slack_thread_ts=slack_thread_ts
-                    )
-                    logger.info(f"Final execution completed for {paper_id} after max iterations")
-                except Exception as e:
-                    logger.error(f"Failed to trigger final execution after max iterations: {e}")
-                    logger.error(traceback.format_exc())
-            
-            # Start execution in background thread
-            exec_thread = threading.Thread(target=trigger_final_execution, daemon=True)
-            exec_thread.start()
-            
+ 
             return jsonify({
                 "success": False,
-                "error": f"Max review iterations ({MAX_REVIEW_ITERATIONS}) reached. Final execution triggered.",
+                "error": f"Max review iterations ({MAX_REVIEW_ITERATIONS}) reached.",
                 "paper_id": paper_id,
                 "error_count": error_count,
-                "message": "Final execution triggered in background - Slack notification will be sent"
+                "message": "Max review iterations reached - code review failed."
             }), 400
             
         # Extract error message from most recent error
@@ -1157,13 +1165,16 @@ def code_review():
         # If we have errors, fix the code with Bedrock
         if error_message:
             logger.info(f"Fixing code with Bedrock (iteration {error_count})...")
-            fixed_code = fix_code_with_bedrock(code, error_message, error_count, paper_id, errors_list, paper_summary, similar_paper_errors)
+            fix_result = fix_code_with_bedrock(code, error_message, error_count, paper_id, errors_list, paper_summary, similar_paper_errors)
             
-            if not fixed_code:
+            if not fix_result or not fix_result.get("code"):
                 return jsonify({
                     "success": False,
                     "error": "Failed to fix code with Bedrock"
                 }), 500
+            
+            fixed_code = fix_result["code"]
+            fixes_summary = fix_result.get("fixes_summary", "Code fixes applied via Bedrock")
             
             # Save fixed code to S3 (replaces old)
             s3_key = save_code(paper_id, fixed_code)
@@ -1179,7 +1190,7 @@ def code_review():
             fixes_applied = {
                 'iteration': error_count,
                 'issues_found': [error_message[:200]],
-                'fixes': ['Code fixed via Bedrock'],
+                'fixes': fixes_summary if isinstance(fixes_summary, list) else [fixes_summary],
                 'code_length_before': len(code),
                 'code_length_after': len(fixed_code)
             }
@@ -1464,4 +1475,3 @@ if __name__ == '__main__':
         print(f"FATAL ERROR: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
-

@@ -90,15 +90,16 @@ echo "📦 Step 1: Uploading app files..."
 cd "$SCRIPT_DIR/../midpoint-deliverable/trn-execute-for-deliv" || exit 1
 
 # Check files exist
-for file in app.py error_db.py s3_code_storage.py requirements.txt sagemaker_metrics.py dataset_loader.py; do
+for file in app.py error_db.py s3_code_storage.py requirements.txt opensearch_client.py sagemaker_metrics.py dataset_loader.py slack_notifier.py; do
     if [ ! -f "$file" ]; then
         echo "❌ Error: $file not found in midpoint-deliverable/trn-execute-for-deliv"
         exit 1
     fi
 done
 
-echo "  Uploading: app.py, error_db.py, s3_code_storage.py, requirements.txt, sagemaker_metrics.py, dataset_loader.py"
-scp -i "$SSH_KEY" -o ConnectTimeout=30 -v app.py error_db.py s3_code_storage.py requirements.txt sagemaker_metrics.py dataset_loader.py "$TRAINIUM_USER@$TRAINIUM_IP:~/" 2>&1 | grep -E "(Sending|100%)" || true
+echo "  Uploading: app.py, error_db.py, s3_code_storage.py, opensearch_client.py, requirements.txt, sagemaker_metrics.py, dataset_loader.py, slack_notifier.py"
+echo " Little easter egg for you :) - Tarun says hi!"
+scp -i "$SSH_KEY" -o ConnectTimeout=30 -v app.py error_db.py s3_code_storage.py opensearch_client.py requirements.txt sagemaker_metrics.py dataset_loader.py slack_notifier.py "$TRAINIUM_USER@$TRAINIUM_IP:~/" 2>&1 | grep -E "(Sending|100%)" || true
 echo "✅ Files uploaded"
 echo ""
 
