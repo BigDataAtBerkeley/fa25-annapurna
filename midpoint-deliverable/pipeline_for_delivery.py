@@ -40,6 +40,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'trn-execute-for-deli
 from pytorch_generator import PyTorchCodeGenerator
 from storage_utils import save_json, save_code
 
+# Import SlackNotifier for initial paper notifications
+try:
+    from slack_notifier import SlackNotifier
+    SLACK_AVAILABLE = True
+except ImportError:
+    SLACK_AVAILABLE = False
+    logger.warning("slack_notifier module not available - initial paper notifications will be disabled")
+
 try:
     from error_db import save_error
     ERROR_DB_AVAILABLE = True
@@ -108,7 +116,7 @@ def save_step_result(step_name: str, paper_id: str, data: Dict[str, Any],
     return save_json(paper_id, step_name, data)
 
 
-def execute_code_via_http(paper_id: str, code: str, timeout: int = 1800, paper_title: Optional[str] = None) -> Dict[str, Any]:
+def execute_code_via_http(paper_id: str, code: str, timeout: int = 1800, paper_title: Optional[str] = None, slack_thread_ts: Optional[str] = None) -> Dict[str, Any]:
     """
     Execute code on Trainium via HTTP request to the executor endpoint.
     
@@ -117,6 +125,7 @@ def execute_code_via_http(paper_id: str, code: str, timeout: int = 1800, paper_t
         code: Code to execute
         timeout: Execution timeout in seconds
         paper_title: Paper title (optional)
+        slack_thread_ts: Slack thread timestamp to reply in thread (optional)
         
     Returns:
         Execution result dictionary
@@ -134,6 +143,9 @@ def execute_code_via_http(paper_id: str, code: str, timeout: int = 1800, paper_t
     
     if paper_title:
         payload["paper_title"] = paper_title
+    
+    if slack_thread_ts:
+        payload["slack_thread_ts"] = slack_thread_ts
     
     logger.info(f"Sending execution request to {endpoint}")
     
@@ -409,6 +421,21 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
         pipeline_results["steps"]["paper_retrieval"] = step1_result
         logger.info(f"✅ Paper retrieved: {paper.get('title', 'Unknown')}")
         
+        # Send initial paper notification to Slack (creates thread)
+        slack_thread_ts = None
+        if SLACK_AVAILABLE:
+            try:
+                # Filter out embeddings from paper data
+                filtered_paper = {k: v for k, v in paper.items() if k != 'embeddings'}
+                slack_notifier = SlackNotifier()
+                slack_thread_ts = slack_notifier.send_paper_info(filtered_paper)
+                if slack_thread_ts:
+                    logger.info(f"✅ Sent initial paper notification to Slack (thread_ts: {slack_thread_ts})")
+                else:
+                    logger.warning("⚠️ Failed to send initial paper notification to Slack")
+            except Exception as e:
+                logger.warning(f"⚠️ Error sending initial paper notification to Slack: {e}")
+        
         # Step 2: Generate code
         logger.info(f"Step 2: Generating PyTorch code for paper {paper_id}...")
         step2_start = time.time()
@@ -559,7 +586,8 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
             paper_id=paper_id,
             code=reviewed_code,
             timeout=execution_timeout,
-            paper_title=code_gen_result.get("paper_title")
+            paper_title=code_gen_result.get("paper_title"),
+            slack_thread_ts=slack_thread_ts
         )
         
         # Check if this is an async response (job started, not completed)

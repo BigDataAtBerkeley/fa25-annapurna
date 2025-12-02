@@ -158,7 +158,7 @@ class SlackNotifier:
         
         return blocks
     
-    def send_paper_info(self, paper: Dict[str, Any], channel: Optional[str] = None) -> bool:
+    def send_paper_info(self, paper: Dict[str, Any], channel: Optional[str] = None) -> Optional[str]:
         """
         Send paper information to Slack channel.
         
@@ -167,7 +167,8 @@ class SlackNotifier:
             channel: Slack channel ID or name (default: use default_channel)
             
         Returns:
-            True if message sent successfully, False otherwise
+            Thread timestamp (ts) if message sent successfully, None otherwise
+            This can be used to reply in the same thread later
         """
         if not self.enabled:
             logger.warning("Slack notifier is disabled (no bot token)")
@@ -201,22 +202,23 @@ class SlackNotifier:
             result = response.json()
             
             if result.get("ok"):
-                logger.info(f"✅ Sent paper info to Slack channel {target_channel}")
-                return True
+                thread_ts = result.get("ts")  # Get message timestamp for threading
+                logger.info(f"✅ Sent paper info to Slack channel {target_channel} (thread_ts: {thread_ts})")
+                return thread_ts
             else:
                 error = result.get("error", "Unknown error")
                 logger.error(f"❌ Failed to send to Slack: {error}")
-                return False
+                return None
                 
         except requests.exceptions.RequestException as e:
             logger.error(f"Error sending message to Slack: {e}")
-            return False
+            return None
         except Exception as e:
             logger.error(f"Unexpected error sending to Slack: {e}")
-            return False
+            return None
     
     def send_execution_notification(self, paper: Dict[str, Any], execution_result: Dict[str, Any], 
-                                    channel: Optional[str] = None) -> bool:
+                                    channel: Optional[str] = None, thread_ts: Optional[str] = None) -> bool:
         """
         Send execution notification with paper info, execution results, and code links.
         
@@ -224,6 +226,7 @@ class SlackNotifier:
             paper: Paper document (filtered, no embeddings)
             execution_result: Execution result dictionary
             channel: Slack channel ID or name (default: use default_channel)
+            thread_ts: Thread timestamp to reply in thread (optional)
             
         Returns:
             True if message sent successfully, False otherwise
@@ -399,6 +402,10 @@ class SlackNotifier:
                 "text": f"Execution {execution_status}: {title}"  # Fallback text
             }
             
+            # Add thread_ts if provided to reply in thread
+            if thread_ts:
+                payload["thread_ts"] = thread_ts
+            
             response = requests.post(url, headers=headers, json=payload, timeout=10)
             response.raise_for_status()
             
@@ -462,12 +469,12 @@ class SlackNotifier:
             else:
                 error = result.get("error", "Unknown error")
                 logger.error(f"❌ Failed to send to Slack: {error}")
-                return False
+                return None
                 
         except requests.exceptions.RequestException as e:
             logger.error(f"Error sending message to Slack: {e}")
-            return False
+            return None
         except Exception as e:
             logger.error(f"Unexpected error sending to Slack: {e}")
-            return False
+            return None
 

@@ -839,8 +839,20 @@ COMPREHENSIVE REVIEW CHECKLIST - Check for ALL of these:
    - WRONG: `train_loader.to(device)` or `test_loader.to(device)` - DataLoaders CANNOT be moved to device
    - CORRECT: `train_loader, test_loader = load_dataset('mnist', batch_size=128)`
    - CORRECT: Move tensors to device INSIDE the training loop: `inputs = inputs.to(device)`, NOT the DataLoader
-   - IMDB dataset: Returns (text_strings, labels) - text must be tokenized before use
-   - DataLoader iteration: Handle both (tensor, tensor) and (text_strings, labels) formats
+   
+   **CRITICAL: What load_dataset() returns for each dataset:**
+   - **mnist, cifar10, cifar100, fashion_mnist**: Returns (image_tensor, label_tensor) - BOTH are already PyTorch tensors, NO tokenization needed
+   - **wikitext2**: Returns (input_ids_tensor, labels_tensor) - BOTH are already PyTorch tensors (tokenized), NO tokenization needed
+   - **imdb**: Returns (text_strings, labels) - text_strings are Python strings, MUST be tokenized before use
+   - **synthetic**: Returns (features_tensor, labels_tensor) - BOTH are already PyTorch tensors, NO tokenization needed
+   
+   **WRONG - DO NOT tokenize already-tokenized data:**
+   - WRONG: `inputs = tokenizer(inputs, ...)` when inputs is already a tensor (from wikitext2, mnist, etc.)
+   - WRONG: `inputs = tokenizer(inputs, ...)` when inputs is already tokenized (input_ids)
+   - CORRECT for wikitext2: `inputs, labels = batch_data` then `inputs = inputs.to(device)` (already tensors!)
+   - CORRECT for imdb: `inputs, labels = batch_data` then `inputs = tokenizer(inputs, ...)` (inputs are strings)
+   
+   - DataLoader iteration: Handle both (tensor, tensor) and (text_strings, labels) formats correctly
    - All tensors moved to device before operations (but NOT DataLoaders)
    - Proper handling of batch data unpacking
 

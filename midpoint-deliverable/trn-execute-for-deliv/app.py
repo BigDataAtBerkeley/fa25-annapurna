@@ -174,7 +174,7 @@ DATASET_CACHE_DIR = os.getenv('DATASET_CACHE_DIR', '/tmp/datasets')
 NEURON_PROFILER_ENABLED = os.getenv('NEURON_PROFILER_ENABLED', 'true').lower() == 'true'
 PROFILER_OUTPUT_DIR = os.getenv('PROFILER_OUTPUT_DIR', '/tmp/neuron_profiler')
 RESULTS_BUCKET = os.getenv('RESULTS_BUCKET', 'trainium-execution-results')
-MAX_REVIEW_ITERATIONS = int(os.getenv('MAX_REVIEW_ITERATIONS', '50'))  # Increased limit for new strategy
+MAX_REVIEW_ITERATIONS = int(os.getenv('MAX_REVIEW_ITERATIONS', '6'))  
 CODE_REVIEW_STABILITY_TIME = int(os.getenv('CODE_REVIEW_STABILITY_TIME', '120'))  # 2 minutes - if code runs this long without errors, consider it stable
 
 # DynamoDB Error Database Configuration
@@ -233,7 +233,7 @@ def upload_execution_results(paper_id: str, result: Dict[str, Any]):
     except Exception as e:
         logger.error(f"Failed to upload results: {e}")
 
-def send_slack_notification(paper_id: str, execution_result: Dict[str, Any]):
+def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thread_ts: Optional[str] = None):
     """
     Send Slack notification with paper info, execution results, and code links.
     Excludes embeddings and other large binary fields.
@@ -241,6 +241,7 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any]):
     Args:
         paper_id: Paper/document ID
         execution_result: Execution result dictionary
+        thread_ts: Optional Slack thread timestamp to reply in thread
     """
     if not SLACK_AVAILABLE or not OPENSEARCH_AVAILABLE:
         logger.warning(f"⚠️ Slack/OpenSearch not available - skipping notification for {paper_id}")
@@ -320,8 +321,8 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any]):
         if execution_result.get('s3_results_key'):
             filtered_paper['results_s3_location'] = execution_result.get('s3_results_key')
         
-        # Send to Slack using custom formatting
-        success = slack_notifier.send_execution_notification(filtered_paper, execution_result)
+        # Send to Slack using custom formatting (reply in thread if thread_ts provided)
+        success = slack_notifier.send_execution_notification(filtered_paper, execution_result, thread_ts=thread_ts)
         if success:
             logger.info(f"✅ Sent Slack notification for {paper_id}")
         else:
@@ -415,7 +416,8 @@ sys.path.append('{exec_dir}')
             'PYTHONUNBUFFERED': '1',
             'DATASET_CACHE_DIR': DATASET_CACHE_DIR,
             'PYTHONDONTWRITEBYTECODE': '1',
-            'NEURON_RT_LOG_LEVEL': 'ERROR'
+            'NEURON_RT_LOG_LEVEL': 'ERROR',
+            'NEURON_RETRY_FAILED_COMPILATION': '1'  # Retry failed compilations instead of using cached failures
         }
         
         # Build command
@@ -783,7 +785,7 @@ def get_env_vars():
     })
 
 
-def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Optional[str] = None) -> Dict[str, Any]:
+def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Optional[str] = None, slack_thread_ts: Optional[str] = None) -> Dict[str, Any]:
     """
     Internal execute function (can be called directly or via HTTP endpoint).
     Returns dictionary instead of Flask response.
@@ -802,7 +804,7 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
         # Send Slack notification after execution completes (success or failure)
         logger.info(f"Execution completed for {paper_id}, sending Slack notification...")
         try:
-            send_slack_notification(paper_id, exec_result)
+            send_slack_notification(paper_id, exec_result, thread_ts=slack_thread_ts)
             logger.info(f"Slack notification attempt completed for {paper_id}")
         except Exception as e:
             logger.error(f"Failed to send Slack notification for {paper_id}: {e}")
@@ -834,6 +836,7 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
                 review_payload = {
                     "paper_id": paper_id, 
                     "paper_title": paper_title,
+                    "slack_thread_ts": slack_thread_ts,  # Pass thread_ts for Slack threading
                     "error_data": error_data  # Pass error directly in case DynamoDB fails
                 }
                 review_response = requests.post(
@@ -881,7 +884,8 @@ def execute():
         "paper_id": "paper_123",
         "code": "import torch\n...",
         "timeout": 1800,
-        "paper_title": "Paper Title"
+        "paper_title": "Paper Title",
+        "slack_thread_ts": "1234567890.123456"  # Optional: Slack thread timestamp
     }
     
     Behavior:
@@ -896,6 +900,7 @@ def execute():
         code = data.get('code')
         timeout = data.get('timeout', MAX_EXECUTION_TIME)
         paper_title = data.get('paper_title')
+        slack_thread_ts = data.get('slack_thread_ts')  # Optional Slack thread timestamp
         logger.info(f"Recieved code for {paper_id}, Title: {paper_title}")
         
         if not paper_id or not code:
@@ -906,7 +911,7 @@ def execute():
         
         # Call internal execute function
         logger.info(f"Beginning internal execution.")
-        result = execute_internal(paper_id, code, timeout, paper_title)
+        result = execute_internal(paper_id, code, timeout, paper_title, slack_thread_ts)
         return jsonify(result), 202
         
     except Exception as e:
@@ -966,12 +971,46 @@ def code_review():
         
         # Safety limit to prevent infinite loops
         if error_count >= MAX_REVIEW_ITERATIONS:
-            logger.warning(f"Max code review depth reached for {paper_id} ({error_count})")
+            logger.warning(f"Max code review depth reached for {paper_id} ({error_count}). Triggering final execution attempt to send Slack notification...")
+            
+            # Get current code from S3
+            code = get_code(paper_id)
+            if not code:
+                return jsonify({
+                    "success": False,
+                    "error": f"Max review iterations ({MAX_REVIEW_ITERATIONS}) reached, but no code found in S3"
+                }), 400
+            
+            # Get paper title and slack_thread_ts from request if available
+            paper_title = data.get('paper_title')
+            slack_thread_ts = data.get('slack_thread_ts')
+            
+            # Trigger final execution attempt (even if it will likely fail) to send Slack notification
+            def trigger_final_execution():
+                try:
+                    logger.info(f"Triggering final execution for {paper_id} after max iterations reached")
+                    exec_result = execute_internal(
+                        paper_id=paper_id,
+                        code=code,
+                        timeout=MAX_EXECUTION_TIME,
+                        paper_title=paper_title,
+                        slack_thread_ts=slack_thread_ts
+                    )
+                    logger.info(f"Final execution completed for {paper_id} after max iterations")
+                except Exception as e:
+                    logger.error(f"Failed to trigger final execution after max iterations: {e}")
+                    logger.error(traceback.format_exc())
+            
+            # Start execution in background thread
+            exec_thread = threading.Thread(target=trigger_final_execution, daemon=True)
+            exec_thread.start()
+            
             return jsonify({
                 "success": False,
-                "error": f"Max review iterations ({MAX_REVIEW_ITERATIONS}) reached",
+                "error": f"Max review iterations ({MAX_REVIEW_ITERATIONS}) reached. Final execution triggered.",
                 "paper_id": paper_id,
-                "error_count": error_count
+                "error_count": error_count,
+                "message": "Final execution triggered in background - Slack notification will be sent"
             }), 400
             
         # Build error message from all previous errors (not just latest)
@@ -1119,6 +1158,7 @@ def code_review():
                 review_payload = {
                     "paper_id": paper_id, 
                     "paper_title": data.get('paper_title'),
+                    "slack_thread_ts": data.get('slack_thread_ts'),  # Pass thread_ts for Slack threading
                     "error_data": error_data  # Pass error directly as fallback
                 }
                 
