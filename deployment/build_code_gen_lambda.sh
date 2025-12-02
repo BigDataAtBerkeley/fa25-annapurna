@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Build and deploy Code Generation Lambda function
+# Build and deploy Pipeline Lambda function (code generation + review)
 FUNCTION_NAME="PapersCodeGenerator"
 ZIP_FILE="code_gen_lambda.zip"
 
@@ -23,13 +23,13 @@ rm -f $ZIP_FILE
 # Create deployment directory
 mkdir -p $DEPLOY_DIR
 
-# Copy all Python files from code_gen
-echo "📥 Copying code_gen files..."
-cp code_gen/*.py $DEPLOY_DIR/
+# Copy all Python files from code-gen-for-deliv
+echo "📥 Copying code-gen-for-deliv files..."
+cp midpoint-deliverable/code-gen-for-deliv/*.py $DEPLOY_DIR/
 
 # Install dependencies
 echo "📥 Installing dependencies..."
-pip install -r code_gen/requirements.txt -t $DEPLOY_DIR/
+pip install -r midpoint-deliverable/code-gen-for-deliv/requirements.txt -t $DEPLOY_DIR/
 
 # Create deployment package
 echo "🗜️ Creating deployment package..."
@@ -62,8 +62,8 @@ CURRENT_ENV=$(aws lambda get-function-configuration \
   --output json 2>/dev/null || echo "{}")
 
 if [ "$CURRENT_ENV" != "{}" ] && [ "$CURRENT_ENV" != "null" ]; then
-  # Check if BEDROCK_MODEL_ID exists and update it to Claude 3.5 Sonnet
-  NEW_MODEL_ID="arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+  # Use Claude 3 Haiku (as configured in the code)
+  NEW_MODEL_ID="anthropic.claude-3-haiku-20240307-v1:0"
   
   # Use Python to update the JSON (more reliable than requiring jq)
   ENV_STRING=$(python3 << EOF
@@ -82,7 +82,7 @@ EOF
 )
   
   if [ -n "$ENV_STRING" ]; then
-    echo "🔄 Updating BEDROCK_MODEL_ID to Claude 3.5 Sonnet..."
+    echo "🔄 Updating BEDROCK_MODEL_ID to Claude 3 Haiku..."
     aws lambda update-function-configuration \
       --function-name $FUNCTION_NAME \
       --environment "Variables={$ENV_STRING}" > /dev/null
@@ -92,7 +92,9 @@ EOF
     echo "⚠️  Failed to update environment variables. Update BEDROCK_MODEL_ID manually in Lambda console."
   fi
 else
-  echo "⚠️  No environment variables found. Set BEDROCK_MODEL_ID manually in Lambda console."
+  echo "⚠️  No environment variables found. Set environment variables manually in Lambda console."
+  echo "   Required: AWS_REGION, OPENSEARCH_ENDPOINT, OPENSEARCH_INDEX, FLASK_EXECUTE_ENDPOINT"
+  echo "   Optional: BEDROCK_MODEL_ID, ENABLE_EXECUTION_TESTING, TRAINIUM_EXECUTION_TIMEOUT"
 fi
 
 echo ""
@@ -100,5 +102,12 @@ echo "✅ $FUNCTION_NAME deployed successfully."
 echo ""
 echo "📋 Configuration:"
 echo "  Handler: lambda_handler.lambda_handler"
-echo "  Timeout: 300 seconds (5 minutes)"
-echo "  Memory: 1024 MB"
+echo "  Timeout: 900 seconds (15 minutes) - recommended for PDF processing"
+echo "  Memory: 2048 MB - recommended for PDF processing"
+echo ""
+echo "⚠️  Make sure to set these environment variables in Lambda console:"
+echo "   - AWS_REGION (e.g., us-east-1)"
+echo "   - OPENSEARCH_ENDPOINT (your OpenSearch domain endpoint)"
+echo "   - OPENSEARCH_INDEX (e.g., research-papers-v2)"
+echo "   - FLASK_EXECUTE_ENDPOINT (e.g., http://1.2.3.4:8000/execute)"
+echo "   - BEDROCK_MODEL_ID (optional, defaults to Claude 3 Haiku)"
