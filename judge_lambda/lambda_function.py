@@ -191,8 +191,7 @@ def search_similar_papers_rag(abstract: str, size: int = 5) -> List[Dict]:
         logger.warning(f"RAG search failed: {e}")
         return []
 
-def is_paper_redundant_rag(title: str, abstract: str) -> Dict[str, any]:
-    similar = search_similar_papers_rag(abstract, size=10)
+def is_paper_redundant(similar: List[Dict]) -> Dict[str, any]:
     if not similar:
         return {"is_redundant": False, "reason": "No similar papers found", "max_similarity": 0.0}
     most_similar = similar[0]
@@ -500,10 +499,12 @@ def retrieve_rag_context_window(
     title: str, 
     abstract: str, 
     embedding: List[float],
-    exclude_id: str = None
+    exclude_id: str = None,
+    similar: List[Dict] = None
 ) -> str:
     
-    similar = search_similar_papers_with_embedding(embedding, exclude_id=exclude_id, size=5)
+    if similar is None:
+        similar = search_similar_papers_with_embedding(embedding, exclude_id=exclude_id, size=5)
     logger.info(f"Found {len(similar)} similar papers for RAG redundancy check.")
     
     if not similar:
@@ -689,14 +690,15 @@ def lambda_handler(event, context):
                 #index_paper_document(reject_doc)
                 logger.info(f"Skipped (exact duplicate) | {title} | {reason}")
                 continue
-            redundancy = is_paper_redundant_rag(title, abstract)
+            similar_hits = search_similar_papers_with_embedding(precomputed_embedding, exclude_id=paper_id, size=10)
+            redundancy = is_paper_redundant(similar_hits)
             if redundancy.get("is_redundant"):
                 reason = redundancy.get("reason", "RAG redundancy")
                 write_discard_record(doc_id, "rag", reason, body, msg_id)
                 logger.info(f"Rejected by RAG | {title} | {reason}")
                 continue
             
-            rag_context_window = retrieve_rag_context_window(title, abstract, precomputed_embedding, paper_id)
+            rag_context_window = retrieve_rag_context_window(title, abstract, precomputed_embedding, paper_id, similar_hits)
 
             # Evaluate with Claude (Bedrock)
             evaluation = evaluate_paper_with_claude(title, abstract, rag_context_window)
