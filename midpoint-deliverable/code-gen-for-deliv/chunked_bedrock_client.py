@@ -10,6 +10,7 @@ import logging
 import time
 import random
 from typing import Dict, Any, Optional, List
+
 import boto3
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
@@ -18,42 +19,50 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+
 class ChunkedBedrockClient:
     """Client for chunked code generation with throttling mitigation."""
-    
+
     def __init__(self):
         """
         Initialize Bedrock client for chunked generation.
         """
         self.aws_region = os.getenv("AWS_REGION", "us-east-1")
-        
+
         # Currently using haiku for its fast processing
         model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
         self.chunk_model_id = model_id
         self.final_model_id = model_id
         self.model_id = model_id  # Alias for compatibility with CodeReviewAgent
-        
+
         from botocore.config import Config
+
         config = Config(
             read_timeout=150,
-            retries={'max_attempts': 0}  
+            retries={"max_attempts": 0},
         )
         self.client = boto3.client("bedrock-runtime", region_name=self.aws_region, config=config)
-        
+
         self.chunk_delay = float(os.getenv("CHUNK_PROCESSING_DELAY", "3.0"))  # 3 seconds between chunk processing
-        
-        logger.info(f"Chunked Bedrock client initialized:")
+
+        logger.info("Chunked Bedrock client initialized:")
         logger.info(f"  - Chunk model: {self.chunk_model_id}")
         logger.info(f"  - Final model: {self.final_model_id}")
         logger.info(f"  - Chunk delay: {self.chunk_delay}s")
-    
-    def summarize_pdf_chunk_with_vision(self, base64_images: List[str], chunk_number: int, 
-                                       total_chunks: int, paper_summary: str, 
-                                       page_start: int, page_end: int) -> Dict[str, Any]:
+
+    def summarize_pdf_chunk_with_vision(
+        self,
+        base64_images: List[str],
+        chunk_number: int,
+        total_chunks: int,
+        paper_summary: str,
+        page_start: int,
+        page_end: int,
+    ) -> Dict[str, Any]:
         """
         Generate a detailed summary of a PDF chunk using vision capabilities.
         Extracts formulas and diagrams from PDF pages.
-        
+
         Args:
             base64_images: List of base64-encoded PNG images (one per page)
             chunk_number: Current chunk number (1-indexed)
@@ -61,7 +70,7 @@ class ChunkedBedrockClient:
             paper_summary: Overall paper summary (title, authors, abstract)
             page_start: Starting page number (0-indexed, for display)
             page_end: Ending page number (exclusive, 0-indexed, for display)
-            
+
         Returns:
             Dictionary with summary and metadata
         """
@@ -99,106 +108,129 @@ This summary will be combined with summaries from other chunks to generate compl
 
 Format your response as a structured summary with clear sections.
 """
-        
+
         # Build multimodal content: images + text
-        content = []
-        
+        content: List[Dict[str, Any]] = []
+
         # Add each image with its description
-        for i, base64_image in enumerate(base64_images):
-            content.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": base64_image
+        for base64_image in base64_images:
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": base64_image,
+                    },
                 }
-            })
-        
+            )
+
         # Add text prompt after images
-        content.append({
-            "type": "text",
-            "text": prompt
-        })
-        
+        content.append(
+            {
+                "type": "text",
+                "text": prompt,
+            }
+        )
+
         body = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096, 
-            "temperature": 0.2, 
+            "max_tokens": 4096,
+            "temperature": 0.2,
             "messages": [
                 {
                     "role": "user",
-                    "content": content
+                    "content": content,
                 }
-            ]
+            ],
         }
-        
+
         max_retries = 8
-        base_delay = 5  
-        
+        base_delay = 5
+
         for attempt in range(max_retries):
             try:
                 response = self.client.invoke_model(
                     modelId=self.chunk_model_id,
                     body=json.dumps(body),
-                    contentType="application/json"
+                    contentType="application/json",
                 )
                 break
             except ClientError as e:
-                error_code = e.response.get('Error', {}).get('Code', '')
+                error_code = e.response.get("Error", {}).get("Code", "")
                 error_msg = str(e)
-                
-                logger.debug(f"PDF Chunk {chunk_number} error: Code={error_code}, Message={error_msg[:200]}")
-                
-                retryable_errors = ['ThrottlingException', 'ServiceUnavailableException', 'TooManyRequestsException']
-                is_throttling = (error_code in retryable_errors or 
-                               'throttl' in error_msg.lower() or 
-                               'too many requests' in error_msg.lower() or
-                               'rate limit' in error_msg.lower() or
-                               'rate exceeded' in error_msg.lower())
-                
+
+                logger.debug(
+                    f"PDF Chunk {chunk_number} error: Code={error_code}, Message={error_msg[:200]}"
+                )
+
+                retryable_errors = [
+                    "ThrottlingException",
+                    "ServiceUnavailableException",
+                    "TooManyRequestsException",
+                ]
+                is_throttling = (
+                    error_code in retryable_errors
+                    or "throttl" in error_msg.lower()
+                    or "too many requests" in error_msg.lower()
+                    or "rate limit" in error_msg.lower()
+                    or "rate exceeded" in error_msg.lower()
+                )
+
                 if is_throttling and attempt < max_retries - 1:
-                    delay = min(base_delay * (2 ** attempt), 60)  # Cap at 60s for chunks
+                    delay = min(base_delay * (2**attempt), 60)  # Cap at 60s for chunks
                     jitter = random.uniform(0, 1)
                     total_delay = delay + jitter
-                    logger.warning(f"PDF Chunk {chunk_number} throttling detected (Code: {error_code}), retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})")
+                    logger.warning(
+                        f"PDF Chunk {chunk_number} throttling detected (Code: {error_code}), "
+                        f"retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                    )
                     time.sleep(total_delay)
                     continue
                 else:
                     if not is_throttling:
-                        logger.error(f"PDF Chunk {chunk_number} non-retryable error: Code={error_code}, Message={error_msg[:200]}")
+                        logger.error(
+                            f"PDF Chunk {chunk_number} non-retryable error: "
+                            f"Code={error_code}, Message={error_msg[:200]}"
+                        )
                     raise
-        
-        response_body = json.loads(response['body'].read())
-        summary_text = response_body['content'][0]['text']
-        
+
+        response_body = json.loads(response["body"].read())
+        summary_text = response_body["content"][0]["text"]
+
         return {
             "success": True,
             "chunk_number": chunk_number,
             "summary": summary_text,
             "model_used": self.chunk_model_id,
             "pages": f"{page_start + 1}-{page_end}",
-            "num_images": len(base64_images)
+            "num_images": len(base64_images),
         }
-    def summarize_batch(self, batch_summaries: List[str], batch_number: int, total_batches: int,
-                       paper_summary: str) -> Dict[str, Any]:
+
+    def summarize_batch(
+        self,
+        batch_summaries: List[str],
+        batch_number: int,
+        total_batches: int,
+        paper_summary: str,
+    ) -> Dict[str, Any]:
         """
         Summarize a batch of chunk summaries into an intermediate summary (Stage 2 of hierarchical summarization).
-        
+
         Args:
             batch_summaries: List of summaries from a batch of chunks
             batch_number: Current batch number (1-indexed)
             total_batches: Total number of batches
             paper_summary: Overall paper summary
-            
+
         Returns:
             Dictionary with intermediate summary and metadata
         """
         # Combine batch summaries
-        combined_batch = "\n\n".join([
-            f"--- Chunk Summary {i+1} ---\n{summary}"
-            for i, summary in enumerate(batch_summaries)
-        ])
-        
+        combined_batch = "\n\n".join(
+            [f"--- Chunk Summary {i+1} ---\n{summary}" for i, summary in enumerate(batch_summaries)]
+        )
+
         prompt = f"""
 You are analyzing intermediate summaries from a research paper. These summaries come from batch {batch_number} of {total_batches} batches.
 
@@ -219,91 +251,106 @@ This consolidated summary will be combined with other batch summaries to generat
 
 Format your response as a structured, comprehensive summary.
 """
-        
+
         body = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 8192,  # Increased from 4096 to handle consolidating 8 chunk summaries with all formulas/details
+            "max_tokens": 8192,  # Increased from 4096 to handle consolidating 8 chunk summaries
             "temperature": 0.2,
             "messages": [
                 {
                     "role": "user",
-                    "content": prompt
+                    "content": prompt,
                 }
-            ]
+            ],
         }
-        
+
         max_retries = 8
         base_delay = 3
-        
+
         for attempt in range(max_retries):
             try:
                 response = self.client.invoke_model(
                     modelId=self.chunk_model_id,
                     body=json.dumps(body),
-                    contentType="application/json"
+                    contentType="application/json",
                 )
                 break
             except ClientError as e:
-                error_code = e.response.get('Error', {}).get('Code', '')
+                error_code = e.response.get("Error", {}).get("Code", "")
                 error_msg = str(e)
-                
-                retryable_errors = ['ThrottlingException', 'ServiceUnavailableException', 'TooManyRequestsException']
-                is_throttling = (error_code in retryable_errors or 
-                               'throttl' in error_msg.lower() or 
-                               'too many requests' in error_msg.lower() or
-                               'rate' in error_msg.lower())
-                
+
+                retryable_errors = [
+                    "ThrottlingException",
+                    "ServiceUnavailableException",
+                    "TooManyRequestsException",
+                ]
+                is_throttling = (
+                    error_code in retryable_errors
+                    or "throttl" in error_msg.lower()
+                    or "too many requests" in error_msg.lower()
+                    or "rate" in error_msg.lower()
+                )
+
                 if is_throttling and attempt < max_retries - 1:
-                    delay = min(base_delay * (2 ** attempt), 60)
+                    delay = min(base_delay * (2**attempt), 60)
                     jitter = random.uniform(0, 1)
                     total_delay = delay + jitter
-                    logger.warning(f"Batch {batch_number} throttling detected, retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})")
+                    logger.warning(
+                        f"Batch {batch_number} throttling detected, "
+                        f"retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                    )
                     time.sleep(total_delay)
                     continue
                 else:
                     raise
-        
-        response_body = json.loads(response['body'].read())
-        summary_text = response_body['content'][0]['text']
-        
+
+        response_body = json.loads(response["body"].read())
+        summary_text = response_body["content"][0]["text"]
+
         # Check for truncation
-        stop_reason = response_body.get('stop_reason')
-        truncated = stop_reason == 'max_tokens'
+        stop_reason = response_body.get("stop_reason")
+        truncated = stop_reason == "max_tokens"
         if truncated:
-            logger.warning(f"⚠️ Batch {batch_number} summary was truncated due to max_tokens limit (8192). Some details may be missing.")
-        
+            logger.warning(
+                f"⚠️ Batch {batch_number} summary was truncated due to max_tokens limit (8192). "
+                "Some details may be missing."
+            )
+
         return {
             "success": True,
             "batch_number": batch_number,
             "summary": summary_text,
             "model_used": self.chunk_model_id,
-            "truncated": truncated
+            "truncated": truncated,
         }
-    
-    def generate_final_code(self, paper_summary: str, chunk_summaries: List[str],
-                           dataset_recommendations: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+
+    def generate_final_code(
+        self,
+        paper_summary: str,
+        chunk_summaries: List[str],
+        dataset_recommendations: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Generate final PyTorch code from combined chunk summaries.
-        
+
         Args:
             paper_summary: Overall paper summary
             chunk_summaries: List of detailed summaries from each chunk
             dataset_recommendations: Optional dataset recommendations
-            
+
         Returns:
             Dictionary with generated code and metadata
         """
         # Combine all chunk summaries
-        combined_summaries = "\n\n".join([
-            f"=== CHUNK {i+1} SUMMARY ===\n{summary}"
-            for i, summary in enumerate(chunk_summaries)
-        ])
-        
+        combined_summaries = "\n\n".join(
+            [f"=== CHUNK {i+1} SUMMARY ===\n{summary}" for i, summary in enumerate(chunk_summaries)]
+        )
+
         # Get primary dataset
         primary_dataset = "mnist"
         if dataset_recommendations:
             primary_dataset = dataset_recommendations.get("primary_dataset", "mnist")
-        
+
         prompt = f"""
 You are an expert PyTorch developer and machine learning researcher. I will provide you with detailed summaries from different parts of a research paper, and I need you to generate a complete PyTorch implementation that demonstrates the key concepts and algorithms described in the paper.
 
@@ -314,14 +361,16 @@ Detailed Chunk Summaries:
 {combined_summaries}
 
 """
-        
+
         # Add dataset recommendations if available
         if dataset_recommendations:
             recommended_datasets = dataset_recommendations.get("recommended_datasets", [])
             domain = dataset_recommendations.get("domain", "general")
             explicitly_mentioned = dataset_recommendations.get("explicitly_mentioned", [])
-            reasoning = dataset_recommendations.get("llm_reasoning") or dataset_recommendations.get("reasoning", "")
-            
+            reasoning = dataset_recommendations.get("llm_reasoning") or dataset_recommendations.get(
+                "reasoning", ""
+            )
+
             prompt += f"""
 DATASET RECOMMENDATIONS (IMPORTANT - USE THESE):
 PRIMARY DATASET: {primary_dataset}
@@ -333,7 +382,7 @@ INFERRED DOMAIN: {domain}
             if reasoning:
                 prompt += f"REASONING: {reasoning}\n"
             prompt += "\n"
-        
+
         prompt += f"""
 Generate a complete, production-ready PyTorch implementation that demonstrates the paper's key concepts.
 
@@ -412,7 +461,7 @@ DO NOT include:
 
 ONLY output the code block with inline comments. The code must be immediately runnable with no manual setup required.
 """
-        
+
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 8192,
@@ -420,71 +469,82 @@ ONLY output the code block with inline comments. The code must be immediately ru
             "messages": [
                 {
                     "role": "user",
-                    "content": prompt
+                    "content": prompt,
                 }
-            ]
+            ],
         }
-        
+
         max_retries = 8
         base_delay = 5
-        
+
         for attempt in range(max_retries):
             try:
                 response = self.client.invoke_model(
                     modelId=self.final_model_id,
                     body=json.dumps(body),
-                    contentType="application/json"
+                    contentType="application/json",
                 )
                 break
             except ClientError as e:
-                error_code = e.response.get('Error', {}).get('Code', '')
+                error_code = e.response.get("Error", {}).get("Code", "")
                 error_msg = str(e)
-                
-                retryable_errors = ['ThrottlingException', 'ServiceUnavailableException', 'TooManyRequestsException']
-                is_throttling = (error_code in retryable_errors or 
-                               'throttl' in error_msg.lower() or 
-                               'too many requests' in error_msg.lower() or
-                               'rate' in error_msg.lower())
-                
+
+                retryable_errors = [
+                    "ThrottlingException",
+                    "ServiceUnavailableException",
+                    "TooManyRequestsException",
+                ]
+                is_throttling = (
+                    error_code in retryable_errors
+                    or "throttl" in error_msg.lower()
+                    or "too many requests" in error_msg.lower()
+                    or "rate" in error_msg.lower()
+                )
+
                 if is_throttling and attempt < max_retries - 1:
-                    delay = min(base_delay * (2 ** attempt), 120)
+                    delay = min(base_delay * (2**attempt), 120)
                     jitter = random.uniform(0, 2)
                     total_delay = delay + jitter
-                    logger.warning(f"Final code generation throttling detected, retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})")
+                    logger.warning(
+                        "Final code generation throttling detected, "
+                        f"retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                    )
                     time.sleep(total_delay)
                     continue
                 else:
                     raise
-        
-        response_body = json.loads(response['body'].read())
-        generated_text = response_body['content'][0]['text']
-        
+
+        response_body = json.loads(response["body"].read())
+        generated_text = response_body["content"][0]["text"]
+
         # Extract code from response
-        code_blocks = []
-        lines = generated_text.split('\n')
+        code_blocks: List[str] = []
+        lines = generated_text.split("\n")
         in_code_block = False
-        current_code = []
-        
+        current_code: List[str] = []
+
         for line in lines:
-            if line.strip().startswith('```python'):
+            if line.strip().startswith("```python"):
                 in_code_block = True
                 current_code = []
                 continue
-            elif line.strip().startswith('```') and in_code_block:
+            elif line.strip().startswith("```") and in_code_block:
                 in_code_block = False
                 if current_code:
-                    code_blocks.append('\n'.join(current_code))
+                    code_blocks.append("\n".join(current_code))
                 current_code = []
                 continue
             elif in_code_block:
                 current_code.append(line)
-        
-        full_code = '\n\n'.join(code_blocks) if code_blocks else ""
-        
+
+        full_code = "\n\n".join(code_blocks) if code_blocks else ""
+
         return {
             "success": True,
             "code": full_code,
             "full_response": generated_text,
-            "model_used": self.final_model_id
+            "model_used": self.final_model_id,
         }
+
+
 
