@@ -12,11 +12,13 @@ try:
     from bedrock_client2 import BedrockClient2
     from dataset_recommender import DatasetRecommender
     from code_review_agent import CodeReviewAgent
+    from dynamo_client import DynamoClient
 except ImportError:
     from .opensearch_client import OpenSearchClient
     from .bedrock_client2 import BedrockClient2
     from .dataset_recommender import DatasetRecommender
     from .code_review_agent import CodeReviewAgent
+    from .dynamo_client import DynamoClient
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +35,15 @@ class PyTorchCodeGenerator:
         self.opensearch_client = OpenSearchClient()
         self.bedrock_client = BedrockClient2()  # Using BedrockClient2 (bedrockclient2 enables more tokens, uses chunking)
         self.dataset_recommender = DatasetRecommender(bedrock_client=self.bedrock_client)
+        
+        # Initialize DynamoDB client for error database (us-east-2 region, different from other clients)
+        self.dynamo_client = DynamoClient()
+        
         self.code_review_agent = CodeReviewAgent(
             bedrock_client=self.bedrock_client,
-            enable_execution_testing=enable_execution_testing
+            enable_execution_testing=enable_execution_testing,
+            opensearch_client=self.opensearch_client,
+            dynamo_client=self.dynamo_client
         )
         
         logger.info("PyTorch Code Generator initialized with BedrockClient2 (extended paper content support)")

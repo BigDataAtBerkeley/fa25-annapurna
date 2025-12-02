@@ -27,7 +27,9 @@ class CodeReviewAgent:
     def __init__(self, bedrock_client: Optional[BedrockClient] = None, 
                  enable_execution_testing: bool = False,
                  trainium_endpoint: Optional[str] = None,
-                 execution_timeout: int = 120):
+                 execution_timeout: int = 120,
+                 opensearch_client = None,
+                 dynamo_client = None):
         """
         Initialize the code review agent.
         
@@ -38,6 +40,8 @@ class CodeReviewAgent:
             execution_timeout: Timeout for execution tests in seconds (default 2 minutes)
                               This is SHORT because we only need to catch immediate errors.
                               If code takes longer, that's a problem we should know about.
+            opensearch_client: OpenSearchClient instance for similar paper search (optional)
+            dynamo_client: DynamoClient instance for error database (optional)
         """
         self.bedrock_client = bedrock_client or BedrockClient()
         self.max_iterations = int(os.getenv('CODE_REVIEW_MAX_ITERATIONS', '6'))  # Max iterations (default 6)
@@ -46,6 +50,10 @@ class CodeReviewAgent:
         self.trainium_endpoint = trainium_endpoint or os.getenv('TRAINIUM_ENDPOINT')
         self.execution_timeout = execution_timeout
         self.stability_time = int(os.getenv('CODE_REVIEW_STABILITY_TIME', '120'))  # 2 minutes - if code runs this long without errors, consider it stable
+        
+        # Store clients for similar paper error retrieval
+        self.opensearch_client = opensearch_client
+        self.dynamo_client = dynamo_client
     
     def _get_trainium_error_reference(self) -> str:
         """
@@ -95,6 +103,44 @@ class CodeReviewAgent:
         fixes_applied = []
         iteration = 0
         
+        # Get similar paper errors in first iteration (if paper_id and clients are available)
+        similar_paper_errors = []
+        if iteration == 0 and paper_id and self.opensearch_client and self.dynamo_client:
+            try:
+                logger.info(f"🔍 Finding similar papers to {paper_id} for proactive error checking...")
+                # Get paper to extract abstract
+                paper = self.opensearch_client.get_paper_by_id(paper_id)
+                if paper:
+                    abstract = paper.get('abstract', '')
+                    if abstract:
+                        # Search for top 3 similar papers
+                        similar_papers = self.opensearch_client.search_similar_papers_by_abstract(
+                            abstract=abstract,
+                            exclude_id=paper_id,
+                            size=3
+                        )
+                        
+                        if similar_papers:
+                            similar_paper_ids = [p.get('_id') for p in similar_papers if p.get('_id')]
+                            logger.info(f"Found {len(similar_paper_ids)} similar papers: {', '.join(similar_paper_ids)}")
+                            
+                            # Get errors from similar papers
+                            similar_paper_errors = self.dynamo_client.get_errors_for_paper_ids(similar_paper_ids)
+                            if similar_paper_errors:
+                                logger.info(f"✅ Retrieved {len(similar_paper_errors)} errors from similar papers for proactive checking")
+                            else:
+                                logger.info("No errors found in similar papers")
+                        else:
+                            logger.info("No similar papers found")
+                    else:
+                        logger.warning(f"Paper {paper_id} has no abstract - cannot search for similar papers")
+                else:
+                    logger.warning(f"Paper {paper_id} not found in OpenSearch - cannot search for similar papers")
+            except Exception as e:
+                logger.warning(f"Error retrieving similar paper errors: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+        
         # static checks first before AI
         static_issues = self._check_static_issues(current_code, dataset_name)
         if static_issues:
@@ -135,10 +181,24 @@ class CodeReviewAgent:
                         for error in execution_errors[:3]:
                             logger.warning(f"   - {error[:100]}")
             
+            # In first iteration, include similar paper errors for proactive checking
+            similar_errors_context = []
+            if iteration == 1 and similar_paper_errors:  # iteration is 1-based in the loop (starts at 1)
+                # Extract error messages from similar papers
+                for similar_error in similar_paper_errors:
+                    error_data = similar_error.get('error_data', {})
+                    error_msg = error_data.get('error_message', '') or error_data.get('stderr', '')[:200]
+                    if error_msg:
+                        similar_paper_id = similar_error.get('paper_id', 'unknown')
+                        similar_errors_context.append(f"Similar paper error ({similar_paper_id}): {error_msg[:150]}")
+                
+                if similar_errors_context:
+                    logger.info(f"📋 Including {len(similar_errors_context)} errors from similar papers for proactive checking")
+            
             # Analyze code for issues (using current_code which may have been fixed in previous iteration)
             logger.debug(f"Iteration {iteration}: Analyzing code ({len(current_code)} chars)")
             issues = self._analyze_code_with_ai(
-                current_code, dataset_name, fixes_applied, execution_errors
+                current_code, dataset_name, fixes_applied, execution_errors, similar_errors_context
             )
             
             # If we have execution errors, add them to the issues
@@ -148,6 +208,17 @@ class CodeReviewAgent:
                 issues["issues"] = execution_errors + issues.get("issues", [])
                 issues["fixes_needed"] = [
                     f"Fix execution error: {err}" for err in execution_errors[:3]
+                ] + issues.get("fixes_needed", [])
+            
+            # If we have similar paper errors in first iteration, add them to issues
+            if iteration == 1 and similar_errors_context:
+                if not issues:
+                    issues = {"issues": [], "fixes_needed": []}
+                # Add similar paper errors as proactive warnings
+                issues["issues"] = similar_errors_context + issues.get("issues", [])
+                issues["fixes_needed"] = [
+                    f"Proactively check for: {err.split(': ', 1)[1] if ': ' in err else err}" 
+                    for err in similar_errors_context[:3]
                 ] + issues.get("fixes_needed", [])
             
             if not issues or issues.get('no_issues', False):
@@ -739,7 +810,8 @@ class CodeReviewAgent:
     
     def _analyze_code_with_ai(self, code: str, dataset_name: str = None, 
                               previous_fixes: List[Dict] = None,
-                              execution_errors: List[str] = None) -> Dict[str, Any]:
+                              execution_errors: List[str] = None,
+                              similar_paper_errors: List[str] = None) -> Dict[str, Any]:
         """
         Use AI to analyze code for issues.
         
@@ -755,6 +827,17 @@ class CodeReviewAgent:
         # Use .format() instead of f-string to avoid issues with curly braces in code
         # Escape JSON braces in the template, then format with actual values
         trainium_errors_ref = self._get_trainium_error_reference()
+        
+        # Add similar paper errors to prompt (proactive checking)
+        similar_errors_text = ""
+        if similar_paper_errors:
+            similar_errors_text = "\n\n**🔍 PROACTIVE ERROR CHECKING - ERRORS FROM SIMILAR PAPERS:**\n"
+            similar_errors_text += "The following errors occurred in similar papers when running on Trainium. "
+            similar_errors_text += "Review the code carefully to ensure these errors will NOT occur:\n"
+            for i, err in enumerate(similar_paper_errors, 1):
+                similar_errors_text += f"{i}. {err}\n"
+            similar_errors_text += "\nThese are errors from papers with similar abstracts. "
+            similar_errors_text += "Check your code proactively to prevent these same errors.\n"
         
         # Add execution errors to prompt if available
         execution_errors_text = ""
@@ -975,7 +1058,7 @@ If no issues found, set "no_issues": true."""
             code=code.replace('{', '{{').replace('}', '}}'),
             dataset_name=dataset_name or 'unknown',
             fix_history=fix_history,
-            execution_errors=execution_errors_text,
+            execution_errors=similar_errors_text + execution_errors_text,  # Include similar paper errors first
             trainium_errors=trainium_errors_ref
         )
 

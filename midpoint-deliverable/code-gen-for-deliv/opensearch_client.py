@@ -317,3 +317,117 @@ class OpenSearchClient:
                 """
         
         return summary.strip()
+    
+    def search_similar_papers_by_abstract(self, abstract: str, exclude_id: str = None, size: int = 5) -> List[Dict[str, Any]]:
+        """
+        Search for similar papers using abstract embedding (KNN search).
+        This prevents self-comparison by excluding a specific document ID.
+        
+        Args:
+            abstract: Abstract text to search for similar papers
+            exclude_id: Paper ID to exclude from results (optional)
+            size: Number of similar papers to return (default 5)
+            
+        Returns:
+            List of similar paper documents with similarity scores
+        """
+        try:
+            # Generate embedding using Bedrock Titan embedding model
+            import boto3
+            import json
+            
+            bedrock_runtime = boto3.client('bedrock-runtime', region_name=self.aws_region)
+            body = json.dumps({"inputText": abstract})
+            
+            try:
+                response = bedrock_runtime.invoke_model(
+                    modelId="amazon.titan-embed-text-v1",
+                    body=body,
+                    contentType="application/json"
+                )
+                result = json.loads(response["body"].read())
+                embedding = result.get("embedding", [])
+            except Exception as e:
+                logger.warning(f"Embedding generation failed: {e}")
+                return []
+            
+            if not embedding:
+                return []
+            
+            # Convert to float list
+            try:
+                embedding = [float(x) for x in embedding]
+            except Exception:
+                pass
+            
+            # Get embedding dimension from index mapping
+            try:
+                mapping = self.client.indices.get_mapping(index=self.opensearch_index)
+                props = mapping.get(self.opensearch_index, {}).get("mappings", {}).get("properties", {})
+                dim = int(props.get("abstract_embedding", {}).get("dimension", len(embedding)))
+            except Exception:
+                dim = len(embedding)
+            
+            # Adjust embedding dimension if needed
+            if len(embedding) > dim:
+                embedding = embedding[:dim]
+            elif len(embedding) < dim:
+                embedding = embedding + [0.0] * (dim - len(embedding))
+            
+            # Build KNN query
+            query_size = size + 1 if exclude_id else size
+            query_primary = {
+                "knn": {
+                    "abstract_embedding": {
+                        "vector": embedding,
+                        "k": query_size
+                    }
+                }
+            }
+            
+            try:
+                response = self.client.search(
+                    index=self.opensearch_index,
+                    body={"query": query_primary, "size": query_size}
+                )
+            except Exception as e1:
+                logger.warning(f"Primary kNN query failed, retrying with field/query_vector: {e1}")
+                query_fallback = {
+                    "knn": {
+                        "field": "abstract_embedding",
+                        "query_vector": embedding,
+                        "k": query_size
+                    }
+                }
+                response = self.client.search(
+                    index=self.opensearch_index,
+                    body={"query": query_fallback, "size": query_size}
+                )
+            
+            # Process results
+            papers = []
+            for hit in response.get('hits', {}).get('hits', []):
+                doc_id = hit.get('_id')
+                
+                # Skip the excluded document (self-comparison guard)
+                if exclude_id and doc_id == exclude_id:
+                    logger.info(f"Skipping self-match: {doc_id}")
+                    continue
+                
+                paper = hit.get('_source', {})
+                paper['_id'] = doc_id
+                paper['similarity_score'] = hit.get('_score')
+                papers.append(paper)
+                
+                # Stop once we have enough results
+                if len(papers) >= size:
+                    break
+            
+            logger.info(f"Found {len(papers)} similar papers (excluded: {exclude_id})")
+            return papers
+            
+        except Exception as e:
+            logger.error(f"Error searching similar papers: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return []

@@ -48,23 +48,8 @@ import psutil
 import shutil
 import boto3
 from botocore.exceptions import ClientError
-
-# Import local modules with error handling
-try:
-    from error_db import save_error, get_errors, get_all_errors, clear_errors
-except ImportError as e:
-    print(f"ERROR: Failed to import error_db module: {e}", file=sys.stderr)
-    print(f"ERROR: Script directory: {script_dir}", file=sys.stderr)
-    print(f"ERROR: Python path: {sys.path}", file=sys.stderr)
-    raise
-
-try:
-    from s3_code_storage import save_code, get_code, code_exists
-except ImportError as e:
-    print(f"ERROR: Failed to import s3_code_storage module: {e}", file=sys.stderr)
-    print(f"ERROR: Script directory: {script_dir}", file=sys.stderr)
-    print(f"ERROR: Python path: {sys.path}", file=sys.stderr)
-    raise
+from error_db import save_error, get_errors, get_all_errors, clear_errors
+from s3_code_storage import save_code, get_code, code_exists
 
 OPENSEARCH_AVAILABLE = False
 SLACK_AVAILABLE = False
