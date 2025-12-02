@@ -5,9 +5,8 @@ Main Pipeline for Delivery
 This pipeline processes one paper at a time:
 1. Retrieves paper from OpenSearch
 2. Generates PyTorch code using Bedrock (with Neuron SDK requirements)
-3. Reviews and fixes code
-4. Executes on Trainium
-5. Monitors and saves results at each step
+3. Executes on Trainium
+4. Monitors and saves results at each step
 """
 
 import os
@@ -47,12 +46,6 @@ except ImportError:
     SLACK_AVAILABLE = False
     logger.warning("slack_notifier module not available - initial paper notifications will be disabled")
 
-try:
-    from error_db import save_error
-    ERROR_DB_AVAILABLE = True
-except ImportError:
-    ERROR_DB_AVAILABLE = False
-    logger.warning("error_db module not available - code review errors won't be saved to DynamoDB")
 try:
     # Import chunked generator from chunked-code-gen subdirectory
     # Since the directory name has hyphens, we need to import the module directly
@@ -117,17 +110,18 @@ def save_step_result(step_name: str, paper_id: str, data: Dict[str, Any],
 
 def execute_code_via_http(paper_id: str, code: str, timeout: int = 1800, paper_title: Optional[str] = None, slack_thread_ts: Optional[str] = None) -> Dict[str, Any]:
     """
-    Execute code on Trainium via HTTP request to the executor endpoint.
+    Send code to Trainium for async execution via HTTP request.
+    Execution runs asynchronously - this function only waits for acknowledgment.
     
     Args:
         paper_id: Paper ID
         code: Code to execute
-        timeout: Execution timeout in seconds
+        timeout: Execution timeout in seconds (for the actual execution, not HTTP request)
         paper_title: Paper title (optional)
         slack_thread_ts: Slack thread timestamp to reply in thread (optional)
         
     Returns:
-        Execution result dictionary
+        Dictionary with async acknowledgment (status: "running", job_id, status_url)
     """
     if not TRAINIUM_ENDPOINT:
         raise ValueError("TRAINIUM_ENDPOINT not set - cannot execute code")
@@ -146,7 +140,7 @@ def execute_code_via_http(paper_id: str, code: str, timeout: int = 1800, paper_t
     if slack_thread_ts:
         payload["slack_thread_ts"] = slack_thread_ts
     
-    logger.info(f"Sending execution request to {endpoint}")
+    logger.info(f"Sending execution request to {endpoint} (async execution)")
     
     # Retry logic for connection errors
     max_retries = 3
@@ -154,11 +148,11 @@ def execute_code_via_http(paper_id: str, code: str, timeout: int = 1800, paper_t
     
     for attempt in range(max_retries):
         try:
-            # Use longer timeout: execution_timeout + 5 minutes buffer for HTTP overhead
-            # Neuron compilation can take 20-40+ minutes, so we need a long timeout
-            http_timeout = timeout + 300  # Add 5 minute buffer
+            # Use short timeout - we only need to get the acknowledgment that execution started
+            # Execution itself runs asynchronously on Trainium
+            http_timeout = 30  # 30 seconds should be enough to get acknowledgment
             if attempt == 0:
-                logger.info(f"HTTP request timeout set to {http_timeout}s ({http_timeout/60:.1f} minutes)")
+                logger.info(f"HTTP request timeout set to {http_timeout}s (waiting for execution acknowledgment)")
             
             response = requests.post(
                 endpoint,
@@ -166,45 +160,42 @@ def execute_code_via_http(paper_id: str, code: str, timeout: int = 1800, paper_t
                 timeout=http_timeout
             )
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            
+            # Verify we got an async acknowledgment
+            if result.get("status") == "running" or result.get("job_id"):
+                logger.info(f"✅ Execution acknowledged - job started (job_id: {result.get('job_id', 'N/A')})")
+                return result
+            else:
+                # Unexpected response format - log warning but return it
+                logger.warning(f"Unexpected response format - expected async acknowledgment but got: {result}")
+                return result
+                
         except requests.exceptions.Timeout as e:
-            logger.warning(f"HTTP request timed out after {http_timeout}s")
-            logger.warning("Execution may still be running on Trainium - check Trainium logs to verify")
+            logger.error(f"HTTP request timed out after {http_timeout}s - failed to get execution acknowledgment")
             return {
                 "success": False,
-                "error_message": f"HTTP request timed out after {http_timeout}s. Execution may still be running on Trainium.",
+                "error_message": f"HTTP request timed out after {http_timeout}s. Failed to get execution acknowledgment.",
                 "error_type": "http_timeout",
-                "execution_time": 0,
-                "return_code": -1,
-                "note": "Check Trainium logs and CloudWatch metrics to verify if execution completed"
+                "status": "unknown",
+                "note": "Could not confirm if execution started. Check Trainium logs to verify."
             }
         except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
             # Connection errors - retry with exponential backoff
-            # "Remote end closed connection without response" usually means:
-            # 1. Flask app timed out waiting for execution (but execution may still be running)
-            # 2. Flask app crashed
-            # 3. Network issue
             if attempt < max_retries - 1:
                 wait_time = retry_delay * (2 ** attempt)
                 logger.warning(f"HTTP connection error (attempt {attempt + 1}/{max_retries}): {e}")
-                if "Remote end closed connection" in str(e):
-                    logger.warning("⚠️ Flask server closed connection - execution may still be running on Trainium")
-                    logger.warning("   Check Trainium logs/CloudWatch to verify if execution completed")
                 logger.info(f"Retrying in {wait_time} seconds...")
                 time.sleep(wait_time)
                 continue
             else:
                 logger.error(f"HTTP connection failed after {max_retries} attempts: {e}")
-                if "Remote end closed connection" in str(e):
-                    logger.error("⚠️ Flask server closed connection - execution may still be running on Trainium")
-                    logger.error("   Check Trainium instance logs and CloudWatch metrics to verify execution status")
                 return {
                     "success": False,
                     "error_message": f"HTTP connection failed after {max_retries} attempts: {str(e)}",
                     "error_type": "http_error",
-                    "execution_time": 0,
-                    "return_code": -1,
-                    "note": "Executor may have crashed or network connection is unstable. Execution may still be running on Trainium - check executor logs and CloudWatch metrics."
+                    "status": "unknown",
+                    "note": "Could not connect to executor. Check executor status and network connectivity."
                 }
         except requests.exceptions.RequestException as e:
             # Other request errors - don't retry
@@ -213,8 +204,7 @@ def execute_code_via_http(paper_id: str, code: str, timeout: int = 1800, paper_t
                 "success": False,
                 "error_message": f"HTTP request failed: {str(e)}",
                 "error_type": "http_error",
-                "execution_time": 0,
-                "return_code": -1
+                "status": "unknown"
             }
 
 
@@ -490,69 +480,10 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
         pipeline_results["steps"]["code_generation"] = step2_result
         logger.info(f"✅ Code generated ({len(code_gen_result['code'])} chars)")
         
-        # Step 3: Code review (only for standard generator, chunked doesn't do review yet)
-        logger.info(f"Step 3: Code review results for paper {paper_id}...")
-        step3_start = time.time()
-        
-        # Chunked generator doesn't do code review yet, standard generator does
-        code_review = code_gen_result.get("code_review", {})
-        reviewed_code = code_gen_result["code"]  # Already reviewed (or not, for chunked)
-        
-        # Save reviewed code
-        reviewed_code_file = save_code_file(paper_id, reviewed_code, 'code-review')
-        
-        # Use actual review_time from code_review if available, otherwise measure pipeline step time
-        actual_review_time = code_review.get("review_time", time.time() - step3_start)
-        
-        step3_result = {
-            "success": True,
-            "fixes_applied": code_review.get("fixes_applied", []),
-            "iterations": code_review.get("iterations", 0),
-            "reviewed_code_file": reviewed_code_file,
-            "review_time": actual_review_time
-        }
-        
-        save_step_result('code-review', paper_id, {
-            "code": reviewed_code,
-            "metadata": step3_result,
-            "code_review_details": code_review
-        })
-        
-        pipeline_results["steps"]["code_review"] = step3_result
-        logger.info(f"✅ Code review complete ({step3_result['iterations']} iterations)")
-        
-        # Save code review errors/issues to DynamoDB for future reviewers
-        if ERROR_DB_AVAILABLE and code_review.get("fixes_applied"):
-            fixes_applied = code_review.get("fixes_applied", [])
-            for i, fix in enumerate(fixes_applied, start=1):
-                # Extract issues and execution errors from this iteration
-                issues_found = fix.get("issues_found", [])
-                execution_errors = fix.get("execution_errors", [])
-                fixes_needed = fix.get("fixes", [])
-                
-                if issues_found or execution_errors:
-                    # Create error data for DynamoDB
-                    error_data = {
-                        "error_type": "code_review_error",
-                        "error_message": f"Code review iteration {i} found {len(issues_found)} issues",
-                        "issues_found": issues_found,
-                        "execution_errors": execution_errors,
-                        "fixes_needed": fixes_needed,
-                        "iteration": i,
-                        "source": "code_review_agent"
-                    }
-                    
-                    # Save to DynamoDB with iteration number
-                    try:
-                        save_error(paper_id, error_data, iteration=i)
-                        logger.info(f"Saved code review error for {paper_id} (iteration {i}) to DynamoDB")
-                    except Exception as e:
-                        logger.warning(f"Failed to save code review error to DynamoDB: {e}")
-        
-        # Step 4: Execute on Trainium via HTTP
+        # Step 3: Execute on Trainium via HTTP
         if not TRAINIUM_ENDPOINT:
             logger.warning("⚠️ TRAINIUM_ENDPOINT not set - skipping execution")
-            logger.warning("   Code generation and review completed successfully")
+            logger.warning("   Code generation completed successfully")
             pipeline_results["steps"]["trn_execution"] = {
                 "success": False,
                 "error": "TRAINIUM_ENDPOINT not set",
@@ -562,8 +493,8 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
             pipeline_results["success"] = True  # Code generation succeeded
             return pipeline_results
         
-        # Step 4a: Ensure Trainium is running
-        logger.info(f"Step 4a: Ensuring Trainium instance is running...")
+        # Step 3a: Ensure Trainium is running
+        logger.info(f"Step 3a: Ensuring Trainium instance is running...")
         if not ensure_trainium_running():
             pipeline_results["success"] = False
             pipeline_results["error"] = "Failed to start or connect to Trainium instance"
@@ -575,31 +506,28 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
             return pipeline_results
         logger.info(f"✅ Trainium instance is ready")
         
-        # Step 4b: Execute on Trainium via HTTP
-        logger.info(f"Step 4b: Executing code on Trainium for paper {paper_id}...")
-        step4_start = time.time()
+        # Step 3b: Execute on Trainium via HTTP (async execution)
+        logger.info(f"Step 3b: Sending code to Trainium for async execution (paper {paper_id})...")
+        step3_start = time.time()
         
-        # Use longer timeout to account for Neuron compilation (can take 20-40+ minutes)
+        # Execution timeout for the actual execution (not HTTP request)
         execution_timeout = int(os.getenv('TRAINIUM_EXECUTION_TIMEOUT', '3600'))  # 60 minutes default
         execution_result = execute_code_via_http(
             paper_id=paper_id,
-            code=reviewed_code,
+            code=code_gen_result["code"],
             timeout=execution_timeout,
             paper_title=code_gen_result.get("paper_title"),
             slack_thread_ts=slack_thread_ts
         )
         
-        # Check if this is an async response (job started, not completed)
-        is_async_response = execution_result.get("status") == "running" or execution_result.get("job_id")
-        
-        if is_async_response:
-            # This is an async "job started" response - execution is still running
-            # Don't use default values for return_code/execution_time since execution hasn't completed
-            logger.info(f"Execution started asynchronously for {paper_id}")
-            logger.info(f"Status URL: {execution_result.get('status_url', 'N/A')}")
-            logger.info(f"Message: {execution_result.get('message', 'N/A')}")
+        # Execution is always async - expect immediate acknowledgment
+        if execution_result.get("status") == "running" or execution_result.get("job_id"):
+            # Successfully received async acknowledgment
+            logger.info(f"✅ Execution acknowledged - running asynchronously for {paper_id}")
+            logger.info(f"   Job ID: {execution_result.get('job_id', paper_id)}")
+            logger.info(f"   Status URL: {execution_result.get('status_url', 'N/A')}")
             
-            step4_result = {
+            step3_result = {
                 "success": True,  # Job started successfully
                 "status": "running",
                 "job_id": execution_result.get("job_id", paper_id),
@@ -608,36 +536,38 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
                 "return_code": None,  # Not available yet - execution still running
                 "timeout": False,
                 "metrics": {},
-                "execution_time_seconds": time.time() - step4_start,
+                "execution_time_seconds": time.time() - step3_start,
                 "note": "Execution started asynchronously. Use status_url to check completion status."
             }
         else:
-            # This is a synchronous execution result (or error response)
-            step4_result = {
-                "success": execution_result.get("success", False),
-                "execution_time": execution_result.get("execution_time", 0),
-                "return_code": execution_result.get("return_code", -1),
-                "timeout": execution_result.get("timeout", False),
-                "metrics": execution_result.get("detailed_metrics", {}),
-                "execution_time_seconds": time.time() - step4_start
+            # Failed to get acknowledgment or error response
+            logger.error(f"❌ Failed to get execution acknowledgment for {paper_id}")
+            step3_result = {
+                "success": False,
+                "status": execution_result.get("status", "unknown"),
+                "error": execution_result.get("error_message", "Failed to start execution"),
+                "error_type": execution_result.get("error_type", "unknown"),
+                "execution_time": None,
+                "return_code": None,
+                "execution_time_seconds": time.time() - step3_start
             }
         
         # Save execution results
         save_step_result('trn-execution', paper_id, {
             "execution_result": execution_result,
-            "metadata": step4_result,
+            "metadata": step3_result,
             "stdout": execution_result.get("stdout", ""),
             "stderr": execution_result.get("stderr", "")
         })
         
         # Save metrics separately
-        if step4_result.get("metrics"):
+        if step3_result.get("metrics"):
             save_step_result('metrics', paper_id, {
                 "paper_id": paper_id,
                 "paper_title": code_gen_result.get("paper_title"),
-                "metrics": step4_result["metrics"],
-                "execution_time": step4_result["execution_time"],
-                "success": step4_result["success"]
+                "metrics": step3_result["metrics"],
+                "execution_time": step3_result["execution_time"],
+                "success": step3_result["success"]
             })
         
         # Save profiler results if available
@@ -700,51 +630,23 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
                         import traceback
                         logger.debug(traceback.format_exc())
         
-        pipeline_results["steps"]["trn_execution"] = step4_result
+        pipeline_results["steps"]["trn_execution"] = step3_result
         
-        # Check execution result
-        if is_async_response:
+        # Log execution status
+        if step3_result.get("success"):
             logger.info(f"⏳ Execution started asynchronously for {paper_id}")
-            logger.info(f"   Status URL: {execution_result.get('status_url')}")
+            logger.info(f"   Job ID: {step3_result.get('job_id')}")
+            logger.info(f"   Status URL: {step3_result.get('status_url')}")
             logger.info(f"   Execution is running in background - check status endpoint for completion")
-        elif execution_result.get("success"):
-            exec_time = step4_result.get("execution_time", 0)
-            if exec_time:
-                logger.info(f"✅ Execution successful ({exec_time:.1f}s)")
-            else:
-                logger.info(f"✅ Execution successful")
         else:
-            # Extract error message from stderr if available
-            error_msg = execution_result.get('error_message')
-            if not error_msg:
-                stderr = execution_result.get('stderr', '')
-                # Try to extract the actual error from stderr
-                if stderr:
-                    # Look for common error patterns
-                    import re
-                    # Find ValueError, RuntimeError, ModuleNotFoundError, etc.
-                    error_match = re.search(r'(ValueError|RuntimeError|ModuleNotFoundError|ImportError|TypeError|AttributeError|KeyError|IndexError):\s*(.+)', stderr)
-                    if error_match:
-                        error_msg = f"{error_match.group(1)}: {error_match.group(2).split(chr(10))[0]}"
-                    else:
-                        # Fallback: get last non-empty line from stderr
-                        stderr_lines = [line.strip() for line in stderr.split('\n') if line.strip()]
-                        if stderr_lines:
-                            error_msg = stderr_lines[-1][:200]  # Limit to 200 chars
-                        else:
-                            error_msg = f"Return code: {execution_result.get('return_code', -1)}"
-                else:
-                    error_msg = f"Return code: {execution_result.get('return_code', -1)}"
-            
-            logger.error(f"❌ Execution failed: {error_msg}")
+            error_msg = step3_result.get("error", "Unknown error")
+            logger.error(f"❌ Failed to start execution: {error_msg}")
         
         # Overall pipeline result
-        # For async execution, "success" means job started successfully, not that execution completed
-        # So we consider it successful if code generation/review succeeded and execution started
+        # Success means code generation succeeded and execution was acknowledged (started)
         pipeline_results["success"] = (
             step2_result.get("success") and 
-            step3_result.get("success") and 
-            step4_result.get("success")  # True if job started (async) or completed successfully (sync)
+            step3_result.get("success")  # True if execution was acknowledged/started
         )
         pipeline_results["pipeline_end"] = datetime.now().isoformat()
         pipeline_results["total_pipeline_time"] = time.time() - pipeline_start
