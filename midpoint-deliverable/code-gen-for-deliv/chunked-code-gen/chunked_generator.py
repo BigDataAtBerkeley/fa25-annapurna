@@ -19,7 +19,6 @@ sys.path.insert(0, parent_dir)
 
 from opensearch_client import OpenSearchClient
 from dataset_recommender import DatasetRecommender
-from code_review_agent import CodeReviewAgent
 from pdf_processor import PDFProcessor
 from chunked_bedrock_client import ChunkedBedrockClient
 
@@ -44,12 +43,6 @@ class ChunkedPyTorchGenerator:
         self.opensearch_client = OpenSearchClient()
         self.chunked_bedrock_client = ChunkedBedrockClient()
         self.dataset_recommender = DatasetRecommender(bedrock_client=None)  # Don't need bedrock for dataset rec
- 
-        enable_execution_testing = os.getenv('ENABLE_EXECUTION_TESTING', 'false').lower() == 'true'
-        self.code_review_agent = CodeReviewAgent(
-            bedrock_client=None,
-            enable_execution_testing=enable_execution_testing
-        )
         self.batch_size = batch_size
         self.pages_per_pdf_chunk = pages_per_pdf_chunk
         self.use_smart_pdf_chunking = use_smart_pdf_chunking
@@ -299,48 +292,22 @@ class ChunkedPyTorchGenerator:
                 
                 logger.info(f"✅ Final code generated ({len(final_result['code']):,} chars)")
                 
-                # Review and fix code - REQUIRED before sending to test queue
-                logger.info("Reviewing and fixing generated code...")
-                primary_dataset = dataset_recommendations.get("primary_dataset", "synthetic")
-                review_result = self.code_review_agent.review_and_fix_code(
-                    final_result["code"],
-                    dataset_name=primary_dataset,
-                    paper_id=paper_id,
-                    paper_title=paper.get('title', 'Unknown')
-                )
-                
-                # Use reviewed code (even if review didn't find issues, it may have applied quick fixes)
-                reviewed_code = final_result["code"]
-                code_review_data = {
-                    "fixes_applied": [],
-                    "iterations": 0,
-                    "review_time": 0.0
-                }
-                
-                if review_result.get("code"):
-                    reviewed_code = review_result["code"]
-                    code_review_data = {
-                        "fixes_applied": review_result.get("fixes_applied", []),
-                        "iterations": review_result.get("iterations", 0),
-                        "review_time": review_result.get("review_time", 0.0)
-                    }
-                    logger.info(f"Code review complete: {code_review_data['iterations']} iterations, "
-                              f"{len(code_review_data['fixes_applied'])} fixes applied in {code_review_data['review_time']:.2f}s")
-                else:
-                    logger.warning("Code review returned no code, using original code")
-                
-                # Combine results
+                # Combine results - code review happens separately in pipeline/lambda handler
                 result = {
                     "success": True,
                     "paper_id": paper_id,
                     "paper_title": paper.get('title', 'Unknown'),
                     "paper_authors": paper.get('authors', []),
-                    "code": reviewed_code,
+                    "code": final_result["code"],
                     "model_used": final_result["model_used"],
                     "generated_at": datetime.now().isoformat(),
                     "dataset_recommendations": dataset_recommendations,
                     "recommended_dataset": dataset_recommendations.get("primary_dataset", "synthetic"),
-                    "code_review": code_review_data,
+                    "code_review": {
+                        "fixes_applied": [],
+                        "iterations": 0,
+                        "review_time": 0.0
+                    },
                     "chunk_results": chunk_results,
                     "num_chunks": num_chunks,
                     "successful_chunks": successful_chunks,
@@ -428,7 +395,7 @@ class ChunkedPyTorchGenerator:
     def _save_chunk_results(self, paper_id: str, chunk_results: List[Dict[str, Any]], 
                            chunk_summaries: List[str]) -> None:
         """
-        Save chunk results to results directory.
+        Save chunk results to results directory locally (gitignored).
         
         Args:
             paper_id: Paper ID
@@ -485,13 +452,12 @@ class ChunkedPyTorchGenerator:
             logger.warning(f"Failed to save chunk results: {e}")
             # Don't fail the whole process if saving fails
     
-    def generate_code_for_papers(self, paper_ids: List[str], include_full_content: bool = True) -> Dict[str, Any]:
+    def generate_code_for_papers(self, paper_ids: List[str]) -> Dict[str, Any]:
         """
         Generate PyTorch code for multiple papers using chunked approach.
         
         Args:
             paper_ids: List of OpenSearch document IDs
-            include_full_content: Ignored (chunked approach always processes full content when available)
             
         Returns:
             Dictionary containing results for all papers
@@ -547,7 +513,7 @@ class ChunkedPyTorchGenerator:
             paper_ids = [paper.get('_id') for paper in papers if paper.get('_id')]
             
             # Generate code for found papers
-            results = self.generate_code_for_papers(paper_ids, include_full_content)
+            results = self.generate_code_for_papers(paper_ids)
             
             # Add search metadata
             results.update({
