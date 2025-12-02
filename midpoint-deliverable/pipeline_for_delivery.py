@@ -37,7 +37,6 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code-gen-for-deliv'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'trn-execute-for-deliv'))
 
-from pytorch_generator import PyTorchCodeGenerator
 from storage_utils import save_json, save_code
 
 # Import SlackNotifier for initial paper notifications
@@ -377,7 +376,7 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
     
     Args:
         paper_id: OpenSearch document ID
-        generator: PyTorchCodeGenerator instance
+        generator: ChunkedPyTorchGenerator instance (PDF-only with smart chunking)
         
     Returns:
         Dictionary with complete pipeline results
@@ -425,8 +424,8 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
         slack_thread_ts = None
         if SLACK_AVAILABLE:
             try:
-                # Filter out embeddings from paper data
                 filtered_paper = {k: v for k, v in paper.items() if k != 'embeddings'}
+                filtered_paper['_id'] = paper_id
                 slack_notifier = SlackNotifier()
                 slack_thread_ts = slack_notifier.send_paper_info(filtered_paper)
                 if slack_thread_ts:
@@ -774,12 +773,6 @@ def main():
                        help='Process recent papers from last N days')
     parser.add_argument('--random', action='store_true',
                        help='Get random papers instead of recent papers')
-    parser.add_argument('--use-chunked', action='store_true',
-                       help='Use chunked code generator (for long papers that exceed token limits)')
-    parser.add_argument('--chunked-parallel', action='store_true',
-                       help='Process chunks in parallel (only with --use-chunked, may increase throttling risk)')
-    parser.add_argument('--max-parallel', type=int, default=2,
-                       help='Max parallel chunks (only with --use-chunked and --chunked-parallel, default: 2)')
     parser.add_argument('--enable-execution-testing', action='store_true',
                        help='Enable execution testing during code review (tests code on Trainium each iteration)')
     
@@ -790,27 +783,20 @@ def main():
         os.environ['ENABLE_EXECUTION_TESTING'] = 'true'
         logger.info("✅ Execution testing enabled - code will be tested on Trainium during review")
     
-    # Initialize generator
-    if args.use_chunked:
-        if not CHUNKED_AVAILABLE:
-            logger.error("❌ Chunked code generator requested but not available")
-            logger.error("   Make sure chunked-code-gen module is properly set up")
-            return
-        logger.info("Initializing Chunked PyTorch Code Generator...")
-        generator = ChunkedPyTorchGenerator(
-            max_chunk_size=150000,  # 150k characters per chunk (accounts for prompt + paper summary overhead)
-            use_haiku_for_chunks=True,
-            parallel_chunks=args.chunked_parallel,
-            max_parallel=args.max_parallel,
-            batch_size=8,  # Group 8 chunk summaries into each batch for hierarchical summarization
-            use_smart_pdf_chunking=True,  # Enable smart chunking to prioritize relevant sections
-            max_pdf_chunks=15  # Maximum number of PDF chunks to process (prioritizes abstract, formulas, diagrams)
-        )
-        logger.info("✅ Using chunked approach (better for long papers)")
-    else:
-        logger.info("Initializing PyTorch Code Generator...")
-        generator = PyTorchCodeGenerator(enable_execution_testing=args.enable_execution_testing)
-        logger.info("✅ Using standard approach")
+    # Initialize generator - always use ChunkedPyTorchGenerator (PDF-only with smart chunking)
+    if not CHUNKED_AVAILABLE:
+        logger.error("❌ Chunked code generator not available")
+        logger.error("   Make sure chunked-code-gen module is properly set up")
+        return
+    
+    logger.info("Initializing Chunked PyTorch Code Generator (PDF-only with smart chunking)...")
+    generator = ChunkedPyTorchGenerator(
+        batch_size=8,  # Group 8 chunk summaries into each batch for hierarchical summarization
+        use_smart_pdf_chunking=True,  # Enable smart chunking to prioritize relevant sections (filters appendix)
+        max_pdf_chunks=15,  # Maximum number of PDF chunks to process (prioritizes abstract, formulas, diagrams)
+        pages_per_pdf_chunk=2  # 2 pages per PDF chunk
+    )
+    logger.info("✅ Using PDF chunking with smart relevance filtering")
     
     # Ensure Trainium is ready before processing papers
     if TRAINIUM_ENDPOINT:
