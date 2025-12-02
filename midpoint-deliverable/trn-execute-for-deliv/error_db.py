@@ -164,6 +164,10 @@ def save_error(paper_id: str, error_data: Dict[str, Any], iteration: Optional[in
             'execution_time': Decimal(str(error_data.get('execution_time', 0)))
         }
         
+        # Add fixes_applied if present in error_data
+        if 'fixes_applied' in error_data:
+            item['fixes_applied'] = json.dumps(error_data['fixes_applied']) if isinstance(error_data['fixes_applied'], (dict, list)) else str(error_data['fixes_applied'])
+        
         # Write to DynamoDB
         table = dynamodb_resource.Table(ERROR_DB_TABLE_NAME)
         table.put_item(Item=item)
@@ -216,10 +220,21 @@ def get_errors(paper_id: str) -> List[Dict[str, Any]]:
                     'execution_time': float(item.get('execution_time', 0))
                 }
             
-            errors.append({
+            error_item = {
                 'timestamp': item.get('timestamp', ''),
                 'error_data': error_data
-            })
+            }
+            
+            # Parse fixes_applied if present
+            fixes_applied_str = item.get('fixes_applied')
+            if fixes_applied_str:
+                try:
+                    fixes_applied = json.loads(fixes_applied_str) if isinstance(fixes_applied_str, str) else fixes_applied_str
+                    error_item['fixes_applied'] = fixes_applied
+                except json.JSONDecodeError:
+                    pass
+            
+            errors.append(error_item)
         
         return errors
         
@@ -229,6 +244,121 @@ def get_errors(paper_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Unexpected error getting errors for {paper_id}: {e}")
         return []
+
+def get_errors_for_paper_ids(paper_ids: List[str]) -> List[Dict[str, Any]]:
+    """
+    Get errors from DynamoDB for specific paper IDs.
+    
+    Args:
+        paper_ids: List of paper IDs to get errors for
+        
+    Returns:
+        List of error dictionaries with paper_id included
+    """
+    if not ERROR_DB_TABLE_NAME or not dynamodb_client:
+        logger.warning("DynamoDB table name not configured")
+        return []
+    
+    all_errors = []
+    try:
+        table = dynamodb_resource.Table(ERROR_DB_TABLE_NAME)
+        
+        for paper_id in paper_ids:
+            try:
+                partition_key = _get_partition_key(paper_id)
+                
+                response = table.query(
+                    KeyConditionExpression='docID = :pk',
+                    ExpressionAttributeValues={':pk': partition_key},
+                    ScanIndexForward=True
+                )
+                
+                for item in response.get('Items', []):
+                    error_data_str = item.get('error_data', '{}')
+                    try:
+                        error_data = json.loads(error_data_str) if isinstance(error_data_str, str) else error_data_str
+                    except json.JSONDecodeError:
+                        execution_time = item.get('execution_time', 0)
+                        error_data = {
+                            'stderr': item.get('stderr', ''),
+                            'stdout': item.get('stdout', ''),
+                            'error_message': item.get('error_message', ''),
+                            'error_type': item.get('error_type', 'execution_error'),
+                            'return_code': int(item.get('return_code', -1)),
+                            'execution_time': float(execution_time) if isinstance(execution_time, Decimal) else float(execution_time or 0)
+                        }
+                    
+                    all_errors.append({
+                        'paper_id': paper_id,
+                        'timestamp': item.get('timestamp', ''),
+                        'error_data': error_data
+                    })
+                    
+            except Exception as e:
+                logger.warning(f"Error retrieving errors for paper {paper_id}: {e}")
+                continue
+        
+        return all_errors
+        
+    except Exception as e:
+        logger.error(f"Error retrieving errors from DynamoDB: {e}")
+        return []
+
+
+def update_error_fixes(paper_id: str, fixes_applied: Dict[str, Any]) -> bool:
+    """
+    Update the most recent error record with fixes_applied information.
+    
+    Args:
+        paper_id: Paper/document ID
+        fixes_applied: Dictionary containing fix information
+        
+    Returns:
+        True if update successful, False otherwise
+    """
+    if not ERROR_DB_TABLE_NAME or not dynamodb_client:
+        logger.error("DynamoDB table name not configured")
+        return False
+    
+    try:
+        partition_key = _get_partition_key(paper_id)
+        table = dynamodb_resource.Table(ERROR_DB_TABLE_NAME)
+        
+        # Get the most recent error
+        response = table.query(
+            KeyConditionExpression='docID = :pk',
+            ExpressionAttributeValues={':pk': partition_key},
+            ScanIndexForward=False,  # Get most recent first
+            Limit=1
+        )
+        
+        items = response.get('Items', [])
+        if not items:
+            logger.warning(f"No errors found for {paper_id} to update with fixes")
+            return False
+        
+        item = items[0]
+        sort_key = item.get('interationNum')
+        
+        # Update the item with fixes_applied
+        table.update_item(
+            Key={
+                'docID': partition_key,
+                'interationNum': sort_key
+            },
+            UpdateExpression='SET fixes_applied = :fixes',
+            ExpressionAttributeValues={
+                ':fixes': json.dumps(fixes_applied) if isinstance(fixes_applied, (dict, list)) else str(fixes_applied)
+            }
+        )
+        
+        logger.info(f"Updated most recent error for {paper_id} with fixes_applied")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error updating error fixes for {paper_id}: {e}")
+        return False
+
 
 def clear_errors(paper_id: str) -> bool:
     

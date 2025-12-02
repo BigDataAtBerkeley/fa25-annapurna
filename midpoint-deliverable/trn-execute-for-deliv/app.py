@@ -48,7 +48,7 @@ import psutil
 import shutil
 import boto3
 from botocore.exceptions import ClientError
-from error_db import save_error, get_errors, get_all_errors, clear_errors
+from error_db import save_error, get_errors, clear_errors, update_error_fixes, get_errors_for_paper_ids
 from s3_code_storage import save_code, get_code, code_exists
 
 OPENSEARCH_AVAILABLE = False
@@ -57,34 +57,24 @@ OpenSearchClient = None
 SlackNotifier = None
 
 try:
-    # Try importing with explicit path check
-    import importlib.util
-    opensearch_path = os.path.join(code_gen_dir, 'opensearch_client.py')
-    slack_path = os.path.join(code_gen_dir, 'slack_notifier.py')
+    # Try importing local OpenSearchClient first (for code review functionality)
+    from opensearch_client import OpenSearchClient
+    OPENSEARCH_AVAILABLE = True
     
-    if not os.path.exists(opensearch_path):
-        opensearch_path = os.path.join(home_code_gen, 'opensearch_client.py')
+    # Try importing Slack notifier (optional, from code-gen-for-deliv)
+    import importlib.util
+    slack_path = os.path.join(code_gen_dir, 'slack_notifier.py')
+    if not os.path.exists(slack_path):
         slack_path = os.path.join(home_code_gen, 'slack_notifier.py')
     
-    if os.path.exists(opensearch_path) and os.path.exists(slack_path):
-        # Load modules explicitly
-        spec1 = importlib.util.spec_from_file_location("opensearch_client", opensearch_path)
-        opensearch_module = importlib.util.module_from_spec(spec1)
-        spec1.loader.exec_module(opensearch_module)
-        OpenSearchClient = opensearch_module.OpenSearchClient
-        
+    if os.path.exists(slack_path):
         spec2 = importlib.util.spec_from_file_location("slack_notifier", slack_path)
         slack_module = importlib.util.module_from_spec(spec2)
         spec2.loader.exec_module(slack_module)
         SlackNotifier = slack_module.SlackNotifier
-        
-        OPENSEARCH_AVAILABLE = True
         SLACK_AVAILABLE = True
     else:
-        # Fallback to regular import
-        from opensearch_client import OpenSearchClient
         from slack_notifier import SlackNotifier
-        OPENSEARCH_AVAILABLE = True
         SLACK_AVAILABLE = True
 except ImportError as e:
     print(f"WARNING: OpenSearch/Slack modules not available: {e}. Slack notifications will be disabled.", file=sys.stderr)
@@ -574,11 +564,34 @@ def extract_errors_from_result(exec_result: Dict[str, Any]) -> str:
     return error_message
 
 
-def fix_code_with_bedrock(code: str, error_message: str, iteration: int, paper_summary: Optional[str] = None, error_history: Optional[str] = None, all_past_errors: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+def fix_code_with_bedrock(code: str, error_message: str, iteration: int, paper_id: str, errors_list: List[Dict[str, Any]], paper_summary: Optional[str] = None, similar_paper_errors: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
 
     if not bedrock_client:
         logger.error("Bedrock client not available for code fixing")
         return None
+    
+    # Build error and fix history (excluding most recent error which doesn't have fixes yet)
+    error_fix_history = ""
+    if errors_list and len(errors_list) > 1:
+        error_fix_history = "\n═══════════════════════════════════════════════════════════════════════════════\nPREVIOUS ERRORS AND FIXES:\n═══════════════════════════════════════════════════════════════════════════════\n"
+        for i, error_item in enumerate(errors_list[:-1], 1):  # Exclude most recent
+            error_data = error_item.get('error_data', {})
+            error_msg = extract_errors_from_result(error_data)
+            fixes_applied = error_item.get('fixes_applied')
+            
+            error_fix_history += f"Iteration {i} ---- Error: {error_msg[:200] if error_msg else 'Unknown error'}\n"
+            if fixes_applied:
+                if isinstance(fixes_applied, str):
+                    try:
+                        fixes_applied = json.loads(fixes_applied)
+                    except json.JSONDecodeError:
+                        fixes_applied = None
+                if fixes_applied:
+                    fixes_list = fixes_applied.get('fixes', []) if isinstance(fixes_applied, dict) else fixes_applied
+                    if fixes_list:
+                        fixes_str = ', '.join(fixes_list[:3]) if isinstance(fixes_list, list) else str(fixes_list)
+                        error_fix_history += f"  Fixes Applied: {fixes_str}\n"
+            error_fix_history += "\n"
     
     # Build paper context section
     paper_context = ""
@@ -589,62 +602,198 @@ PAPER CONTEXT (for better understanding of what the code should implement):
 
 """
     
-    # Build error history section
-    history_context = ""
-    if error_history:
-        history_context = f"""
+    # Build similar paper errors context
+    similar_errors_context = ""
+    if similar_paper_errors:
+        unique_errors = []
+        seen_patterns = set()
+        for similar_error in similar_paper_errors[:30]:
+            error_data = similar_error.get('error_data', {})
+            error_msg = error_data.get('error_message', '') or error_data.get('stderr', '')[:200]
+            if error_msg:
+                first_line = error_msg.split('\n')[0].strip()
+                pattern_key = first_line[:100]
+                if pattern_key and pattern_key not in seen_patterns:
+                    seen_patterns.add(pattern_key)
+                    similar_paper_id = similar_error.get('paper_id', 'unknown')
+                    unique_errors.append(f"  - {first_line[:150]} (from paper: {similar_paper_id})")
+        
+        if unique_errors:
+            similar_errors_context = f"""
 ═══════════════════════════════════════════════════════════════════════════════
-PREVIOUS ERRORS (from earlier code review iterations for THIS paper):
+ERRORS FROM SIMILAR PAPERS (proactive checking):
 ═══════════════════════════════════════════════════════════════════════════════
-{error_history}
+The following errors occurred in similar papers. Check your code to ensure these errors will NOT occur:
 
-IMPORTANT: The errors above were from previous fix attempts for this paper. The fixes applied did not resolve these issues. Make sure your fix addresses BOTH the previous errors AND the current error below.
+{chr(10).join(unique_errors[:30])}
 
-═══════════════════════════════════════════════════════════════════════════════
-CURRENT ERROR (most recent execution):
 ═══════════════════════════════════════════════════════════════════════════════
 """
     
-    # Build past errors from all papers section
-    past_errors_context = ""
-    if all_past_errors:
-        # Extract unique error patterns from all past errors
-        unique_errors = []
-        seen_patterns = set()
-        
-        for past_error in all_past_errors[:50]:  # Limit to 50 most recent for prompt size
-            error_data = past_error.get('error_data', {})
-            error_msg = error_data.get('error_message', '') or error_data.get('stderr', '')[:200]
-            
-            # Extract key error patterns (first line of error message)
-            if error_msg:
-                first_line = error_msg.split('\n')[0].strip()
-                # Create a pattern key to avoid duplicates
-                pattern_key = first_line[:100]  # Use first 100 chars as pattern
-                
-                if pattern_key and pattern_key not in seen_patterns:
-                    seen_patterns.add(pattern_key)
-                    paper_id = past_error.get('paper_id', 'unknown')
-                    unique_errors.append(f"  - {first_line[:150]} (from paper: {paper_id})")
-        
-        if unique_errors:
-            past_errors_context = f"""
-═══════════════════════════════════════════════════════════════════════════════
-PAST ERRORS FROM ALL PAPERS (proactive checking):
-═══════════════════════════════════════════════════════════════════════════════
-The following errors occurred in OTHER papers when running on Trainium. 
-Check your code to ensure these errors will NOT occur:
+    # Comprehensive review checklist from code_review_agent
+    trainium_errors_ref = """**⚠️ CRITICAL: REAL TRAINIUM ERRORS - MUST PREVENT/FIX:**
 
-{chr(10).join(unique_errors[:30])}  # Limit to 30 for prompt size
+1. `AttributeError: 'ellipsis' object has no attribute 'X'` - Variable assigned to `...` (e.g., `base_model = ...`)
+2. `AttributeError: module 'torch_xla.core.xla_model' has no attribute 'XlaModule'` - Use `nn.Module`, not `xm.XlaModule`
+3. `AttributeError: module 'torch_xla.core.xla_model' has no attribute 'dot_general'` - Use `torch.matmul()`, not `xm.dot_general()`
+4. `AttributeError: module 'torch_xla.core.xla_model' has no attribute 'tensor'` - Use `torch.tensor()`, not `xm.tensor()`
+5. `AttributeError: module 'torch_xla.core.xla_model' has no attribute 'scalar_tensor_to_python_scalar'` - Use `.item()` or `int()`
+6. `TypeError: optimizer_step() got an unexpected keyword argument 'sync'` - Use `xm.optimizer_step(optimizer)` (no sync param)
+7. `AttributeError: module 'torch_xla.core.xla_model' has no attribute 'xla_device_context'` - Remove context manager, use direct calls
 
-CRITICAL: Review your code carefully and ensure it does NOT contain patterns that would cause these errors. This is proactive error prevention.
+**Quick fixes:**
+- ❌ `class LoRA(xm.XlaModule):` → ✅ `class LoRA(nn.Module):`
+- ❌ `xm.dot_general(x, w)` → ✅ `torch.matmul(x, w)`
+- ❌ `xm.tensor(0, ...)` → ✅ `torch.tensor(0, ...).to(device)`
+- ❌ `xm.optimizer_step(opt, sync=True)` → ✅ `xm.optimizer_step(opt)`
+- ❌ `base_model = ...` → ✅ `base_model = nn.Sequential(...)`"""
+    
+    comprehensive_checklist = f"""
+COMPREHENSIVE REVIEW CHECKLIST - Check for ALL of these:
 
-═══════════════════════════════════════════════════════════════════════════════
+{trainium_errors_ref}
+
+1. **Neuron SDK / XLA / Trainium Compatibility (CRITICAL):**
+   - MUST use torch_xla.core.xla_model as xm (Neuron SDK XLA module)
+   - MUST use xm.xla_device() to get Trainium device (NOT torch.device('cuda') or 'cpu')
+   - MUST use xm.optimizer_step(optimizer) instead of optimizer.step() (Neuron SDK requirement)
+   - MUST call xm.mark_step() after each backward pass (Neuron SDK synchronization)
+   - All tensor operations compatible with XLA (no in-place operations on indexed tensors)
+   - Tensor size operations: tensor.size(0) returns a tensor in XLA, must use int() for arithmetic
+   - No CUDA-specific code (.cuda(), device='cuda', torch.device('cuda'))
+   - Ensure all tensors moved to XLA device before operations
+   
+   **IMPORTANT: DO NOT incorrectly flag regular PyTorch operations as incompatible:**
+   - `torch.matmul()`, `torch.mm()`, `nn.Linear`, `nn.Conv2d`, etc. ARE compatible with XLA
+   - These operations work fine in XLA - compatibility comes from device placement, not special APIs
+   - Only flag issues if code uses CUDA-specific operations or non-existent xm.* APIs
+   
+   **VALID torch_xla.core.xla_model (xm) APIs ONLY:**
+   - xm.xla_device() - Get XLA device
+   - xm.optimizer_step(optimizer) - XLA optimizer step (NO sync parameter - just xm.optimizer_step(optimizer))
+   - xm.mark_step() - Synchronize XLA computation
+   - xm.rendezvous(tag) - Synchronization barrier (requires tag string)
+   - xm.get_ordinal() - Get device ordinal (distributed)
+   - xm.get_world_size() - Get world size (distributed)
+   
+   **CRITICAL: Regular PyTorch operations ARE supported in XLA:**
+   - `torch.matmul()`, `torch.mm()`, `torch.add()`, `torch.mul()`, etc. - ALL work in XLA
+   - `nn.Linear`, `nn.Conv2d`, `nn.ReLU`, etc. - ALL standard PyTorch modules work in XLA
+   - `nn.Module` - Use regular `nn.Module` for all classes, NOT `xm.XlaModule` (which doesn't exist)
+   - XLA compatibility comes from using XLA device (`xm.xla_device()`) and XLA optimizer step, NOT from special APIs
+   
+   **DO NOT suggest or use non-existent APIs like:**
+   - xm.optimizer - THIS DOES NOT EXIST (e.g., xm.optimizer.SGD is WRONG)
+   - xm.XlaModule - THIS DOES NOT EXIST (use regular `nn.Module`)
+   - xm.dot() or xm.dot_general() - THESE DO NOT EXIST (use `torch.matmul()` or `torch.mm()`)
+   - xm.tensor() - THIS DOES NOT EXIST (use `torch.tensor()`)
+   - xm.scalar_tensor_to_python_scalar() - THIS DOES NOT EXIST (use `.item()` or `int()`)
+   - xm.xla_device_context() - THIS DOES NOT EXIST (use `device = xm.xla_device()` and `model.to(device)` instead)
+   - xm.mark_step_context() - THIS DOES NOT EXIST (just call `xm.mark_step()` directly, no context manager)
+   - xm.send_cpu_data_to_device() - THIS DOES NOT EXIST (use `.to(device)` instead)
+   - xm.save_memory_state() - THIS DOES NOT EXIST
+   - xm.optimizer_step(optimizer, sync=True) - sync parameter DOES NOT EXIST (just use xm.optimizer_step(optimizer))
+   - Any other xm.* functions not listed above
+   - Only suggest fixes using the VALID APIs listed above
+   
+   **OPTIMIZER USAGE (CRITICAL):**
+   - WRONG: `optimizer = xm.optimizer.SGD(...)` - xm.optimizer does NOT exist
+   - CORRECT: `optimizer = torch.optim.SGD(...)` then use `xm.optimizer_step(optimizer)` instead of `optimizer.step()`
+   - Use regular PyTorch optimizers (torch.optim.SGD, torch.optim.Adam, etc.) - NOT xm.optimizer.*
+
+2. **Data Handling (CRITICAL):**
+   - MUST use `from dataset_loader import load_dataset` - DO NOT use torchvision.datasets
+   - WRONG: `import torchvision.datasets as datasets` or `datasets.MNIST(...)`
+   - WRONG: `train_loader.to(device)` or `test_loader.to(device)` - DataLoaders CANNOT be moved to device
+   - CORRECT: `train_loader, test_loader = load_dataset('mnist', batch_size=128)`
+   - CORRECT: Move tensors to device INSIDE the training loop: `inputs = inputs.to(device)`, NOT the DataLoader
+   
+   **CRITICAL: What load_dataset() returns for each dataset:**
+   - **mnist, cifar10, cifar100, fashion_mnist**: Returns (image_tensor, label_tensor) - BOTH are already PyTorch tensors, NO tokenization needed
+   - **wikitext2**: Returns (input_ids_tensor, labels_tensor) - BOTH are already PyTorch tensors (tokenized), NO tokenization needed
+   - **imdb**: Returns (text_strings, labels) - text_strings are Python strings, MUST be tokenized before use
+   - **synthetic**: Returns (features_tensor, labels_tensor) - BOTH are already PyTorch tensors, NO tokenization needed
+   
+   **WRONG - DO NOT tokenize already-tokenized data:**
+   - WRONG: `inputs = tokenizer(inputs, ...)` when inputs is already a tensor (from wikitext2, mnist, etc.)
+   - WRONG: `inputs = tokenizer(inputs, ...)` when inputs is already tokenized (input_ids)
+   - CORRECT for wikitext2: `inputs, labels = batch_data` then `inputs = inputs.to(device)` (already tensors!)
+   - CORRECT for imdb: `inputs, labels = batch_data` then `inputs = tokenizer(inputs, ...)` (inputs are strings)
+   
+   - DataLoader iteration: Handle both (tensor, tensor) and (text_strings, labels) formats correctly
+   - All tensors moved to device before operations (but NOT DataLoaders)
+   - Proper handling of batch data unpacking
+
+3. **Model Output Handling:**
+   - Model may return tuples - check isinstance() before using
+   - Proper unpacking of model outputs
+   - Handle optional return values (e.g., return_bias_scores=True)
+
+4. **Type Errors:**
+   - Mixing tensors with Python ints/floats in arithmetic
+   - Calling methods on wrong types (e.g., .to() on list, .item() on non-scalar)
+   - WRONG: `train_loader.to(device)` - DataLoaders are NOT tensors and cannot be moved to device
+   - CORRECT: Move tensors from DataLoader to device: `inputs, labels = inputs.to(device), labels.to(device)`
+   - Indexing issues with XLA tensors
+   
+5. **nn.ModuleDict Key Errors (CRITICAL):**
+   - WRONG: `nn.ModuleDict({{'1.weight': module}})` - keys cannot contain dots
+   - WRONG: `nn.ModuleDict({{f'{{name}}.weight': module}})` - if name contains dots or creates keys with dots
+   - CORRECT: Replace dots with underscores: `nn.ModuleDict({{name.replace('.', '_'): module}})`
+   - CORRECT: Use a different naming scheme without dots: `nn.ModuleDict({{f'layer_{{i}}': module for i, module in enumerate(...)}})`
+   - PyTorch/XLA requires ModuleDict keys to be valid Python identifiers (no dots)
+
+6. **Import Errors:**
+   - All used modules imported (math, random, collections, etc.)
+   - Correct import paths
+
+7. **Logic Errors:**
+   - Division by zero or None
+   - Uninitialized variables
+   - **CRITICAL: Ellipsis (...) placeholders (incomplete code):**
+     - WRONG: `base_model = ...` or `model = ...` - ellipsis is NOT a valid model/tensor/object
+     - WRONG: `variable = ... # Initialize here` - this is a placeholder, not actual initialization
+     - CORRECT: Must initialize with actual value (e.g., `base_model = nn.Sequential(...)` or `model = MyModel()`)
+     - Check for ANY variable assignment to `...` - this will cause AttributeError at runtime
+   - Incorrect tensor shapes/dimensions
+   - Wrong device placement
+   - **Shape Mismatch in Normalization Layers (CRITICAL):**
+     - LayerNorm expects input shape `[batch, ..., normalized_shape]` where last dimension matches normalized_shape
+     - WRONG: Applying LayerNorm(d_model) to image tensor `[batch, channels, height, width]` without flattening/projection
+     - WRONG: For vision datasets (MNIST, CIFAR), passing raw images `[batch, 1, 28, 28]` directly to transformer expecting `[batch, seq_len, d_model]`
+     - CORRECT: For vision + transformer: flatten image → project to d_model → reshape to `[batch, seq_len, d_model]` → then apply LayerNorm
+     - CORRECT: For vision + transformer: `x = x.view(batch_size, -1)` then `x = self.projection(x)` then `x = x.view(batch_size, seq_len, d_model)` before normalization
+
+8. **Runtime Errors:**
+   - AttributeError (calling methods on wrong types)
+     - **CRITICAL: AttributeError: 'ellipsis' object has no attribute 'X'** - Variable assigned to `...` placeholder
+     - Example: `base_model = ...` then `base_model.named_modules()` → AttributeError
+   - TypeError (wrong argument types)
+   - ValueError (wrong tensor shapes, dimensions)
+   - IndexError (out of bounds access)
+   - KeyError: 'module name can\'t contain "."' - ModuleDict keys with dots
+   - RuntimeError: "Given normalized_shape=[X], expected input with shape [*, X], but got input of size[...]" - Shape mismatch in LayerNorm/BatchNorm
+   - RuntimeError: "Check failed: dim1 == dim2" - XLA tensor shape mismatch when adding/multiplying tensors
+
+9. **XLA-Specific Gotchas:**
+   - Using tensor.size(0) directly in arithmetic without int() conversion
+   - Using tensor values in Python control flow without .item()
+   - In-place operations that XLA doesn't support
+   - Loss functions not moved to device (they shouldn't be)
+   
+10. **Gradient Access Errors (CRITICAL):**
+   - Accessing .grad during forward pass - gradients are None until loss.backward() is called
+   - WRONG: Using param.grad in forward() method or before backward()
+   - WRONG: Multiplying Parameter * None (when .grad is None)
+   - CORRECT: Only access .grad after loss.backward() in training loop
+   - CORRECT: Use param.data or param directly in forward pass, not param.grad
 """
     
     prompt = f"""You are fixing PyTorch code that failed execution on AWS Trainium.
 
-{paper_context}{past_errors_context}{history_context}The code failed with these REAL execution errors:
+{paper_context}{similar_errors_context}{error_fix_history}═══════════════════════════════════════════════════════════════════════════════
+CURRENT ERROR (most recent execution):
+═══════════════════════════════════════════════════════════════════════════════
 {error_message}
 
 Current code (iteration {iteration}):
@@ -652,55 +801,7 @@ Current code (iteration {iteration}):
 {code}
 ```
 
-═══════════════════════════════════════════════════════════════════════════════
-CRITICAL REQUIREMENTS - READ CAREFULLY
-═══════════════════════════════════════════════════════════════════════════════
-
-1. **FIX ALL ERRORS**: Address EVERY error listed above. These are REAL runtime errors from Trainium execution.
-
-2. **AWS NEURON SDK (MANDATORY - CRITICAL)**:
-   - MUST use `torch_xla.core.xla_model as xm` - this is the Neuron SDK XLA interface
-   - MUST use `device = xm.xla_device()` to get Trainium device (NOT torch.device('cuda') or 'cpu')
-   - MUST use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` - this is Neuron SDK requirement
-   - MUST call `xm.mark_step()` after each backward pass to synchronize XLA computation
-   - MUST move ALL tensors to device BEFORE any operations: `inputs = inputs.to(device)`, `labels = labels.to(device)`
-   - DO NOT move loss functions: `criterion = nn.CrossEntropyLoss()` (no .to(device))
-   - DO NOT use CUDA: no `.cuda()`, no `device='cuda'`, no `torch.device('cuda')`
-
-3. **COMMON TRAINIUM ERRORS TO FIX**:
-   - **Import errors**: Ensure ALL imports are present (math, random, collections, etc.)
-   - **XLA tensor size**: `tensor.size(0)` returns a tensor in XLA, use `int(tensor.size(0))` for arithmetic
-   - **Model output tuples**: Check `isinstance(model_output, tuple)` and unpack correctly
-   - **Dataset tokenization**: IMDB returns text strings - MUST tokenize before use
-   - **Shape mismatches**: LayerNorm/BatchNorm expect specific shapes - ensure input shape matches normalized_shape
-   - **LoRA errors**: If using LoRA, ensure `B @ A` produces `[out_features, in_features]` (NOT `B @ A.T`)
-   - **Parameter reassignment**: NEVER reassign `layer.weight = ...` in forward() - use `F.linear()` instead
-   - **Ellipsis placeholders**: Replace any `variable = ...` with actual initialization
-   - **ModuleDict keys**: Keys cannot contain dots - replace with underscores
-
-4. **DO NOT USE NON-EXISTENT APIs**:
-   - ❌ `xm.optimizer.SGD` - DOES NOT EXIST (use `torch.optim.SGD` then `xm.optimizer_step(optimizer)`)
-   - ❌ `xm.XlaModule` - DOES NOT EXIST (use regular `nn.Module`)
-   - ❌ `xm.dot()` or `xm.dot_general()` - DO NOT EXIST (use `torch.matmul()` or `torch.mm()`)
-   - ❌ `xm.tensor()` - DOES NOT EXIST (use `torch.tensor()`)
-   - ❌ `xm.xla_device_context()` - DOES NOT EXIST (use `device = xm.xla_device()` and `model.to(device)`)
-   - ❌ `xm.optimizer_step(optimizer, sync=True)` - sync parameter DOES NOT EXIST
-
-5. **VALID torch_xla APIs ONLY**:
-   - ✅ `xm.xla_device()` - Get XLA device
-   - ✅ `xm.optimizer_step(optimizer)` - XLA optimizer step (NO sync parameter)
-   - ✅ `xm.mark_step()` - Synchronize XLA computation
-   - ✅ `xm.rendezvous(tag)` - Synchronization barrier (requires tag string)
-
-6. **DATA HANDLING**:
-   - MUST use `from dataset_loader import load_dataset` - DO NOT use torchvision.datasets
-   - Move tensors to device INSIDE training loop: `inputs = inputs.to(device)`, NOT the DataLoader
-   - IMDB dataset: Returns (text_strings, labels) - MUST tokenize text strings before use
-
-7. **CODE COMPLETENESS**:
-   - Ensure all functions/classes have complete bodies (no ellipsis `...` placeholders)
-   - All variables must be initialized with actual values, not placeholders
-   - Ensure proper error handling and type checking
+{comprehensive_checklist}
 
 Return ONLY the complete fixed code in a Python code block. Do not include explanations outside the code block.
 
@@ -735,14 +836,22 @@ Fixed code:
         code_match = re.search(r'```python\n(.*?)\n```', generated_text, re.DOTALL)
         if code_match:
             fixed_code = code_match.group(1)
-            logger.info(f"Fixed code extracted (length: {len(fixed_code)})")
-            return fixed_code
         else:
             # Try to extract without markdown
             fixed_code = generated_text.strip()
-            if fixed_code.startswith('import') or fixed_code.startswith('from'):
-                logger.info(f"Fixed code extracted (no markdown, length: {len(fixed_code)})")
-                return fixed_code
+            if not (fixed_code.startswith('import') or fixed_code.startswith('from')):
+                fixed_code = None
+        
+        if fixed_code:
+            # Log fixes made
+            code_changed = fixed_code != code
+            if code_changed:
+                logger.info(f"✅ Fixed code extracted (iteration {iteration}, length: {len(fixed_code)} chars)")
+                logger.info(f"   Code length: {len(code)} → {len(fixed_code)} chars")
+            else:
+                logger.warning(f"⚠️ Fixed code is identical to original (iteration {iteration})")
+            
+            return fixed_code
         
         logger.warning("Failed to extract code from Bedrock response")
         return None
@@ -943,7 +1052,7 @@ def code_review():
         # Try to get errors from DynamoDB
         errors_list = get_errors(paper_id)
         error_count = len(errors_list)
-        
+    
         # Also check if error was passed directly in request (fallback if DynamoDB fails)
         direct_error = data.get('error_data')
         if direct_error and not errors_list:
@@ -998,29 +1107,14 @@ def code_review():
                 "message": "Final execution triggered in background - Slack notification will be sent"
             }), 400
             
-        # Build error message from all previous errors (not just latest)
-        # This gives the AI context about what was tried before
+        # Extract error message from most recent error
         error_message = ""
-        error_history = ""
         if errors_list:
-            # Extract errors from all previous iterations
-            all_error_messages = []
-            for i, error_item in enumerate(errors_list):
-                error_data = error_item.get('error_data', {})
-                extracted = extract_errors_from_result(error_data)
-                if extracted:
-                    iteration_num = i + 1
-                    all_error_messages.append(f"--- Iteration {iteration_num} Error ---\n{extracted}")
-            
-            if all_error_messages:
-                # Use latest error as primary, but include history
-                error_message = all_error_messages[-1]  # Latest error
-                if len(all_error_messages) > 1:
-                    # Include previous errors for context
-                    error_history = "\n\n".join(all_error_messages[:-1])  # All except latest
-                    logger.info(f"Including {len(all_error_messages) - 1} previous error(s) for context")
-            else:
-                logger.warning(f"No extractable errors found for {paper_id}, but errors list is not empty")
+            latest_error = errors_list[-1]
+            error_data = latest_error.get('error_data', {})
+            error_message = extract_errors_from_result(error_data)
+            if not error_message:
+                logger.warning(f"No extractable error found for {paper_id}")
         
         # Get current code from S3
         code = get_code(paper_id)
@@ -1030,8 +1124,9 @@ def code_review():
                 "error": f"No code found in S3 for {paper_id}"
             }), 404
         
-        # Get paper summary from OpenSearch for better context
+        # Get paper summary and similar paper errors from OpenSearch
         paper_summary = None
+        similar_paper_errors = []
         if OPENSEARCH_AVAILABLE:
             try:
                 opensearch_client = OpenSearchClient()
@@ -1039,17 +1134,30 @@ def code_review():
                 if paper:
                     paper_summary = opensearch_client.get_paper_summary(paper)
                     logger.info(f"Retrieved paper summary for {paper_id} ({len(paper_summary)} chars)")
+                    
+                    # Get similar paper errors (top 3)
+                    abstract = paper.get('abstract', '')
+                    if abstract:
+                        similar_papers = opensearch_client.search_similar_papers_by_abstract(
+                            abstract=abstract,
+                            exclude_id=paper_id,
+                            size=3
+                        )
+                        if similar_papers:
+                            similar_paper_ids = [p.get('_id') for p in similar_papers if p.get('_id')]
+                            logger.info(f"Found {len(similar_paper_ids)} similar papers: {', '.join(similar_paper_ids)}")
+                            
+                            # Get errors from similar papers
+                            similar_paper_errors = get_errors_for_paper_ids(similar_paper_ids)
+                            if similar_paper_errors:
+                                logger.info(f"Retrieved {len(similar_paper_errors)} errors from similar papers")
             except Exception as e:
-                logger.warning(f"Could not retrieve paper summary for {paper_id}: {e}")
-        
-        # Get ALL errors from ALL papers for proactive error checking
-        all_past_errors = get_all_errors(limit=200)  # Get up to 200 past errors from all papers
-        logger.info(f"Retrieved {len(all_past_errors)} past errors from all papers for proactive checking")
+                logger.warning(f"Could not retrieve paper info: {e}")
         
         # If we have errors, fix the code with Bedrock
         if error_message:
             logger.info(f"Fixing code with Bedrock (iteration {error_count})...")
-            fixed_code = fix_code_with_bedrock(code, error_message, error_count, paper_summary, error_history, all_past_errors)
+            fixed_code = fix_code_with_bedrock(code, error_message, error_count, paper_id, errors_list, paper_summary, similar_paper_errors)
             
             if not fixed_code:
                 return jsonify({
@@ -1066,6 +1174,18 @@ def code_review():
                 }), 500
             
             logger.info(f"Fixed code saved to S3: {s3_key}")
+            
+            # Update most recent error with fixes_applied
+            fixes_applied = {
+                'iteration': error_count,
+                'issues_found': [error_message[:200]],
+                'fixes': ['Code fixed via Bedrock'],
+                'code_length_before': len(code),
+                'code_length_after': len(fixed_code)
+            }
+            update_error_fixes(paper_id, fixes_applied)
+            logger.info(f"Updated error record with fixes_applied for iteration {error_count}")
+            
             code = fixed_code  # Use fixed code for testing
         else:
             logger.info(f"No errors to fix, testing current code for stability...")
@@ -1122,7 +1242,7 @@ def code_review():
         if not test_error_message:
             test_error_message = f"Code execution failed or timed out early (ran for {test_result.get('execution_time', 0)}s)"
         
-        # Save error to DB
+        # Save error to DB (include fix info if available)
         error_data = {
             "stderr": test_result.get('stderr', ''),
             "stdout": test_result.get('stdout', ''),
@@ -1131,6 +1251,16 @@ def code_review():
             "return_code": test_result.get('return_code', -1),
             "execution_time": test_result.get('execution_time', 0)
         }
+        # If we just fixed code, include fix info
+        if error_count > 0:
+            # Get the fix info from the previous iteration
+            try:
+                prev_errors = get_errors(paper_id)
+                if prev_errors and len(prev_errors) >= error_count:
+                    # The fix was applied in the previous iteration, store it with this error
+                    pass  # Fix info will be retrieved from previous error records
+            except Exception:
+                pass
         save_error(paper_id, error_data)
         
         # Continue code review in background thread to avoid blocking and infinite loops
