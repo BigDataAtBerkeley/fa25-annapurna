@@ -318,13 +318,13 @@ class OpenSearchClient:
         
         return summary.strip()
     
-    def search_similar_papers_by_abstract(self, abstract: str, exclude_id: str = None, size: int = 5) -> List[Dict[str, Any]]:
+    def search_similar_papers_by_abstract(self, paper_id: str, exclude_id: str = None, size: int = 5) -> List[Dict[str, Any]]:
         """
         Search for similar papers using abstract embedding (KNN search).
-        This prevents self-comparison by excluding a specific document ID.
+        Uses the paper's existing embedding from OpenSearch.
         
         Args:
-            abstract: Abstract text to search for similar papers
+            paper_id: Paper ID to get embedding from
             exclude_id: Paper ID to exclude from results (optional)
             size: Number of similar papers to return (default 5)
             
@@ -332,33 +332,23 @@ class OpenSearchClient:
             List of similar paper documents with similarity scores
         """
         try:
-            # Generate embedding using Bedrock Titan embedding model
-            import boto3
-            import json
-            
-            bedrock_runtime = boto3.client('bedrock-runtime', region_name=self.aws_region)
-            body = json.dumps({"inputText": abstract})
-            
-            try:
-                response = bedrock_runtime.invoke_model(
-                    modelId="amazon.titan-embed-text-v1",
-                    body=body,
-                    contentType="application/json"
-                )
-                result = json.loads(response["body"].read())
-                embedding = result.get("embedding", [])
-            except Exception as e:
-                logger.warning(f"Embedding generation failed: {e}")
+            # Get paper and its existing embedding
+            paper = self.get_paper_by_id(paper_id)
+            if not paper:
+                logger.warning(f"Paper {paper_id} not found")
                 return []
             
+            embedding = paper.get("abstract_embedding")
             if not embedding:
+                logger.warning(f"Paper {paper_id} has no abstract_embedding field")
                 return []
             
             # Convert to float list
             try:
                 embedding = [float(x) for x in embedding]
             except Exception:
-                pass
+                logger.warning(f"Failed to convert embedding to float list")
+                return []
             
             # Get embedding dimension from index mapping
             try:

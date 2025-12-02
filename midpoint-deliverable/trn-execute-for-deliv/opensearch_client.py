@@ -12,15 +12,14 @@ from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
 
 logger = logging.getLogger(__name__)
 
-
 class OpenSearchClient:
     """Minimal OpenSearch client for paper retrieval and similar paper search."""
     
     def __init__(self):
         """Initialize OpenSearch client with AWS auth"""
         self.aws_region = os.getenv("AWS_REGION", "us-east-1")
-        self.opensearch_endpoint = os.getenv("OPENSEARCH_ENDPOINT")
-        self.opensearch_index = os.getenv("OPENSEARCH_INDEX", "research-papersv3")
+        self.opensearch_endpoint = os.getenv("OPENSEARCH_ENDPOINT", "search-research-papers-uv3fxq76j5bkxq3bgp3nyfdtnm.us-east-1.es.amazonaws.com")
+        self.opensearch_index = os.getenv("OPENSEARCH_INDEX", "research-papers-v3")
         
         if not self.opensearch_endpoint:
             raise ValueError("OPENSEARCH_ENDPOINT environment variable is required")
@@ -63,34 +62,23 @@ class OpenSearchClient:
         
         return summary.strip()
     
-    def search_similar_papers_by_abstract(self, abstract: str, exclude_id: str = None, size: int = 5) -> List[Dict[str, Any]]:
+    def search_similar_papers(self, paper_id: str, exclude_id: str = None, size: int = 5) -> List[Dict[str, Any]]:
         """Search for similar papers using abstract embedding (KNN search)."""
         try:
             # Generate embedding using Bedrock Titan
-            bedrock_runtime = boto3.client('bedrock-runtime', region_name=self.aws_region)
-            body = json.dumps({"inputText": abstract})
-            
-            try:
-                response = bedrock_runtime.invoke_model(
-                    modelId="amazon.titan-embed-text-v1",
-                    body=body,
-                    contentType="application/json"
-                )
-                result = json.loads(response["body"].read())
-                embedding = result.get("embedding", [])
-            except Exception as e:
-                logger.warning(f"Embedding generation failed: {e}")
+            # Get paper and its existing embedding
+            paper = self.get_paper_by_id(paper_id)
+            if not paper:
+                logger.warning(f"Paper {paper_id} not found")
                 return []
             
+            embedding = paper.get("abstract_embedding")
             if not embedding:
+                logger.warning(f"Paper {paper_id} has no abstract_embedding field")
                 return []
-            
-            try:
-                embedding = [float(x) for x in embedding]
-            except Exception:
-                pass
-            
+                        
             # Get embedding dimension from index mapping
+            """
             try:
                 mapping = self.client.indices.get_mapping(index=self.opensearch_index)
                 props = mapping.get(self.opensearch_index, {}).get("mappings", {}).get("properties", {})
@@ -103,6 +91,7 @@ class OpenSearchClient:
                 embedding = embedding[:dim]
             elif len(embedding) < dim:
                 embedding = embedding + [0.0] * (dim - len(embedding))
+            """
             
             # Build KNN query
             query_size = size + 1 if exclude_id else size
@@ -155,4 +144,3 @@ class OpenSearchClient:
         except Exception as e:
             logger.error(f"Error searching similar papers: {e}")
             return []
-

@@ -51,50 +51,6 @@ from botocore.exceptions import ClientError
 from error_db import save_error, get_errors, clear_errors, update_error_fixes, get_errors_for_paper_ids
 from s3_code_storage import save_code, get_code, code_exists
 
-OPENSEARCH_AVAILABLE = False
-SLACK_AVAILABLE = False
-OpenSearchClient = None
-SlackNotifier = None
-
-try:
-    # Try importing local OpenSearchClient first (for code review functionality)
-    from opensearch_client import OpenSearchClient
-    OPENSEARCH_AVAILABLE = True
-    
-    # Try importing Slack notifier (optional, from code-gen-for-deliv)
-    import importlib.util
-    slack_path = os.path.join(code_gen_dir, 'slack_notifier.py')
-    if not os.path.exists(slack_path):
-        slack_path = os.path.join(home_code_gen, 'slack_notifier.py')
-    
-    if os.path.exists(slack_path):
-        spec2 = importlib.util.spec_from_file_location("slack_notifier", slack_path)
-        slack_module = importlib.util.module_from_spec(spec2)
-        spec2.loader.exec_module(slack_module)
-        SlackNotifier = slack_module.SlackNotifier
-        SLACK_AVAILABLE = True
-    else:
-        from slack_notifier import SlackNotifier
-        SLACK_AVAILABLE = True
-except ImportError as e:
-    print(f"WARNING: OpenSearch/Slack modules not available: {e}. Slack notifications will be disabled.", file=sys.stderr)
-    print(f"WARNING: Code gen directory: {code_gen_dir}", file=sys.stderr)
-    print(f"WARNING: Home code gen: {home_code_gen}", file=sys.stderr)
-    print(f"WARNING: Code gen directory exists: {os.path.exists(code_gen_dir)}", file=sys.stderr)
-    print(f"WARNING: Home code gen exists: {os.path.exists(home_code_gen)}", file=sys.stderr)
-    if os.path.exists(code_gen_dir):
-        print(f"WARNING: Files in code-gen-for-deliv: {os.listdir(code_gen_dir)[:10]}", file=sys.stderr)
-    if os.path.exists(home_code_gen):
-        print(f"WARNING: Files in home code-gen-for-deliv: {os.listdir(home_code_gen)[:10]}", file=sys.stderr)
-except Exception as e:
-    print(f"WARNING: Error loading OpenSearch/Slack modules: {e}. Slack notifications will be disabled.", file=sys.stderr)
-    import traceback
-    traceback.print_exc(file=sys.stderr)
-    if not OPENSEARCH_AVAILABLE:
-        OPENSEARCH_AVAILABLE = False
-    if not SLACK_AVAILABLE:
-        SLACK_AVAILABLE = False
-
 app = Flask(__name__)
 
 # Configure logging with fallback if log directory can't be created
@@ -121,46 +77,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Log OpenSearch/Slack availability after logger is initialized
-if OPENSEARCH_AVAILABLE and SLACK_AVAILABLE:
-    logger.info("✅ OpenSearch and Slack modules imported successfully")
-else:
-    logger.warning(f"⚠️ OpenSearch/Slack modules not available - Slack notifications will be disabled")
-    logger.warning(f"   OPENSEARCH_AVAILABLE: {OPENSEARCH_AVAILABLE}, SLACK_AVAILABLE: {SLACK_AVAILABLE}")
-    logger.warning(f"   Code gen directory: {code_gen_dir}")
-    logger.warning(f"   Code gen exists: {os.path.exists(code_gen_dir)}")
-    if os.path.exists(code_gen_dir):
-        py_files = [f for f in os.listdir(code_gen_dir) if f.endswith('.py')]
-        logger.warning(f"   Code gen Python files: {', '.join(py_files[:5])}")
+# Import Slack, OpenSearch, and SageMaker metrics modules
 
-# Import SageMaker metrics logger
+try:
+    from slack_notifier import SlackNotifier
+    SLACK_AVAILABLE = True
+except ImportError as e: 
+    SLACK_AVAILABLE = False
+    SlackNotifier = None
+    logger.warning("Slack module not found - updates will be disabled.")
+    
+try:
+    from opensearch_client import OpenSearchClient
+    OPENSEARCH_AVAILABLE = True
+except ImportError as e:
+    OPENSEARCH_AVAILABLE = False
+    OpenSearchClient = None
+    logger.warning("OpenSearch client module not found - OpenSearch functionality will be disabled.")
+
 try:
     from sagemaker_metrics import SageMakerMetricsLogger, create_metrics_logger
-    SAGEMAKER_METRICS_ENABLED = os.getenv('SAGEMAKER_METRICS_ENABLED', 'true').lower() == 'true'
+    SAGEMAKER_METRICS_ENABLED = True
 except ImportError:
     SAGEMAKER_METRICS_ENABLED = False
     logger.warning("sagemaker_metrics module not found. Metrics logging to CloudWatch will be disabled.")
 
 # Configuration
-MAX_EXECUTION_TIME = int(os.getenv('MAX_EXECUTION_TIME', '1800'))  # 30 minutes
-SUCCESS_ASSUMPTION_TIME = int(os.getenv('SUCCESS_ASSUMPTION_TIME', '300'))  # 5 minutes - assume success if running this long
+MAX_EXECUTION_TIME = int(os.getenv('MAX_EXECUTION_TIME', '1800'))  
+SUCCESS_ASSUMPTION_TIME = int(os.getenv('SUCCESS_ASSUMPTION_TIME', '300'))  
 WORKING_DIR = os.getenv('WORKING_DIR', '/tmp/trainium_jobs')
 DATASET_CACHE_DIR = os.getenv('DATASET_CACHE_DIR', '/tmp/datasets')
 NEURON_PROFILER_ENABLED = os.getenv('NEURON_PROFILER_ENABLED', 'true').lower() == 'true'
 PROFILER_OUTPUT_DIR = os.getenv('PROFILER_OUTPUT_DIR', '/tmp/neuron_profiler')
 RESULTS_BUCKET = os.getenv('RESULTS_BUCKET', 'trainium-execution-results')
 MAX_REVIEW_ITERATIONS = int(os.getenv('MAX_REVIEW_ITERATIONS', '6'))  
-CODE_REVIEW_STABILITY_TIME = int(os.getenv('CODE_REVIEW_STABILITY_TIME', '120'))  # 2 minutes - if code runs this long without errors, consider it stable
-
-# DynamoDB Error Database Configuration
-# Set ERROR_DB_TABLE_NAME environment variable with your DynamoDB table name
-# Table structure: Partition key = DOC#<docId>, Sort key = ITER#<iteration>#ERR#<errorId>
-ERROR_DB_TABLE_NAME = os.getenv('ERROR_DB_TABLE_NAME', 'docRunErrors')
-
-# Bedrock configuration for code review
+ERROR_DB_TABLE_NAME = os.getenv('ERROR_DB_TABLE_NAME', 'docRunErrors') # Table structure: Partition key = DOC#<docId>, Sort key = ITER#<iteration>#ERR#<errorId>
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
-# Using Claude 3 Sonnet (supports on-demand, widely available, not legacy)
 BEDROCK_MODEL_ID = os.getenv('BEDROCK_MODEL_ID', 'anthropic.claude-3-sonnet-20240229-v1:0')
+SLACK_BOT_TOKEN = os.getenv('SLACK_BOT_TOKEN', 'xoxb-552112250854-10031003801584-OFAzmiCTvAsECqlzIKmy9Ck1')
+SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', 'apl-research-papers')
 
 # Initialize Bedrock client for code review
 bedrock_client = None
@@ -219,15 +174,13 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
         thread_ts: Optional Slack thread timestamp to reply in thread
     """
     if not SLACK_AVAILABLE or not OPENSEARCH_AVAILABLE:
-        logger.warning(f"⚠️ Slack/OpenSearch not available - skipping notification for {paper_id}")
-        logger.warning(f"   SLACK_AVAILABLE={SLACK_AVAILABLE}, OPENSEARCH_AVAILABLE={OPENSEARCH_AVAILABLE}")
-        logger.warning(f"   To enable Slack notifications, ensure opensearch_client and slack_notifier modules are available")
+        logger.warning(f"Slack/OpenSearch not available - skipping notification for {paper_id}")
         return
     
     try:
         # Initialize clients
         opensearch_client = OpenSearchClient()
-        slack_notifier = SlackNotifier()
+        slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
         
         # Get paper from OpenSearch
         try:
@@ -604,9 +557,9 @@ PAPER CONTEXT (for better understanding of what the code should implement):
 {paper_summary}
 
 """
-# Remove logger this once done debugging
-    logger.info(f"Paper context: {paper_context}")
     # Remove logger this once done debugging
+    logger.info(f"Paper context: {paper_context}")
+
     # Build similar paper errors context
     similar_errors_context = ""
     if similar_paper_errors:
@@ -1138,29 +1091,21 @@ def code_review():
         if OPENSEARCH_AVAILABLE:
             try:
                 opensearch_client = OpenSearchClient()
-                paper = opensearch_client.get_paper_by_id(paper_id)
-                if paper:
-                    paper_summary = opensearch_client.get_paper_summary(paper)
-                    logger.info(f"Retrieved paper summary for {paper_id} ({len(paper_summary)} chars)")
+                similar_papers = opensearch_client.search_similar_papers(
+                    paper_id=paper_id,
+                    exclude_id=paper_id,
+                    size=3
+                )
+                if similar_papers:
+                    similar_paper_ids = [p.get('_id') for p in similar_papers if p.get('_id')]
+                    logger.info(f"Found {len(similar_paper_ids)} similar papers: {', '.join(similar_paper_ids)}")
                     
-                    # Get similar paper errors (top 3)
-                    abstract = paper.get('abstract', '')
-                    if abstract:
-                        similar_papers = opensearch_client.search_similar_papers_by_abstract(
-                            abstract=abstract,
-                            exclude_id=paper_id,
-                            size=3
-                        )
-                        if similar_papers:
-                            similar_paper_ids = [p.get('_id') for p in similar_papers if p.get('_id')]
-                            logger.info(f"Found {len(similar_paper_ids)} similar papers: {', '.join(similar_paper_ids)}")
-                            
-                            # Get errors from similar papers
-                            similar_paper_errors = get_errors_for_paper_ids(similar_paper_ids)
-                            if similar_paper_errors:
-                                logger.info(f"Retrieved {len(similar_paper_errors)} errors from similar papers")
+                    # Get errors from similar papers
+                    similar_paper_errors = get_errors_for_paper_ids(similar_paper_ids)
+                    if similar_paper_errors:
+                        logger.info(f"Retrieved {len(similar_paper_errors)} errors from similar papers")
             except Exception as e:
-                logger.warning(f"Could not retrieve paper info: {e}")
+                logger.warning(f"Could not retrieve paper info: {e}. Check OpenSearch availability and credentials.")
         
         # If we have errors, fix the code with Bedrock
         if error_message:
@@ -1199,51 +1144,29 @@ def code_review():
             
             code = fixed_code  # Use fixed code for testing
         else:
-            logger.info(f"No errors to fix, testing current code for stability...")
+            logger.info(f"No errors to fix. Testing execution.")
         
         # Test code with 2-minute timeout to check for immediate errors
         # If it runs for 2 minutes without errors, consider it stable
-        logger.info(f"Testing code stability: running for {CODE_REVIEW_STABILITY_TIME}s to check for errors...")
+        logger.info(f"Executing code.")
         test_result = execute_code_sync(
             paper_id=f"{paper_id}_review_test",
             code=code,
-            timeout=CODE_REVIEW_STABILITY_TIME,
+            timeout=MAX_EXECUTION_TIME,
             paper_title=data.get('paper_title')
         )
         
         # Check if code ran successfully for the stability period
-        if test_result.get('success') and test_result.get('execution_time', 0) >= CODE_REVIEW_STABILITY_TIME - 10:
-            # Code ran successfully for ~2 minutes - consider it stable
-            logger.info(f"✅ Code is stable! Ran for {test_result.get('execution_time')}s without errors.")
-            
-            # Save stable code to S3 and trigger full execution
-            s3_key = save_code(paper_id, code)
-            logger.info(f"Stable code saved to S3: {s3_key}")
-            
-            # Trigger full execution with the stable code
-            try:
-                exec_result = execute_internal(
-                    paper_id=paper_id,
-                    code=code,
-                    timeout=MAX_EXECUTION_TIME,
-                    paper_title=data.get('paper_title')
-                )
-                
-                return jsonify({
-                    "success": True,
-                    "message": f"Code is stable after {error_count} iterations. Full execution triggered.",
-                    "paper_id": paper_id,
-                    "iteration": error_count,
-                    "stability_test_time": test_result.get('execution_time'),
-                    "execution_status": exec_result
-                })
-            except Exception as e:
-                logger.error(f"Failed to trigger full execution: {e}")
-                return jsonify({
-                    "success": False,
-                    "error": f"Code is stable but failed to trigger execution: {str(e)}",
-                    "paper_id": paper_id
-                }), 500
+        if test_result.get('success'):
+            return jsonify({
+                "success": True,
+                "message": f"Code is stable after {error_count} iterations. Full execution triggered.",
+                "paper_id": paper_id,
+                "iteration": error_count,
+                "stability_test_time": test_result.get('execution_time'),
+                "execution_status": exec_result
+            })
+
         
         # Code failed or didn't run long enough - save error and continue in background thread
         logger.warning(f"Code test failed or didn't run long enough. Execution time: {test_result.get('execution_time', 0)}s")
@@ -1262,16 +1185,7 @@ def code_review():
             "return_code": test_result.get('return_code', -1),
             "execution_time": test_result.get('execution_time', 0)
         }
-        # If we just fixed code, include fix info
-        if error_count > 0:
-            # Get the fix info from the previous iteration
-            try:
-                prev_errors = get_errors(paper_id)
-                if prev_errors and len(prev_errors) >= error_count:
-                    # The fix was applied in the previous iteration, store it with this error
-                    pass  # Fix info will be retrieved from previous error records
-            except Exception:
-                pass
+        
         save_error(paper_id, error_data)
         
         # Continue code review in background thread to avoid blocking and infinite loops
