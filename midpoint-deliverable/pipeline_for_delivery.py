@@ -50,7 +50,7 @@ try:
     # Import chunked generator from chunked-code-gen subdirectory
     # Since the directory name has hyphens, we need to import the module directly
     import importlib.util
-    chunked_dir = os.path.join(os.path.dirname(__file__), 'code-gen-for-deliv', 'chunked-code-gen')
+    chunked_dir = os.path.join(os.path.dirname(__file__), 'code-gen-for-deliv')
     chunked_generator_path = os.path.join(chunked_dir, 'chunked_generator.py')
     
     if os.path.exists(chunked_generator_path):

@@ -175,6 +175,7 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
     """
     if not SLACK_AVAILABLE or not OPENSEARCH_AVAILABLE:
         logger.warning(f"Slack/OpenSearch not available - skipping notification for {paper_id}")
+        logger.warning(f"SLACK_AVAILABLE: {SLACK_AVAILABLE}, OPENSEARCH_AVAILABLE: {OPENSEARCH_AVAILABLE}")
         return
     
     try:
@@ -1059,7 +1060,11 @@ def code_review():
         # Safety limit to prevent infinite loops
         if error_count >= MAX_REVIEW_ITERATIONS:
             logger.warning(f"Max code review depth reached for {paper_id} ({error_count}). Triggering final execution attempt to send Slack notification...")
- 
+            
+            # Remove once debugging is done.
+            clear_errors(paper_id)
+            logger.info(f"Cleared errors for {paper_id}")
+            
             return jsonify({
                 "success": False,
                 "error": f"Max review iterations ({MAX_REVIEW_ITERATIONS}) reached.",
@@ -1106,6 +1111,8 @@ def code_review():
                         logger.info(f"Retrieved {len(similar_paper_errors)} errors from similar papers")
             except Exception as e:
                 logger.warning(f"Could not retrieve paper info: {e}. Check OpenSearch availability and credentials.")
+        else:
+            logger.warning(f"OpenSearch not available - skipping similar paper errors.")
         
         # If we have errors, fix the code with Bedrock
         if error_message:
@@ -1164,7 +1171,6 @@ def code_review():
                 "paper_id": paper_id,
                 "iteration": error_count,
                 "stability_test_time": test_result.get('execution_time'),
-                "execution_status": exec_result
             })
 
         

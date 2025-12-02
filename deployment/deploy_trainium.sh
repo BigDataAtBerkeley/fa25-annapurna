@@ -133,6 +133,8 @@ ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" << 'EOF'
     mv ~/dataset_loader.py ~/trainium-executor/ 2>/dev/null || true
     mv ~/error_db.py ~/trainium-executor/ 2>/dev/null || true
     mv ~/s3_code_storage.py ~/trainium-executor/ 2>/dev/null || true
+    mv ~/slack_notifier.py ~/trainium-executor/ 2>/dev/null || true
+    mv ~/opensearch_client.py ~/trainium-executor/ 2>/dev/null || true
     
     echo "✅ System installation complete"
 EOF
