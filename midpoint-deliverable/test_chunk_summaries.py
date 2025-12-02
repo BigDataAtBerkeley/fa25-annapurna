@@ -121,7 +121,7 @@ def process_pdf_chunks(pdf_bytes: bytes, paper_summary: str,
                       pages_per_chunk: int = 2) -> list:
     """Process PDF chunks and return summaries."""
     pdf_processor = PDFProcessor()
-    bedrock_client = ChunkedBedrockClient(use_haiku=True)
+    bedrock_client = ChunkedBedrockClient()
     
     # Split PDF into chunks
     logger.info(f"📄 Splitting PDF into chunks (smart chunking: {use_smart_chunking})...")

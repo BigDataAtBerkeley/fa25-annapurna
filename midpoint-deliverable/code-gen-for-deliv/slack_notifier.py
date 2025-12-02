@@ -109,7 +109,8 @@ class SlackNotifier:
         
         # All other fields in a collapsible section
         other_fields = {}
-        known_fields = {'title', 'authors', 'abstract', '_id', 's3_bucket', 's3_key'}
+        known_fields = {'title', 'authors', 'abstract', '_id', 's3_bucket', 's3_key', 
+                       'abstract_embedding', 'sha_abstract', 'title_normalized'}
         
         for key, value in paper.items():
             if key not in known_fields:

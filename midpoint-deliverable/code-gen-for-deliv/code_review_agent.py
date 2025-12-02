@@ -11,10 +11,16 @@ import re
 import json
 import time
 import os
+import sys
 import requests
 from typing import Dict, Any, Optional, List, Tuple
-from bedrock_client import BedrockClient
 from botocore.exceptions import ClientError
+
+# Import ChunkedBedrockClient from chunked-code-gen directory
+chunked_code_gen_path = os.path.join(os.path.dirname(__file__), 'chunked-code-gen')
+if chunked_code_gen_path not in sys.path:
+    sys.path.insert(0, chunked_code_gen_path)
+from chunked_bedrock_client import ChunkedBedrockClient
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +30,7 @@ class CodeReviewAgent:
     Agent that reviews and fixes generated PyTorch code iteratively.
     """
     
-    def __init__(self, bedrock_client: Optional[BedrockClient] = None, 
+    def __init__(self, bedrock_client: Optional[ChunkedBedrockClient] = None, 
                  enable_execution_testing: bool = False,
                  trainium_endpoint: Optional[str] = None,
                  execution_timeout: int = 120,
@@ -34,7 +40,7 @@ class CodeReviewAgent:
         Initialize the code review agent.
         
         Args:
-            bedrock_client: BedrockClient instance (creates new one if None)
+            bedrock_client: ChunkedBedrockClient instance (creates new one if None)
             enable_execution_testing: If True, execute code on Trainium during review to get real errors
             trainium_endpoint: Trainium executor endpoint (e.g., "http://1.2.3.4:8000")
             execution_timeout: Timeout for execution tests in seconds (default 2 minutes)
@@ -43,7 +49,7 @@ class CodeReviewAgent:
             opensearch_client: OpenSearchClient instance for similar paper search (optional)
             dynamo_client: DynamoClient instance for error database (optional)
         """
-        self.bedrock_client = bedrock_client or BedrockClient()
+        self.bedrock_client = bedrock_client or ChunkedBedrockClient()
         self.max_iterations = int(os.getenv('CODE_REVIEW_MAX_ITERATIONS', '6'))  # Max iterations (default 6)
         self.fix_history = []  # Track fixes applied
         self.enable_execution_testing = enable_execution_testing

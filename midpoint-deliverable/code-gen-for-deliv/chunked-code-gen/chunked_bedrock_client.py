@@ -1,6 +1,7 @@
 """
 Bedrock client for chunked code generation.
 Handles individual chunk summarization and final code generation.
+
 """
 
 import os
@@ -20,25 +21,17 @@ logger = logging.getLogger(__name__)
 class ChunkedBedrockClient:
     """Client for chunked code generation with throttling mitigation."""
     
-    def __init__(self, use_haiku: bool = False):
+    def __init__(self):
         """
         Initialize Bedrock client for chunked generation.
-        
-        Args:
-            use_haiku: If True, use Claude 3 Haiku for chunk summaries (faster, better rate limits)
-                      If False, use Claude 3 Sonnet (default)
         """
         self.aws_region = os.getenv("AWS_REGION", "us-east-1")
         
-        # Use Haiku for chunk summaries if requested (better rate limits, faster, cheaper)
-        # Use Sonnet for final code generation (better quality)
-        if use_haiku:
-            self.chunk_model_id = os.getenv("BEDROCK_CHUNK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
-        else:
-            self.chunk_model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-sonnet-4-5-20251101-v1:0")
-        
-        # Always use Sonnet for final code generation (better quality)
-        self.final_model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-sonnet-4-5-20251101-v1:0")
+        # Currently using haiku for its fast processing
+        model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
+        self.chunk_model_id = model_id
+        self.final_model_id = model_id
+        self.model_id = model_id  # Alias for compatibility with CodeReviewAgent
         
         from botocore.config import Config
         config = Config(
@@ -47,8 +40,7 @@ class ChunkedBedrockClient:
         )
         self.client = boto3.client("bedrock-runtime", region_name=self.aws_region, config=config)
         
-        # Delay between chunk processing to avoid throttling
-        self.chunk_delay = float(os.getenv("CHUNK_PROCESSING_DELAY", "3.0"))  # 3 seconds between chunks (increased from 2.0)
+        self.chunk_delay = float(os.getenv("CHUNK_PROCESSING_DELAY", "3.0"))  # 3 seconds between chunk processing
         
         logger.info(f"Chunked Bedrock client initialized:")
         logger.info(f"  - Chunk model: {self.chunk_model_id}")
@@ -130,8 +122,8 @@ Format your response as a structured summary with clear sections.
         
         body = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096,  # Chunk summaries don't need to be as long as full code
-            "temperature": 0.2,  # Lower temperature for more accurate, detailed summaries
+            "max_tokens": 4096, 
+            "temperature": 0.2, 
             "messages": [
                 {
                     "role": "user",
@@ -141,7 +133,7 @@ Format your response as a structured summary with clear sections.
         }
         
         max_retries = 8
-        base_delay = 5  # Increased base delay to better handle rate limits
+        base_delay = 5  
         
         for attempt in range(max_retries):
             try:
@@ -155,7 +147,6 @@ Format your response as a structured summary with clear sections.
                 error_code = e.response.get('Error', {}).get('Code', '')
                 error_msg = str(e)
                 
-                # Log the actual error for debugging
                 logger.debug(f"PDF Chunk {chunk_number} error: Code={error_code}, Message={error_msg[:200]}")
                 
                 retryable_errors = ['ThrottlingException', 'ServiceUnavailableException', 'TooManyRequestsException']
@@ -166,7 +157,6 @@ Format your response as a structured summary with clear sections.
                                'rate exceeded' in error_msg.lower())
                 
                 if is_throttling and attempt < max_retries - 1:
-                    # Exponential backoff with jitter
                     delay = min(base_delay * (2 ** attempt), 60)  # Cap at 60s for chunks
                     jitter = random.uniform(0, 1)
                     total_delay = delay + jitter
@@ -174,7 +164,6 @@ Format your response as a structured summary with clear sections.
                     time.sleep(total_delay)
                     continue
                 else:
-                    # Log non-throttling errors before raising
                     if not is_throttling:
                         logger.error(f"PDF Chunk {chunk_number} non-retryable error: Code={error_code}, Message={error_msg[:200]}")
                     raise
@@ -190,108 +179,6 @@ Format your response as a structured summary with clear sections.
             "pages": f"{page_start + 1}-{page_end}",
             "num_images": len(base64_images)
         }
-    
-    def summarize_chunk(self, chunk_text: str, chunk_number: int, total_chunks: int, 
-                       paper_summary: str) -> Dict[str, Any]:
-        """
-        Generate a detailed summary of a paper chunk.
-        
-        Args:
-            chunk_text: Text content of the chunk
-            chunk_number: Current chunk number (1-indexed)
-            total_chunks: Total number of chunks
-            paper_summary: Overall paper summary (title, authors, abstract)
-            
-        Returns:
-            Dictionary with summary and metadata
-        """
-        prompt = f"""
-You are analyzing a research paper that has been split into {total_chunks} parts. You are analyzing part {chunk_number} of {total_chunks}.
-
-Paper Overview:
-{paper_summary}
-
-Chunk {chunk_number} Content:
-{chunk_text}
-
-Your task is to provide a DETAILED SUMMARY of this chunk that will be used to generate PyTorch code. Include:
-
-1. KEY ALGORITHMS AND METHODS described in this chunk
-2. MATHEMATICAL FORMULAS and equations (write them out clearly)
-3. ARCHITECTURAL DETAILS (neural network structures, layer types, etc.)
-4. TRAINING PROCEDURES (loss functions, optimization methods, training steps)
-5. KEY IMPLEMENTATION DETAILS (data preprocessing, specific operations, etc.)
-6. IMPORTANT CONSTANTS, HYPERPARAMETERS, or configuration details
-7. ANY CODE-RELEVANT INFORMATION that would be needed to implement this
-
-Be extremely detailed and specific. Include all mathematical notation, formulas, and technical details.
-This summary will be combined with summaries from other chunks to generate complete PyTorch code.
-
-Format your response as a structured summary with clear sections.
-"""
-        
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096,  # Chunk summaries don't need to be as long as full code
-            "temperature": 0.2,  # Lower temperature for more accurate, detailed summaries
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
-        }
-        
-        max_retries = 8
-        base_delay = 5  # Increased base delay to better handle rate limits
-        
-        for attempt in range(max_retries):
-            try:
-                response = self.client.invoke_model(
-                    modelId=self.chunk_model_id,
-                    body=json.dumps(body),
-                    contentType="application/json"
-                )
-                break
-            except ClientError as e:
-                error_code = e.response.get('Error', {}).get('Code', '')
-                error_msg = str(e)
-                
-                # Log the actual error for debugging
-                logger.debug(f"Chunk {chunk_number} error: Code={error_code}, Message={error_msg[:200]}")
-                
-                retryable_errors = ['ThrottlingException', 'ServiceUnavailableException', 'TooManyRequestsException']
-                # More specific throttling detection - don't match generic 'rate' word
-                is_throttling = (error_code in retryable_errors or 
-                               'throttl' in error_msg.lower() or 
-                               'too many requests' in error_msg.lower() or
-                               'rate limit' in error_msg.lower() or
-                               'rate exceeded' in error_msg.lower())
-                
-                if is_throttling and attempt < max_retries - 1:
-                    # Exponential backoff with jitter
-                    delay = min(base_delay * (2 ** attempt), 60)  # Cap at 60s for chunks
-                    jitter = random.uniform(0, 1)
-                    total_delay = delay + jitter
-                    logger.warning(f"Chunk {chunk_number} throttling detected (Code: {error_code}), retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(total_delay)
-                    continue
-                else:
-                    # Log non-throttling errors before raising
-                    if not is_throttling:
-                        logger.error(f"Chunk {chunk_number} non-retryable error: Code={error_code}, Message={error_msg[:200]}")
-                    raise
-        
-        response_body = json.loads(response['body'].read())
-        summary_text = response_body['content'][0]['text']
-        
-        return {
-            "success": True,
-            "chunk_number": chunk_number,
-            "summary": summary_text,
-            "model_used": self.chunk_model_id
-        }
-    
     def summarize_batch(self, batch_summaries: List[str], batch_number: int, total_batches: int,
                        paper_summary: str) -> Dict[str, Any]:
         """
@@ -335,7 +222,7 @@ Format your response as a structured, comprehensive summary.
         
         body = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096,
+            "max_tokens": 8192,  # Increased from 4096 to handle consolidating 8 chunk summaries with all formulas/details
             "temperature": 0.2,
             "messages": [
                 {
@@ -379,11 +266,18 @@ Format your response as a structured, comprehensive summary.
         response_body = json.loads(response['body'].read())
         summary_text = response_body['content'][0]['text']
         
+        # Check for truncation
+        stop_reason = response_body.get('stop_reason')
+        truncated = stop_reason == 'max_tokens'
+        if truncated:
+            logger.warning(f"⚠️ Batch {batch_number} summary was truncated due to max_tokens limit (8192). Some details may be missing.")
+        
         return {
             "success": True,
             "batch_number": batch_number,
             "summary": summary_text,
-            "model_used": self.chunk_model_id
+            "model_used": self.chunk_model_id,
+            "truncated": truncated
         }
     
     def generate_final_code(self, paper_summary: str, chunk_summaries: List[str],
@@ -440,7 +334,6 @@ INFERRED DOMAIN: {domain}
                 prompt += f"REASONING: {reasoning}\n"
             prompt += "\n"
         
-        # Add the standard code generation requirements (same as bedrock_client2.py)
         prompt += f"""
 Generate a complete, production-ready PyTorch implementation that demonstrates the paper's key concepts.
 
@@ -449,41 +342,14 @@ CRITICAL REQUIREMENTS - READ CAREFULLY
 ═══════════════════════════════════════════════════════════════════════════════
 
 1. DATASET LOADING (MANDATORY - CRITICAL):
-   ```python
-   from dataset_loader import load_dataset
-   train_loader, test_loader = load_dataset('{primary_dataset}', batch_size=128)
-   ```
    - USE PRIMARY DATASET: '{primary_dataset}'
    - Available: cifar10, cifar100, mnist, fashion_mnist, imdb, wikitext2, synthetic
    - For NLP: use imdb or wikitext2 (NOT vision datasets)
    - CRITICAL: DO NOT use torchvision.datasets - it will cause PermissionError
-   - CRITICAL: DO NOT try to move DataLoaders to device: `train_loader.to(device)` is WRONG
-   - CORRECT: Move tensors to device INSIDE training loop: `inputs, labels = inputs.to(device), labels.to(device)`
    - DO NOT create your own data loaders - use dataset_loader module
 
 2. AWS NEURON SDK REQUIREMENTS (MANDATORY - CRITICAL):
    This code MUST run on AWS Trainium using the Neuron SDK. You MUST use torch_xla (XLA) which is part of the Neuron SDK.
-   
-   ```python
-   import torch_xla.core.xla_model as xm  # REQUIRED: Neuron SDK XLA module
-   device = xm.xla_device()  # REQUIRED: Get XLA device (Trainium accelerator)
-   model = model.to(device)
-   inputs = inputs.to(device)  # Move ALL tensors before operations
-   labels = labels.to(device)
-   
-   # Training loop with Neuron SDK XLA operations:
-   xm.optimizer_step(optimizer)  # REQUIRED: Use XLA optimizer step (NOT optimizer.step())
-   xm.mark_step()  # REQUIRED: Synchronize XLA computation after backward pass
-   ```
-   
-   CRITICAL NEURON SDK REQUIREMENTS:
-   - MUST use `torch_xla.core.xla_model as xm` - this is the Neuron SDK XLA interface
-   - MUST use `xm.xla_device()` to get the Trainium device (NOT torch.device('cuda') or 'cpu')
-   - MUST use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` - this is Neuron SDK requirement
-   - MUST call `xm.mark_step()` after each backward pass to synchronize XLA computation
-   - MUST move ALL tensors to device BEFORE any operations
-   - DO NOT move loss functions: `criterion = nn.CrossEntropyLoss()` (no .to(device))
-   - DO NOT use CUDA: no `.cuda()`, no `device='cuda'`, no `torch.device('cuda')`
    - DO NOT use regular PyTorch device operations - this code runs on Trainium via Neuron SDK
 
 3. IMPORTS (MOST COMMON ERROR):
@@ -496,60 +362,6 @@ CRITICAL REQUIREMENTS - READ CAREFULLY
    ```
    - Import ALL standard library modules you use (math, random, collections, etc.)
    - This is the #1 cause of NameError failures
-
-4. LORA / ADAPTATION LAYERS (CRITICAL - IF PAPER USES LORA/ADAPTERS):
-   If the paper describes LoRA, adapters, or similar low-rank adaptation techniques, implement based on the paper's specifications.
-   
-   **CRITICAL ERRORS TO AVOID:**
-   
-   **Layer Wrapping Errors:**
-   - ❌ DO NOT recursively process simple modules (nn.Flatten, nn.ReLU, nn.Conv2d, etc.) - they are not containers
-   - ❌ DO NOT call recursive functions on simple nn.Module instances - only on container types (nn.Sequential, nn.ModuleDict, nn.ModuleList)
-   - ❌ WRONG: `if isinstance(layer, nn.Module): self.layers.append(layer); self._add_layers(layer, rank)` - This will crash for simple modules
-   - ✅ CORRECT: Check for container types FIRST, then handle simple modules separately
-   - ✅ CORRECT: Only recursively process containers: `if isinstance(layer, (nn.Sequential, nn.ModuleDict, nn.ModuleList)): self._add_layers(layer, rank)`
-   - ✅ CORRECT: For simple modules, just append: `elif isinstance(layer, nn.Module): self.layers.append(layer)` (no recursion)
-   
-   **Mathematical Formula Errors:**
-   - ❌ DO NOT transpose incorrectly - follow the paper's exact formula (typically W' = W + B@A, not W + B@A^T)
-   - ❌ DO NOT use wrong matrix dimensions - A should be [rank, in_features], B should be [out_features, rank]
-   - ✅ Derive dimensions from the paper's mathematical notation
-   - **CRITICAL - Tensor Shape Compatibility:**
-     - ❌ DO NOT add tensors with incompatible shapes - XLA will crash with "Check failed: dim1 == dim2"
-     - ❌ DO NOT use `layer.weight.shape[0]` or `layer.weight.shape[1]` - use `layer.in_features` and `layer.out_features` instead
-     - ✅ CORRECT: `self.A = nn.Parameter(torch.zeros(rank, layer.in_features))` - matches weight matrix dimensions
-     - ✅ CORRECT: `self.B = nn.Parameter(torch.zeros(layer.out_features, rank))` - matches weight matrix dimensions
-     - ✅ CORRECT: `W' = W + B@A` where W is [out_features, in_features], B is [out_features, rank], A is [rank, in_features]
-     - ✅ Verify: `B @ A` produces shape [out_features, in_features] to match W
-     - ❌ WRONG: `B @ A.T` or `A @ B` - these produce wrong shapes and will cause XLA dimension mismatch errors
-   
-   **Architecture Errors:**
-   - ❌ DO NOT use separate lora_layers list that gets zipped with model layers - causes layer misalignment
-   - ❌ DO NOT wrap custom models with complex forward() methods - only wrap nn.Sequential or simple layer lists
-   - ✅ Use unified layers list that includes BOTH LoRA-wrapped and original layers
-   - ✅ Base model should be nn.Sequential or simple layer structure, not custom classes with complex forward()
-   
-   **Gradient/Optimization Errors:**
-   - ❌ DO NOT manually adjust gradients - LoRA gradients propagate automatically
-   - ❌ DO NOT add residuals directly to inputs - LoRA modifies weight matrices, not inputs
-   - ✅ Let PyTorch's autograd handle gradient flow automatically
-   
-   **General Principles:**
-   - Implement the exact method described in the paper, not a generic template
-   - Use the paper's notation and formulas directly
-   - Handle nested module structures correctly (containers vs simple modules)
-   - Ensure layer alignment matches the base model structure
-   - **CRITICAL: Always verify tensor shapes are compatible before operations**
-   - **CRITICAL: For matrix operations, ensure dimensions match: [m, n] @ [n, p] = [m, p]**
-   - **CRITICAL: When adding tensors, they must have compatible shapes (same shape or broadcastable)**
-   - **CRITICAL - Parameter Handling in Forward Pass:**
-     - ❌ DO NOT reassign `layer.weight = nn.Parameter(...)` in forward() - this creates new Parameters each pass
-     - ❌ DO NOT create `nn.Parameter()` inside forward() method - Parameters must be created in __init__
-     - ❌ WRONG: `self.layer.weight = nn.Parameter(weight)` in forward() - breaks XLA and causes timeouts
-     - ✅ CORRECT: Store original weight in __init__: `self.original_weight = layer.weight.data.clone()`
-     - ✅ CORRECT: In forward(), compute modified weight as tensor: `weight = self.original_weight + self.B @ self.A`
-     - ✅ CORRECT: Use functional operations: `return F.linear(x, weight, self.layer.bias)` (NOT reassigning layer.weight)
-     - ✅ CORRECT: For LoRA, use `F.linear(x, self.layer.weight + self.B @ self.A, self.layer.bias)` directly
 
 ═══════════════════════════════════════════════════════════════════════════════
 PACKAGES & ENVIRONMENT
