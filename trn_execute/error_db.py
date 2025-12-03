@@ -192,49 +192,69 @@ def get_errors(paper_id: str) -> List[Dict[str, Any]]:
     try:
         partition_key = _get_partition_key(paper_id)
         
-        # Query DynamoDB by partition key
+        # Query DynamoDB by partition key with pagination support
         table = dynamodb_resource.Table(ERROR_DB_TABLE_NAME)
-        response = table.query(
-            KeyConditionExpression='docID = :pk',
-            ExpressionAttributeValues={
+        errors = []
+        
+        # Handle pagination to get ALL errors
+        query_kwargs = {
+            'KeyConditionExpression': 'docID = :pk',
+            'ExpressionAttributeValues': {
                 ':pk': partition_key
             },
-            ScanIndexForward=True  # Sort ascending by sort key (iteration order)
-        )
+            'ScanIndexForward': True  # Sort ascending by sort key (iteration order)
+        }
         
-        errors = []
-        for item in response.get('Items', []):
-            # Parse error_data
-            error_data_str = item.get('error_data', '{}')
-            try:
-                error_data = json.loads(error_data_str) if isinstance(error_data_str, str) else error_data_str
-            except json.JSONDecodeError:
-                # Fallback: reconstruct from individual fields
-                # Convert Decimal back to float for execution_time
-                error_data = {
-                    'stderr': item.get('stderr', ''),
-                    'stdout': item.get('stdout', ''),
-                    'error_message': item.get('error_message', ''),
-                    'error_type': item.get('error_type', 'execution_error'),
-                    'return_code': int(item.get('return_code', -1)),
-                    'execution_time': float(item.get('execution_time', 0))
-                }
+        while True:
+            response = table.query(**query_kwargs)
             
-            error_item = {
-                'timestamp': item.get('timestamp', ''),
-                'error_data': error_data
-            }
-            
-            # Parse fixes_applied if present
-            fixes_applied_str = item.get('fixes_applied')
-            if fixes_applied_str:
+            for item in response.get('Items', []):
+                # Parse error_data
+                error_data_str = item.get('error_data', '{}')
                 try:
-                    fixes_applied = json.loads(fixes_applied_str) if isinstance(fixes_applied_str, str) else fixes_applied_str
-                    error_item['fixes_applied'] = fixes_applied
+                    error_data = json.loads(error_data_str) if isinstance(error_data_str, str) else error_data_str
                 except json.JSONDecodeError:
-                    pass
+                    # Fallback: reconstruct from individual fields
+                    # Convert Decimal back to float for execution_time
+                    execution_time = item.get('execution_time', 0)
+                    error_data = {
+                        'stderr': item.get('stderr', ''),
+                        'stdout': item.get('stdout', ''),
+                        'error_message': item.get('error_message', ''),
+                        'error_type': item.get('error_type', 'execution_error'),
+                        'return_code': int(item.get('return_code', -1)),
+                        'execution_time': float(execution_time) if isinstance(execution_time, Decimal) else float(execution_time or 0)
+                    }
+                
+                # Extract iteration from item or parse from sort key
+                iteration = item.get('iteration')
+                if iteration is None:
+                    # Try to parse from sort key
+                    sort_key = item.get('interationNum', '')
+                    parsed_iteration, _ = _parse_sort_key(sort_key)
+                    iteration = parsed_iteration
+                
+                error_item = {
+                    'timestamp': item.get('timestamp', ''),
+                    'iteration': iteration,
+                    'error_data': error_data
+                }
+                
+                # Parse fixes_applied if present
+                fixes_applied_str = item.get('fixes_applied')
+                if fixes_applied_str:
+                    try:
+                        fixes_applied = json.loads(fixes_applied_str) if isinstance(fixes_applied_str, str) else fixes_applied_str
+                        error_item['fixes_applied'] = fixes_applied
+                    except json.JSONDecodeError:
+                        pass
+                
+                errors.append(error_item)
             
-            errors.append(error_item)
+            # Check if there are more items (pagination)
+            if 'LastEvaluatedKey' not in response:
+                break
+            query_kwargs['ExclusiveStartKey'] = response['LastEvaluatedKey']
         
         return errors
         

@@ -108,3 +108,6 @@ deployment/*.tar.gz
 # Lambda test files
 payload.json
 response.json
+
+
+pytorch

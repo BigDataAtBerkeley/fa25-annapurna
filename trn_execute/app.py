@@ -588,7 +588,7 @@ def extract_errors_from_result(exec_result: Dict[str, Any]) -> str:
     return error_message
 
 
-def fix_code_with_bedrock(code: str, error_message: str, iteration: int, paper_id: str, errors_list: List[Dict[str, Any]], paper_summary: Optional[str] = None, similar_paper_errors: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+def fix_code_with_bedrock(code: str, error_message: str, iteration: int, paper_id: str, errors_list: List[Dict[str, Any]], paper_summary: Optional[str] = None, similar_paper_errors: Optional[List[Dict[str, Any]]] = None, common_errors_all_papers: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
 
     if not bedrock_client:
         logger.error("Bedrock client not available for code fixing")
@@ -631,6 +631,30 @@ PAPER CONTEXT (for better understanding of what the code should implement):
     # Remove logger this once done debugging
     logger.info(f"Paper context: {paper_context}")
 
+    # Build common errors context from ALL papers (most frequent patterns)
+    common_errors_context = ""
+    if common_errors_all_papers:
+        common_errors_list = []
+        for err_info in common_errors_all_papers[:15]:  # Top 15 most common
+            error_text = err_info.get('error', '')
+            frequency = err_info.get('frequency', 0)
+            affected = err_info.get('affected_papers', 0)
+            if error_text:
+                common_errors_list.append(f"  - [{frequency}x in {affected} papers] {error_text}")
+        
+        if common_errors_list:
+            common_errors_context = f"""
+═══════════════════════════════════════════════════════════════════════════════
+MOST COMMON ERRORS ACROSS ALL PAPERS (learned from DynamoDB):
+═══════════════════════════════════════════════════════════════════════════════
+These are the most frequent errors seen across all papers. PROACTIVELY check your code to prevent these:
+
+{chr(10).join(common_errors_list)}
+
+═══════════════════════════════════════════════════════════════════════════════
+"""
+        logger.info(f"Added {len(common_errors_list)} common error patterns to context")
+    
     # Build similar paper errors context
     similar_errors_context = ""
     if similar_paper_errors:
@@ -658,171 +682,39 @@ The following errors occurred in similar papers. Check your code to ensure these
 
 ═══════════════════════════════════════════════════════════════════════════════
 """
-    # Remove logger this once done debugging
-    logger.info(f"Similar errors context: {similar_errors_context}")
+    if similar_paper_errors:
+        logger.info(f"Similar errors context: {len(unique_errors)} unique patterns")
     
-    # Comprehensive review checklist from code_review_agent
-    trainium_errors_ref = """**⚠️ CRITICAL: REAL TRAINIUM ERRORS - MUST PREVENT/FIX:**
+    # Brief essential guidance for cold start (when DynamoDB is empty) and ongoing review
+    # DynamoDB error patterns will supplement this as more papers are tested
+    review_guidance = """
+═══════════════════════════════════════════════════════════════════════════════
+ESSENTIAL TRAINIUM/XLA REQUIREMENTS (verify these in the code):
+═══════════════════════════════════════════════════════════════════════════════
+1. Device: `device = xm.xla_device()` (NOT torch.device('cuda') or 'cpu')
+2. Optimizer: `xm.optimizer_step(optimizer)` instead of `optimizer.step()`
+3. Synchronization: Call `xm.mark_step()` after each backward pass
+4. Dataset: `train_loader, test_loader = load_dataset('name')` (returns DataLoaders, NOT datasets)
+5. Imports: Use `from dataset_loader import load_dataset` (NOT torchvision.datasets)
 
-1. `AttributeError: 'ellipsis' object has no attribute 'X'` - Variable assigned to `...` (e.g., `base_model = ...`)
-2. `AttributeError: module 'torch_xla.core.xla_model' has no attribute 'XlaModule'` - Use `nn.Module`, not `xm.XlaModule`
-3. `AttributeError: module 'torch_xla.core.xla_model' has no attribute 'dot_general'` - Use `torch.matmul()`, not `xm.dot_general()`
-4. `AttributeError: module 'torch_xla.core.xla_model' has no attribute 'tensor'` - Use `torch.tensor()`, not `xm.tensor()`
-5. `AttributeError: module 'torch_xla.core.xla_model' has no attribute 'scalar_tensor_to_python_scalar'` - Use `.item()` or `int()`
-6. `TypeError: optimizer_step() got an unexpected keyword argument 'sync'` - Use `xm.optimizer_step(optimizer)` (no sync param)
-7. `AttributeError: module 'torch_xla.core.xla_model' has no attribute 'xla_device_context'` - Remove context manager, use direct calls
+Common mistakes to check:
+- ❌ `xm.XlaModule` → ✅ `nn.Module`
+- ❌ `xm.tensor()` → ✅ `torch.tensor()`
+- ❌ `xm.dot_general()` → ✅ `torch.matmul()`
+- ❌ `train_dataset, val_dataset, test_dataset = load_dataset()` → ✅ `train_loader, test_loader = load_dataset()`
+- ❌ `base_model = ...` → ✅ Initialize with actual model
 
-**Quick fixes:**
-- ❌ `class LoRA(xm.XlaModule):` → ✅ `class LoRA(nn.Module):`
-- ❌ `xm.dot_general(x, w)` → ✅ `torch.matmul(x, w)`
-- ❌ `xm.tensor(0, ...)` → ✅ `torch.tensor(0, ...).to(device)`
-- ❌ `xm.optimizer_step(opt, sync=True)` → ✅ `xm.optimizer_step(opt)`
-- ❌ `base_model = ...` → ✅ `base_model = nn.Sequential(...)`"""
-    
-    comprehensive_checklist = f"""
-COMPREHENSIVE REVIEW CHECKLIST - Check for ALL of these:
-
-{trainium_errors_ref}
-
-1. **Neuron SDK / XLA / Trainium Compatibility (CRITICAL):**
-   - MUST use torch_xla.core.xla_model as xm (Neuron SDK XLA module)
-   - MUST use xm.xla_device() to get Trainium device (NOT torch.device('cuda') or 'cpu')
-   - MUST use xm.optimizer_step(optimizer) instead of optimizer.step() (Neuron SDK requirement)
-   - MUST call xm.mark_step() after each backward pass (Neuron SDK synchronization)
-   - All tensor operations compatible with XLA (no in-place operations on indexed tensors)
-   - Tensor size operations: tensor.size(0) returns a tensor in XLA, must use int() for arithmetic
-   - No CUDA-specific code (.cuda(), device='cuda', torch.device('cuda'))
-   - Ensure all tensors moved to XLA device before operations
-   
-   **IMPORTANT: DO NOT incorrectly flag regular PyTorch operations as incompatible:**
-   - `torch.matmul()`, `torch.mm()`, `nn.Linear`, `nn.Conv2d`, etc. ARE compatible with XLA
-   - These operations work fine in XLA - compatibility comes from device placement, not special APIs
-   - Only flag issues if code uses CUDA-specific operations or non-existent xm.* APIs
-   
-   **VALID torch_xla.core.xla_model (xm) APIs ONLY:**
-   - xm.xla_device() - Get XLA device
-   - xm.optimizer_step(optimizer) - XLA optimizer step (NO sync parameter - just xm.optimizer_step(optimizer))
-   - xm.mark_step() - Synchronize XLA computation
-   - xm.rendezvous(tag) - Synchronization barrier (requires tag string)
-   - xm.get_ordinal() - Get device ordinal (distributed)
-   - xm.get_world_size() - Get world size (distributed)
-   
-   **CRITICAL: Regular PyTorch operations ARE supported in XLA:**
-   - `torch.matmul()`, `torch.mm()`, `torch.add()`, `torch.mul()`, etc. - ALL work in XLA
-   - `nn.Linear`, `nn.Conv2d`, `nn.ReLU`, etc. - ALL standard PyTorch modules work in XLA
-   - `nn.Module` - Use regular `nn.Module` for all classes, NOT `xm.XlaModule` (which doesn't exist)
-   - XLA compatibility comes from using XLA device (`xm.xla_device()`) and XLA optimizer step, NOT from special APIs
-   
-   **DO NOT suggest or use non-existent APIs like:**
-   - xm.optimizer - THIS DOES NOT EXIST (e.g., xm.optimizer.SGD is WRONG)
-   - xm.XlaModule - THIS DOES NOT EXIST (use regular `nn.Module`)
-   - xm.dot() or xm.dot_general() - THESE DO NOT EXIST (use `torch.matmul()` or `torch.mm()`)
-   - xm.tensor() - THIS DOES NOT EXIST (use `torch.tensor()`)
-   - xm.scalar_tensor_to_python_scalar() - THIS DOES NOT EXIST (use `.item()` or `int()`)
-   - xm.xla_device_context() - THIS DOES NOT EXIST (use `device = xm.xla_device()` and `model.to(device)` instead)
-   - xm.mark_step_context() - THIS DOES NOT EXIST (just call `xm.mark_step()` directly, no context manager)
-   - xm.send_cpu_data_to_device() - THIS DOES NOT EXIST (use `.to(device)` instead)
-   - xm.save_memory_state() - THIS DOES NOT EXIST
-   - xm.optimizer_step(optimizer, sync=True) - sync parameter DOES NOT EXIST (just use xm.optimizer_step(optimizer))
-   - Any other xm.* functions not listed above
-   - Only suggest fixes using the VALID APIs listed above
-   
-   **OPTIMIZER USAGE (CRITICAL):**
-   - WRONG: `optimizer = xm.optimizer.SGD(...)` - xm.optimizer does NOT exist
-   - CORRECT: `optimizer = torch.optim.SGD(...)` then use `xm.optimizer_step(optimizer)` instead of `optimizer.step()`
-   - Use regular PyTorch optimizers (torch.optim.SGD, torch.optim.Adam, etc.) - NOT xm.optimizer.*
-
-2. **Data Handling (CRITICAL):**
-   - MUST use `from dataset_loader import load_dataset` - DO NOT use torchvision.datasets
-   - WRONG: `import torchvision.datasets as datasets` or `datasets.MNIST(...)`
-   - WRONG: `train_loader.to(device)` or `test_loader.to(device)` - DataLoaders CANNOT be moved to device
-   - CORRECT: `train_loader, test_loader = load_dataset('mnist', batch_size=128)`
-   - CORRECT: Move tensors to device INSIDE the training loop: `inputs = inputs.to(device)`, NOT the DataLoader
-   
-   **CRITICAL: What load_dataset() returns for each dataset:**
-   - **mnist, cifar10, cifar100, fashion_mnist**: Returns (image_tensor, label_tensor) - BOTH are already PyTorch tensors, NO tokenization needed
-   - **wikitext2**: Returns (input_ids_tensor, labels_tensor) - BOTH are already PyTorch tensors (tokenized), NO tokenization needed
-   - **imdb**: Returns (text_strings, labels) - text_strings are Python strings, MUST be tokenized before use
-   - **synthetic**: Returns (features_tensor, labels_tensor) - BOTH are already PyTorch tensors, NO tokenization needed
-   
-   **WRONG - DO NOT tokenize already-tokenized data:**
-   - WRONG: `inputs = tokenizer(inputs, ...)` when inputs is already a tensor (from wikitext2, mnist, etc.)
-   - WRONG: `inputs = tokenizer(inputs, ...)` when inputs is already tokenized (input_ids)
-   - CORRECT for wikitext2: `inputs, labels = batch_data` then `inputs = inputs.to(device)` (already tensors!)
-   - CORRECT for imdb: `inputs, labels = batch_data` then `inputs = tokenizer(inputs, ...)` (inputs are strings)
-   
-   - DataLoader iteration: Handle both (tensor, tensor) and (text_strings, labels) formats correctly
-   - All tensors moved to device before operations (but NOT DataLoaders)
-   - Proper handling of batch data unpacking
-
-3. **Model Output Handling:**
-   - Model may return tuples - check isinstance() before using
-   - Proper unpacking of model outputs
-   - Handle optional return values (e.g., return_bias_scores=True)
-
-4. **Type Errors:**
-   - Mixing tensors with Python ints/floats in arithmetic
-   - Calling methods on wrong types (e.g., .to() on list, .item() on non-scalar)
-   - WRONG: `train_loader.to(device)` - DataLoaders are NOT tensors and cannot be moved to device
-   - CORRECT: Move tensors from DataLoader to device: `inputs, labels = inputs.to(device), labels.to(device)`
-   - Indexing issues with XLA tensors
-   
-5. **nn.ModuleDict Key Errors (CRITICAL):**
-   - WRONG: `nn.ModuleDict({{'1.weight': module}})` - keys cannot contain dots
-   - WRONG: `nn.ModuleDict({{f'{{name}}.weight': module}})` - if name contains dots or creates keys with dots
-   - CORRECT: Replace dots with underscores: `nn.ModuleDict({{name.replace('.', '_'): module}})`
-   - CORRECT: Use a different naming scheme without dots: `nn.ModuleDict({{f'layer_{{i}}': module for i, module in enumerate(...)}})`
-   - PyTorch/XLA requires ModuleDict keys to be valid Python identifiers (no dots)
-
-6. **Import Errors:**
-   - All used modules imported (math, random, collections, etc.)
-   - Correct import paths
-
-7. **Logic Errors:**
-   - Division by zero or None
-   - Uninitialized variables
-   - **CRITICAL: Ellipsis (...) placeholders (incomplete code):**
-     - WRONG: `base_model = ...` or `model = ...` - ellipsis is NOT a valid model/tensor/object
-     - WRONG: `variable = ... # Initialize here` - this is a placeholder, not actual initialization
-     - CORRECT: Must initialize with actual value (e.g., `base_model = nn.Sequential(...)` or `model = MyModel()`)
-     - Check for ANY variable assignment to `...` - this will cause AttributeError at runtime
-   - Incorrect tensor shapes/dimensions
-   - Wrong device placement
-   - **Shape Mismatch in Normalization Layers (CRITICAL):**
-     - LayerNorm expects input shape `[batch, ..., normalized_shape]` where last dimension matches normalized_shape
-     - WRONG: Applying LayerNorm(d_model) to image tensor `[batch, channels, height, width]` without flattening/projection
-     - WRONG: For vision datasets (MNIST, CIFAR), passing raw images `[batch, 1, 28, 28]` directly to transformer expecting `[batch, seq_len, d_model]`
-     - CORRECT: For vision + transformer: flatten image → project to d_model → reshape to `[batch, seq_len, d_model]` → then apply LayerNorm
-     - CORRECT: For vision + transformer: `x = x.view(batch_size, -1)` then `x = self.projection(x)` then `x = x.view(batch_size, seq_len, d_model)` before normalization
-
-8. **Runtime Errors:**
-   - AttributeError (calling methods on wrong types)
-     - **CRITICAL: AttributeError: 'ellipsis' object has no attribute 'X'** - Variable assigned to `...` placeholder
-     - Example: `base_model = ...` then `base_model.named_modules()` → AttributeError
-   - TypeError (wrong argument types)
-   - ValueError (wrong tensor shapes, dimensions)
-   - IndexError (out of bounds access)
-   - KeyError: 'module name can\'t contain "."' - ModuleDict keys with dots
-   - RuntimeError: "Given normalized_shape=[X], expected input with shape [*, X], but got input of size[...]" - Shape mismatch in LayerNorm/BatchNorm
-   - RuntimeError: "Check failed: dim1 == dim2" - XLA tensor shape mismatch when adding/multiplying tensors
-
-9. **XLA-Specific Gotchas:**
-   - Using tensor.size(0) directly in arithmetic without int() conversion
-   - Using tensor values in Python control flow without .item()
-   - In-place operations that XLA doesn't support
-   - Loss functions not moved to device (they shouldn't be)
-   
-10. **Gradient Access Errors (CRITICAL):**
-   - Accessing .grad during forward pass - gradients are None until loss.backward() is called
-   - WRONG: Using param.grad in forward() method or before backward()
-   - WRONG: Multiplying Parameter * None (when .grad is None)
-   - CORRECT: Only access .grad after loss.backward() in training loop
-   - CORRECT: Use param.data or param directly in forward pass, not param.grad
-"""
+{error_patterns_note}
+═══════════════════════════════════════════════════════════════════════════════
+""".format(
+        error_patterns_note="Note: Error patterns from DynamoDB shown above should be used to proactively prevent similar issues." 
+        if (common_errors_context or similar_errors_context or error_fix_history) 
+        else "Note: As more papers are tested, error patterns will be learned from DynamoDB and shown here."
+    )
     
     prompt = f"""You are fixing PyTorch code that failed execution on AWS Trainium.
 
-{paper_context}{similar_errors_context}{error_fix_history}═══════════════════════════════════════════════════════════════════════════════
+{paper_context}{common_errors_context}{similar_errors_context}{error_fix_history}═══════════════════════════════════════════════════════════════════════════════
 CURRENT ERROR (most recent execution):
 ═══════════════════════════════════════════════════════════════════════════════
 {error_message}
@@ -832,7 +724,7 @@ Current code (iteration {iteration}):
 {code}
 ```
 
-{comprehensive_checklist}
+{review_guidance}
 
 CRITICAL: You must return BOTH the fixed code AND a summary of fixes in the following exact format:
 
@@ -989,8 +881,8 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
             if profiler_output_path:
                 collect_profiler_artifacts(paper_id, profiler_output_path)
             
-            # Success - clear any previous errors
-            clear_errors(paper_id)
+            # Success - keep errors in DynamoDB for debugging and learning (never clear them)
+            logger.info(f"Execution succeeded for {paper_id} - keeping all errors in DynamoDB for debugging")
         else:
             # Failure - handle based on whether we should trigger review
             if should_trigger_review:
@@ -1227,9 +1119,8 @@ def code_review():
             except Exception as e:
                 logger.error(f"Failed to trigger final execution: {e}")
             
-            # Clear errors after sending notifications
-            clear_errors(paper_id)
-            logger.info(f"Cleared errors for {paper_id}")
+            # Keep errors in DynamoDB for debugging and learning (never clear them)
+            logger.info(f"Keeping all errors in DynamoDB for {paper_id} (for debugging and learning)")
             
             return jsonify({
                 "success": True,
@@ -1260,6 +1151,46 @@ def code_review():
         # Get paper summary and similar paper errors from OpenSearch
         paper_summary = None
         similar_paper_errors = []
+        common_errors_all_papers = []
+        
+        # Get common errors from ALL papers in DynamoDB (proactive learning)
+        try:
+            from error_db import get_all_errors
+            all_errors = get_all_errors(limit=100)  # Get recent errors from all papers
+            if all_errors:
+                # Extract unique error patterns
+                error_patterns = {}
+                for err in all_errors:
+                    error_data = err.get('error_data', {})
+                    error_msg = error_data.get('error_message', '') or error_data.get('stderr', '')
+                    if error_msg:
+                        # Extract first line as pattern key
+                        first_line = error_msg.split('\n')[0].strip()
+                        if first_line and len(first_line) > 20:  # Filter out very short errors
+                            pattern_key = first_line[:150]  # Use first 150 chars as pattern
+                            if pattern_key not in error_patterns:
+                                error_patterns[pattern_key] = {
+                                    'error': first_line[:200],
+                                    'count': 0,
+                                    'papers': set()
+                                }
+                            error_patterns[pattern_key]['count'] += 1
+                            error_patterns[pattern_key]['papers'].add(err.get('paper_id', 'unknown'))
+                
+                # Sort by frequency and get top patterns
+                sorted_patterns = sorted(error_patterns.items(), key=lambda x: x[1]['count'], reverse=True)
+                common_errors_all_papers = [
+                    {
+                        'error': pattern_info['error'],
+                        'frequency': pattern_info['count'],
+                        'affected_papers': len(pattern_info['papers'])
+                    }
+                    for _, pattern_info in sorted_patterns[:20]  # Top 20 most common errors
+                ]
+                logger.info(f"Extracted {len(common_errors_all_papers)} common error patterns from all papers")
+        except Exception as e:
+            logger.warning(f"Could not extract common errors from all papers: {e}")
+        
         if OPENSEARCH_AVAILABLE:
             try:
                 opensearch_client = OpenSearchClient()
@@ -1284,7 +1215,7 @@ def code_review():
         # If we have errors, fix the code with Bedrock
         if error_message:
             logger.info(f"Fixing code with Bedrock (iteration {error_count})...")
-            fix_result = fix_code_with_bedrock(code, error_message, error_count, paper_id, errors_list, paper_summary, similar_paper_errors)
+            fix_result = fix_code_with_bedrock(code, error_message, error_count, paper_id, errors_list, paper_summary, similar_paper_errors, common_errors_all_papers)
             
             if not fix_result or not fix_result.get("code"):
                 return jsonify({

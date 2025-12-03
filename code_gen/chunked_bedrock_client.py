@@ -386,31 +386,11 @@ INFERRED DOMAIN: {domain}
         prompt += f"""
 Generate a complete, production-ready PyTorch implementation that demonstrates the paper's key concepts.
 
-═══════════════════════════════════════════════════════════════════════════════
-CRITICAL REQUIREMENTS - READ CAREFULLY
-═══════════════════════════════════════════════════════════════════════════════
-
-1. DATASET LOADING (MANDATORY - CRITICAL):
-   - USE PRIMARY DATASET: '{primary_dataset}'
-   - Available: cifar10, cifar100, mnist, fashion_mnist, imdb, wikitext2, synthetic
-   - For NLP: use imdb or wikitext2 (NOT vision datasets)
-   - CRITICAL: DO NOT use torchvision.datasets - it will cause PermissionError
-   - DO NOT create your own data loaders - use dataset_loader module
-
-2. AWS NEURON SDK REQUIREMENTS (MANDATORY - CRITICAL):
-   This code MUST run on AWS Trainium using the Neuron SDK. You MUST use torch_xla (XLA) which is part of the Neuron SDK.
-   - DO NOT use regular PyTorch device operations - this code runs on Trainium via Neuron SDK
-
-3. IMPORTS (MOST COMMON ERROR):
-   ```python
-   import math  # If using math.log(), math.exp(), etc.
-   import torch
-   import torch.nn as nn
-   import torch_xla.core.xla_model as xm
-   from dataset_loader import load_dataset
-   ```
-   - Import ALL standard library modules you use (math, random, collections, etc.)
-   - This is the #1 cause of NameError failures
+CRITICAL REQUIREMENTS:
+1. Use dataset '{primary_dataset}' via: `from dataset_loader import load_dataset` (DO NOT use torchvision.datasets)
+2. Use Trainium/XLA: `import torch_xla.core.xla_model as xm` and `device = xm.xla_device()`
+3. Use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` and call `xm.mark_step()` after
+4. Import ALL modules you use (math, random, collections, etc.)
 
 ═══════════════════════════════════════════════════════════════════════════════
 PACKAGES & ENVIRONMENT

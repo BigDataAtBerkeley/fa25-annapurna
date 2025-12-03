@@ -58,8 +58,16 @@ def check_via_status_endpoint(paper_id: str, endpoint: str = "http://3.21.7.129:
         print(f"Error checking status endpoint: {e}")
 
 def check_via_dynamodb(paper_id: str):
-    """Check errors via DynamoDB (must be run on Trainium)."""
+    """Check errors via DynamoDB"""
     try:
+        # Add trn_execute to path so we can import error_db
+        import sys
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        trn_execute_dir = os.path.join(os.path.dirname(script_dir), 'trn_execute')
+        if trn_execute_dir not in sys.path:
+            sys.path.insert(0, trn_execute_dir)
+        
         from error_db import get_errors
         
         errors = get_errors(paper_id)
@@ -67,13 +75,31 @@ def check_via_dynamodb(paper_id: str):
         
         for i, err in enumerate(errors, 1):
             err_data = err.get('error_data', {})
+            iteration = err.get('iteration', 'N/A')
+            timestamp = err.get('timestamp', 'N/A')
             print(f"{'='*60}")
             print(f"Error {i}/{len(errors)}")
             print(f"{'='*60}")
+            print(f"Iteration: {iteration}")
+            print(f"Timestamp: {timestamp}")
             print(f"Type: {err_data.get('error_type', 'N/A')}")
             print(f"Return Code: {err_data.get('return_code', 'N/A')}")
             print(f"Execution Time: {err_data.get('execution_time', 'N/A')}s")
-            print(f"Iteration: {err_data.get('iteration', 'N/A')}")
+            
+            # Show fixes_applied if available
+            fixes_applied = err.get('fixes_applied')
+            if fixes_applied:
+                print(f"\nFixes Applied:")
+                if isinstance(fixes_applied, dict):
+                    fixes_list = fixes_applied.get('fixes', [])
+                    if fixes_list:
+                        for fix in fixes_list[:5]:  # Show first 5 fixes
+                            print(f"  - {fix}")
+                elif isinstance(fixes_applied, list):
+                    for fix in fixes_applied[:5]:
+                        print(f"  - {fix}")
+                else:
+                    print(f"  {fixes_applied}")
             print()
             
             stderr = err_data.get('stderr', '')
