@@ -569,12 +569,11 @@ sys.path.append('{exec_dir}')
             
 
 def extract_errors_from_result(exec_result: Dict[str, Any]) -> str:
-    
+    """Extract error message for display/logging (simplified)."""
     stderr = exec_result.get('stderr', '')
     message = exec_result.get('error_message', '')
-    stdout = exec_result.get('stdout', '')
     
-    if not (stderr or message or stdout):
+    if not (stderr or message):
         return ''
     
     if exec_result.get('timeout') or exec_result.get('error_type') == 'timeout':
@@ -587,6 +586,57 @@ def extract_errors_from_result(exec_result: Dict[str, Any]) -> str:
     
     return error_message
 
+def format_full_error_context(error_data: Dict[str, Any], max_stderr_lines: int = 500, max_stdout_lines: int = 200) -> str:
+    """
+    Format full error context including complete traceback, stderr, and relevant stdout.
+    Truncates intelligently to stay within context limits while preserving critical information.
+    """
+    stderr = error_data.get('stderr', '')
+    stdout = error_data.get('stdout', '')
+    error_message = error_data.get('error_message', '')
+    return_code = error_data.get('return_code', -1)
+    execution_time = error_data.get('execution_time', 0)
+    
+    parts = []
+    
+    # Header with basic info
+    parts.append(f"Return Code: {return_code}")
+    parts.append(f"Execution Time: {execution_time:.2f}s")
+    if error_message:
+        parts.append(f"Error Message: {error_message}")
+    parts.append("")
+    
+    # Full stderr (with traceback) - this is most important
+    if stderr:
+        stderr_lines = stderr.split('\n')
+        # Keep full traceback if present, truncate from top if too long
+        if len(stderr_lines) > max_stderr_lines:
+            # Keep last N lines (most recent errors) and first 50 lines (initial errors)
+            first_part = '\n'.join(stderr_lines[:50])
+            last_part = '\n'.join(stderr_lines[-max_stderr_lines+50:])
+            parts.append("=== FULL STDERR (truncated, showing first 50 and last ~450 lines) ===")
+            parts.append(first_part)
+            parts.append(f"\n... ({len(stderr_lines) - max_stderr_lines} lines truncated) ...\n")
+            parts.append(last_part)
+        else:
+            parts.append("=== FULL STDERR ===")
+            parts.append(stderr)
+        parts.append("")
+    
+    # Relevant stdout (last portion, often contains useful context)
+    if stdout:
+        stdout_lines = stdout.split('\n')
+        if len(stdout_lines) > max_stdout_lines:
+            # Keep last N lines (most recent output)
+            relevant_stdout = '\n'.join(stdout_lines[-max_stdout_lines:])
+            parts.append(f"=== STDOUT (last {max_stdout_lines} lines, {len(stdout_lines)} total) ===")
+            parts.append(relevant_stdout)
+        else:
+            parts.append("=== FULL STDOUT ===")
+            parts.append(stdout)
+    
+    return '\n'.join(parts)
+
 
 def fix_code_with_bedrock(code: str, error_message: str, iteration: int, paper_id: str, errors_list: List[Dict[str, Any]], paper_summary: Optional[str] = None, similar_paper_errors: Optional[List[Dict[str, Any]]] = None, common_errors_all_papers: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
 
@@ -595,15 +645,23 @@ def fix_code_with_bedrock(code: str, error_message: str, iteration: int, paper_i
         return None
     
     # Build error and fix history (excluding most recent error which doesn't have fixes yet)
+    # Include more context but limit to recent iterations to stay within context window
     error_fix_history = ""
     if errors_list and len(errors_list) > 1:
-        error_fix_history = "\n═══════════════════════════════════════════════════════════════════════════════\nPREVIOUS ERRORS AND FIXES:\n═══════════════════════════════════════════════════════════════════════════════\n"
-        for i, error_item in enumerate(errors_list[:-1], 1):  # Exclude most recent
+        error_fix_history = "\n═══════════════════════════════════════════════════════════════════════════════\nPREVIOUS ERRORS AND FIXES (for context - learn from past mistakes):\n═══════════════════════════════════════════════════════════════════════════════\n"
+        # Show last 3-4 previous errors (most relevant) with full context
+        recent_errors = errors_list[:-1][-4:]  # Last 4 previous errors
+        for i, error_item in enumerate(recent_errors, max(1, len(errors_list) - len(recent_errors))):
             error_data = error_item.get('error_data', {})
-            error_msg = extract_errors_from_result(error_data)
-            fixes_applied = error_item.get('fixes_applied')
+            iteration_num = error_item.get('iteration', i)
             
-            error_fix_history += f"Iteration {i} ---- Error: {error_msg[:200] if error_msg else 'Unknown error'}\n"
+            error_fix_history += f"\n{'='*70}\nIteration {iteration_num} Error:\n{'='*70}\n"
+            # Include full error context (stderr with traceback) but truncated intelligently
+            full_error = format_full_error_context(error_data, max_stderr_lines=300, max_stdout_lines=100)
+            error_fix_history += full_error
+            
+            # Show what fixes were applied
+            fixes_applied = error_item.get('fixes_applied')
             if fixes_applied:
                 if isinstance(fixes_applied, str):
                     try:
@@ -613,8 +671,8 @@ def fix_code_with_bedrock(code: str, error_message: str, iteration: int, paper_i
                 if fixes_applied:
                     fixes_list = fixes_applied.get('fixes', []) if isinstance(fixes_applied, dict) else fixes_applied
                     if fixes_list:
-                        fixes_str = ', '.join(fixes_list[:3]) if isinstance(fixes_list, list) else str(fixes_list)
-                        error_fix_history += f"  Fixes Applied: {fixes_str}\n"
+                        fixes_str = '\n  - '.join(fixes_list[:5]) if isinstance(fixes_list, list) else str(fixes_list)
+                        error_fix_history += f"\n\nFixes Applied:\n  - {fixes_str}\n"
             error_fix_history += "\n"
     
     # Remove logger this once done debugging
@@ -715,16 +773,33 @@ Common mistakes to check:
     prompt = f"""You are fixing PyTorch code that failed execution on AWS Trainium.
 
 {paper_context}{common_errors_context}{similar_errors_context}{error_fix_history}═══════════════════════════════════════════════════════════════════════════════
-CURRENT ERROR (most recent execution):
+CURRENT ERROR (most recent execution - FULL CONTEXT):
 ═══════════════════════════════════════════════════════════════════════════════
 {error_message}
 
+═══════════════════════════════════════════════════════════════════════════════
 Current code (iteration {iteration}):
+═══════════════════════════════════════════════════════════════════════════════
 ```python
 {code}
 ```
 
 {review_guidance}
+
+═══════════════════════════════════════════════════════════════════════════════
+COMPREHENSIVE ANALYSIS REQUIRED:
+═══════════════════════════════════════════════════════════════════════════════
+Before fixing, perform a comprehensive analysis:
+
+1. **Read the FULL error traceback** - Identify the exact line number and operation that failed
+2. **Understand the root cause** - Don't just fix symptoms, address the underlying issue
+3. **Check the error history above** - Learn from previous failed fixes to avoid repeating mistakes
+4. **Review the entire code** - Look for related issues that might cause problems even if not currently failing
+5. **Verify Trainium/XLA compatibility** - Ensure ALL operations are compatible with XLA (device placement, optimizer usage, etc.)
+6. **Test your fix mentally** - Trace through the code to ensure your fix will actually work
+
+IMPORTANT: Make ALL necessary fixes in one pass. Don't make partial fixes that will require another iteration.
+═══════════════════════════════════════════════════════════════════════════════
 
 CRITICAL: You must return BOTH the fixed code AND a summary of fixes in the following exact format:
 
@@ -1131,13 +1206,17 @@ def code_review():
                 "final_execution_triggered": True
             }), 200
             
-        # Extract error message from most recent error
+        # Extract full error context from most recent error (includes full stderr/stdout)
         error_message = ""
+        full_error_context = ""
         if errors_list:
             latest_error = errors_list[-1]
             error_data = latest_error.get('error_data', {})
+            # Get simplified message for logging
             error_message = extract_errors_from_result(error_data)
-            if not error_message:
+            # Get full context with traceback for the prompt
+            full_error_context = format_full_error_context(error_data, max_stderr_lines=500, max_stdout_lines=200)
+            if not error_message and not full_error_context:
                 logger.warning(f"No extractable error found for {paper_id}")
         
         # Get current code from S3
@@ -1213,9 +1292,10 @@ def code_review():
             logger.warning(f"OpenSearch not available - skipping similar paper errors.")
         
         # If we have errors, fix the code with Bedrock
-        if error_message:
+        if error_message or full_error_context:
             logger.info(f"Fixing code with Bedrock (iteration {error_count})...")
-            fix_result = fix_code_with_bedrock(code, error_message, error_count, paper_id, errors_list, paper_summary, similar_paper_errors, common_errors_all_papers)
+            # Pass full error context instead of just the message
+            fix_result = fix_code_with_bedrock(code, full_error_context or error_message, error_count, paper_id, errors_list, paper_summary, similar_paper_errors, common_errors_all_papers)
             
             if not fix_result or not fix_result.get("code"):
                 return jsonify({
