@@ -139,58 +139,6 @@ def generate_embedding(text: str, max_retries: int = 6) -> List[float]:
                 return []
     return []
 
-def search_similar_papers_rag(abstract: str, size: int = 5) -> List[Dict]:
-    try:
-        embedding = generate_embedding(abstract)
-        if not embedding:
-            return []
-        try:
-            embedding = [float(x) for x in embedding]
-        except Exception:
-            pass
-
-        try:
-            mapping = os_client.indices.get_mapping(index=OPENSEARCH_INDEX)
-            props = mapping.get(OPENSEARCH_INDEX, {}).get("mappings", {}).get("properties", {})
-            dim = int(props.get("abstract_embedding", {}).get("dimension", len(embedding)))
-        except Exception:
-            dim = len(embedding)
-        if len(embedding) > dim:
-            embedding = embedding[:dim]
-        elif len(embedding) < dim:
-            embedding = embedding + [0.0] * (dim - len(embedding))
-
-        query_primary = {
-            "knn": {
-                "abstract_embedding": {
-                    "vector": embedding,
-                    "k": size
-                }
-            }
-        }
-        try:
-            res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query_primary, "size": size})
-        except Exception as e1:
-            logger.warning(f"Primary kNN query failed, retrying with field/query_vector: {e1}")
-            query_fallback = {
-                "knn": {
-                    "field": "abstract_embedding",
-                    "query_vector": embedding,
-                    "k": size
-                }
-            }
-            res = os_client.search(index=OPENSEARCH_INDEX, body={"query": query_fallback, "size": size})
-        out = []
-        for hit in res.get('hits', {}).get('hits', []):
-            src = hit.get('_source', {})
-            src['_id'] = hit.get('_id')
-            src['similarity_score'] = hit.get('_score')
-            out.append(src)
-        return out
-    except Exception as e:
-        logger.warning(f"RAG search failed: {e}")
-        return []
-
 def index_paper_document(doc_id: str, doc: Dict) -> str:
     try:
         result = os_client.index(index=OPENSEARCH_INDEX, id=doc_id, body=doc, refresh=True)
@@ -643,7 +591,6 @@ def lambda_handler(event, context):
 
             title_norm = normalize_title(title)
             sha_abs = sha256_text(abstract)
-            # Precompute embedding for indexing (used for RAG storage and future searches)
             precomputed_embedding = generate_embedding(abstract)
             doc_id = sha256_text(f"{title_norm}:{sha_abs}")
             
@@ -655,29 +602,10 @@ def lambda_handler(event, context):
             if is_duplicate(title_norm, sha_abs):
                 reason = "Exact duplicate by title_normalized or sha_abstract"
                 write_discard_record(doc_id, "exact_duplicate", reason, body, msg_id)
-                reject_doc = {
-                    "title": title,
-                    "title_normalized": title_norm,
-                    "authors": authors,
-                    "abstract": abstract,
-                    "date": date.replace("/", "-") if date else None,
-                    "s3_bucket": s3_bucket,
-                    "s3_key": s3_key,
-                    "sha_abstract": sha_abs,
-                    "decision": "reject",
-                    "rejected_by": "exact_duplicate",
-                    "reason": reason,
-                    "relevance": "unknown",
-                    "novelty": "unknown",
-                    "ingested_at": int(time.time() * 1000)
-                }
-                if precomputed_embedding:
-                    reject_doc["abstract_embedding"] = precomputed_embedding
-                #index_paper_document(reject_doc)
                 logger.info(f"Skipped (exact duplicate) | {title} | {reason}")
                 continue
             
-            rag_context_window = retrieve_rag_context_window(title, abstract, precomputed_embedding, paper_id)
+            rag_context_window = retrieve_rag_context_window(title, abstract, precomputed_embedding)
 
             # Evaluate with Claude (Bedrock)
             evaluation = evaluate_paper_with_claude(title, abstract, rag_context_window)
@@ -710,7 +638,7 @@ def lambda_handler(event, context):
                 logger.info(f"Indexed | {title} | ID: {paper_id}")
                 
                 # Send to code-evaluation queue (will trigger code gen when 10 accumulate)
-                send_to_code_eval_queue(paper_id, doc)
+                #send_to_code_eval_queue(paper_id, doc)
                 
             else:
                 write_discard_record(doc_id, "claude", reason, body, msg_id)
