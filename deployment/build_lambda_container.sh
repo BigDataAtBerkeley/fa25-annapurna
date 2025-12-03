@@ -14,7 +14,7 @@ echo "🐳 Building Lambda container image..."
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # If script is in project root, use it; otherwise go up one level
-if [ -d "$SCRIPT_DIR/midpoint-deliverable/code-gen-for-deliv" ]; then
+if [ -d "$SCRIPT_DIR/code_gen" ]; then
     PROJECT_ROOT="$SCRIPT_DIR"
 else
     PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -22,12 +22,12 @@ fi
 cd "$PROJECT_ROOT"
 
 # Navigate to code-gen directory
-if [ ! -d "midpoint-deliverable/code-gen-for-deliv" ]; then
-    echo "❌ Error: midpoint-deliverable/code-gen-for-deliv not found"
+if [ ! -d "code_gen" ]; then
+    echo "❌ Error: code_gen not found"
     echo "   Current directory: $(pwd)"
     exit 1
 fi
-cd midpoint-deliverable/code-gen-for-deliv
+cd code_gen
 
 # Login to ECR
 echo "🔐 Logging into ECR..."

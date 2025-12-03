@@ -55,7 +55,6 @@ class ChunkedPyTorchGenerator:
         logger.info("PDF processor initialized - PDF vision processing enabled")
 
         # Results directory for saving chunk results locally (gitignored)
-        # midpoint-deliverable/results
         self.results_base_dir = Path(__file__).parent.parent / "results"
 
         logger.info("Chunked PyTorch Code Generator initialized (PDF-only):")

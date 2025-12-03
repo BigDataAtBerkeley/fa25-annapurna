@@ -18,8 +18,8 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
-code_gen_dir = os.path.join(os.path.dirname(script_dir), 'code-gen-for-deliv')
-home_code_gen = os.path.join(os.path.expanduser('~'), 'code-gen-for-deliv')
+code_gen_dir = os.path.join(os.path.dirname(script_dir), 'code_gen')
+home_code_gen = os.path.join(os.path.expanduser('~'), 'code_gen')
 
 code_gen_dir_used = None
 for path in [code_gen_dir, home_code_gen]:

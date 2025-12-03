@@ -329,7 +329,7 @@ aws sqs get-queue-attributes \
 
 ```bash
 # View all papers and their status
-python check_opensearch.py
+python debugging/check_opensearch.py
 
 # Clear OpenSearch (DO NOT RUN UNLESS ASKING DAN FIRST (anyways this file is gitignored))
 python clear_opensearch.py
@@ -387,7 +387,7 @@ aws sqs get-queue-attributes --queue-url $CODE_TEST \
 
 ```bash
 # View all fields in OpenSearch index (should show 66 fields)
-python check_opensearch_mapping.py
+python debugging/check_opensearch_mapping.py
 ```
 
 ---
@@ -561,13 +561,11 @@ python monitor_pipeline.py --paper-ids <Paper ID> <Paper ID> <Paper ID> --watch 
 
 ## Midpoint Deliverable Pipeline
 
-Grabs a single random paper from opensearch, generates its code, sends it to the code reviewer, then the flask app executes it on trn & stores neuron profiler results + overall trn results. All files are in the `midpoint-deliverable/` directory.
+Grabs a single random paper from opensearch, generates its code, sends it to the code reviewer, then the flask app executes it on trn & stores neuron profiler results + overall trn results.
 
 ### Quick Start
 
 ```bash
-cd midpoint-deliverable
-
 # Process a specific paper
 python pipeline_for_delivery.py --paper-id <paper_id>
 
@@ -575,7 +573,7 @@ python pipeline_for_delivery.py --paper-id <paper_id>
 python pipeline_for_delivery.py --recent-days 30 --max-papers 5
 
 # Check results for a paper
-python check_results.py <paper_id>
+python debugging/check_error.py <paper_id>
 ```
 
 ### Key Features
@@ -587,14 +585,12 @@ python check_results.py <paper_id>
 ### Directory Structure
 
 ```
-midpoint-deliverable/
-├── code-gen-for-deliv/      # Code generation module
-├── trn-execute-for-deliv/   # Trainium execution module
+├── code_gen/                # Code generation module
+├── trn_execute/             # Trainium execution module
 ├── results/                 # Results (per-paper folders)
+├── debugging/               # Debugging and utility scripts
 ├── pipeline_for_delivery.py # Main pipeline script
-└── README.md                # Complete documentation
+└── storage_utils.py         # Storage utilities
 ```
-
-See `midpoint-deliverable/README.md` for full documentation.
 
 ---

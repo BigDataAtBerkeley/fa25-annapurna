@@ -40,9 +40,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Add code-gen-for-deliv to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code-gen-for-deliv'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'trn-execute-for-deliv'))
+# Add code_gen to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code_gen'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'trn_execute'))
 
 from storage_utils import save_json, save_code
 
@@ -55,16 +55,15 @@ except ImportError:
     logger.warning("slack_notifier module not available - initial paper notifications will be disabled")
 
 try:
-    # Import chunked generator from chunked-code-gen subdirectory
-    # Since the directory name has hyphens, we need to import the module directly
+    # Import chunked generator from code_gen subdirectory
     import importlib.util
-    chunked_dir = os.path.join(os.path.dirname(__file__), 'code-gen-for-deliv')
+    chunked_dir = os.path.join(os.path.dirname(__file__), 'code_gen')
     chunked_generator_path = os.path.join(chunked_dir, 'chunked_generator.py')
     
     if os.path.exists(chunked_generator_path):
-        # Add the chunked-code-gen directory to path so it can import its dependencies
+        # Add the code_gen directory to path so it can import its dependencies
         sys.path.insert(0, chunked_dir)
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code-gen-for-deliv'))
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code_gen'))
         
         # Load the chunked_generator module
         spec = importlib.util.spec_from_file_location("chunked_generator", chunked_generator_path)

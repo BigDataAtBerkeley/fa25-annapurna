@@ -221,12 +221,12 @@ SSH_KEY=$(cd "$(dirname "$SSH_KEY")" && pwd)/$(basename "$SSH_KEY")
 
 # Step 2: Upload files
 echo "📦 Step 2: Uploading app files..."
-cd "$SCRIPT_DIR/../midpoint-deliverable/trn-execute-for-deliv" || exit 1
+cd "$SCRIPT_DIR/../trn_execute" || exit 1
 
 # Check files exist
 for file in app.py error_db.py s3_code_storage.py requirements.txt opensearch_client.py sagemaker_metrics.py dataset_loader.py slack_notifier.py; do
     if [ ! -f "$file" ]; then
-        echo "❌ Error: $file not found in midpoint-deliverable/trn-execute-for-deliv"
+        echo "❌ Error: $file not found in trn_execute"
         exit 1
     fi
 done

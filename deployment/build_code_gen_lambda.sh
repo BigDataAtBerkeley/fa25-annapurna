@@ -23,9 +23,9 @@ rm -f $ZIP_FILE
 # Create deployment directory
 mkdir -p $DEPLOY_DIR
 
-# Copy all Python files from code-gen-for-deliv
-echo "📥 Copying code-gen-for-deliv files..."
-cp midpoint-deliverable/code-gen-for-deliv/*.py $DEPLOY_DIR/
+# Copy all Python files from code_gen
+echo "📥 Copying code_gen files..."
+cp code_gen/*.py $DEPLOY_DIR/
 
 # Install dependencies for Linux (Lambda runs on Amazon Linux)
 echo "📥 Installing dependencies for Linux (Lambda environment)..."
@@ -45,7 +45,7 @@ if [ -f /tmp/lambda-wheels/*.whl ]; then
 fi
 
 # Install other dependencies
-pip install -r midpoint-deliverable/code-gen-for-deliv/requirements.txt -t $DEPLOY_DIR/ --no-deps || true
+pip install -r code_gen/requirements.txt -t $DEPLOY_DIR/ --no-deps || true
 pip install boto3 opensearch-py python-dotenv requests "urllib3>=1.26.0,<2.0.0" Pillow -t $DEPLOY_DIR/
 
 echo "✅ Dependencies installed"
