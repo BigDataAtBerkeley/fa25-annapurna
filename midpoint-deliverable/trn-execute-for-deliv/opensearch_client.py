@@ -144,3 +144,32 @@ class OpenSearchClient:
         except Exception as e:
             logger.error(f"Error searching similar papers: {e}")
             return []
+    
+    def update_paper_execution_results(self, paper_id: str, execution_results: Dict[str, Any]) -> bool:
+        """
+        Update paper document in OpenSearch with execution results.
+        
+        Args:
+            paper_id: Paper/document ID
+            execution_results: Dictionary with execution results to update
+            
+        Returns:
+            True if update successful, False otherwise
+        """
+        try:
+            # Filter out None values
+            filtered_results = {k: v for k, v in execution_results.items() if v is not None}
+            
+            # Update document
+            self.client.update(
+                index=self.opensearch_index,
+                id=paper_id,
+                body={
+                    "doc": filtered_results
+                }
+            )
+            logger.info(f"Updated OpenSearch document {paper_id} with execution results")
+            return True
+        except Exception as e:
+            logger.error(f"Error updating OpenSearch document {paper_id}: {e}")
+            return False

@@ -95,10 +95,10 @@ class SlackNotifier:
                 ]
             })
         
-        # Abstract (truncated)
+        # Abstract (truncated to 800 chars for better visibility)
         abstract = paper.get('abstract', '')
         if abstract:
-            abstract_preview = abstract[:500] + "..." if len(abstract) > 500 else abstract
+            abstract_preview = abstract[:800] + "..." if len(abstract) > 800 else abstract
             blocks.append({
                 "type": "section",
                 "text": {
@@ -147,12 +147,15 @@ class SlackNotifier:
         s3_bucket = paper.get('s3_bucket')
         s3_key = paper.get('s3_key')
         if s3_bucket and s3_key:
+            aws_region = os.getenv('AWS_REGION', 'us-east-1')
+            s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{s3_bucket}?prefix={s3_key}"
+            s3_path = f"s3://{s3_bucket}/{s3_key}"
             blocks.append({
                 "type": "section",
                 "fields": [
                     {
                         "type": "mrkdwn",
-                        "text": f"*S3 Location:*\n`s3://{s3_bucket}/{s3_key}`"
+                        "text": f"*S3 Location:*\n<{s3_console_url}|View in S3 Console>\n`{s3_path}`"
                     }
                 ]
             })
@@ -218,6 +221,134 @@ class SlackNotifier:
             logger.error(f"Unexpected error sending to Slack: {e}")
             return None
     
+    def send_final_code_notification(self, paper_id: str, code_length: int,
+                                    code_review_iterations: int,
+                                    code_s3_key: Optional[str] = None,
+                                    channel: Optional[str] = None,
+                                    thread_ts: Optional[str] = None) -> bool:
+        """
+        Send final code notification after code review (second follow-up).
+        
+        Args:
+            paper_id: Paper ID
+            code_length: Length of final code after code review
+            code_review_iterations: Number of code review iterations
+            code_s3_key: S3 key for final code file (optional)
+            channel: Slack channel ID or name (default: use default_channel)
+            thread_ts: Thread timestamp to reply in thread (required)
+            
+        Returns:
+            True if message sent successfully, False otherwise
+        """
+        if not self.enabled:
+            logger.warning("Slack notifier is disabled (no bot token)")
+            return False
+        
+        if not thread_ts:
+            logger.error("thread_ts is required for final code notification")
+            return False
+        
+        target_channel = channel or self.default_channel
+        if not target_channel:
+            logger.error("No Slack channel specified")
+            return False
+        
+        try:
+            blocks = []
+            
+            # Header
+            blocks.append({
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": "🔧 Final Code After Code Review"
+                }
+            })
+            
+            blocks.append({"type": "divider"})
+            
+            # Code review details
+            fields = [
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Paper ID:*\n`{paper_id}`"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Code Review Iterations:*\n{code_review_iterations}"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Final Code Length:*\n{code_length:,} characters"
+                }
+            ]
+            
+            # Split into sections of 2 fields each
+            for i in range(0, len(fields), 2):
+                section_fields = fields[i:i+2]
+                blocks.append({
+                    "type": "section",
+                    "fields": section_fields
+                })
+            
+            # S3 link if available
+            if code_s3_key:
+                code_s3_bucket = os.getenv('CODE_BUCKET', 'papers-code-artifacts')
+                aws_region = os.getenv('AWS_REGION', 'us-east-1')
+                s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{code_s3_bucket}?prefix={code_s3_key}"
+                s3_path = f"s3://{code_s3_bucket}/{code_s3_key}"
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Final Code Location:*\n<{s3_console_url}|View in S3 Console>\n`{s3_path}`"
+                    }
+                })
+            
+            blocks.append({
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "✅ Code reviewed and fixed. Running final execution..."
+                    }
+                ]
+            })
+            
+            # Send message to Slack
+            url = "https://slack.com/api/chat.postMessage"
+            headers = {
+                "Authorization": f"Bearer {self.bot_token}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "channel": target_channel,
+                "blocks": blocks,
+                "text": f"Final code after code review for {paper_id}",
+                "thread_ts": thread_ts
+            }
+            
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            if result.get("ok"):
+                logger.info(f"✅ Sent final code notification to Slack (thread: {thread_ts})")
+                return True
+            else:
+                error = result.get("error", "Unknown error")
+                logger.error(f"❌ Failed to send to Slack: {error}")
+                return False
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error sending final code notification to Slack: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error sending to Slack: {e}")
+            return False
+    
     def send_execution_notification(self, paper: Dict[str, Any], execution_result: Dict[str, Any], 
                                     channel: Optional[str] = None, thread_ts: Optional[str] = None) -> bool:
         """
@@ -244,7 +375,7 @@ class SlackNotifier:
         try:
             blocks = []
             
-            # Header with title and execution status
+            # Header with title and execution status (FINAL execution results)
             title = paper.get('title', 'Unknown Title')
             execution_status = paper.get('execution_status', 'UNKNOWN')
             status_emoji = '✅' if execution_result.get('success') else '❌'
@@ -253,7 +384,7 @@ class SlackNotifier:
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": f"{status_emoji} {title[:80]}{'...' if len(title) > 80 else ''}"
+                    "text": f"{status_emoji} Final Execution Results: {title[:60]}{'...' if len(title) > 60 else ''}"
                 }
             })
             
@@ -306,10 +437,10 @@ class SlackNotifier:
                     }
                 })
             
-            # Abstract (truncated)
+            # Abstract (truncated to 800 chars for better visibility)
             abstract = paper.get('abstract', '')
             if abstract:
-                abstract_preview = abstract[:300] + "..." if len(abstract) > 300 else abstract
+                abstract_preview = abstract[:800] + "..." if len(abstract) > 800 else abstract
                 blocks.append({
                     "type": "section",
                     "text": {
@@ -321,20 +452,24 @@ class SlackNotifier:
             # Execution error details (if failed)
             if not execution_result.get('success'):
                 error_msg = paper.get('execution_error', 'Unknown error')
+                # Show first 1500 chars of error message
+                error_preview = error_msg[:1500] + "..." if len(error_msg) > 1500 else error_msg
                 blocks.append({
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*❌ Error:*\n```{error_msg[:500]}{'...' if len(error_msg) > 500 else ''}```"
+                        "text": f"*❌ Error:*\n```{error_preview}```"
                     }
                 })
                 
+                # Show more of stderr (1500 chars)
                 if paper.get('execution_stderr_preview'):
+                    stderr_preview = paper['execution_stderr_preview'][:1500] + "..." if len(paper['execution_stderr_preview']) > 1500 else paper['execution_stderr_preview']
                     blocks.append({
                         "type": "section",
                         "text": {
                             "type": "mrkdwn",
-                            "text": f"*Stderr Preview:*\n```{paper['execution_stderr_preview'][:500]}```"
+                            "text": f"*Stderr Preview:*\n```{stderr_preview}```"
                         }
                     })
             else:
@@ -366,6 +501,28 @@ class SlackNotifier:
                     "text": {
                         "type": "mrkdwn",
                         "text": f"*📊 Results Location:*\n`{paper['results_s3_location']}`"
+                    }
+                })
+            
+            # Profiler information (if available)
+            if paper.get('profiler_enabled'):
+                profiler_files = paper.get('profiler_files', [])
+                profiler_s3 = paper.get('profiler_s3_location', '')
+                perfetto_file = paper.get('profiler_perfetto_file', '')
+                
+                profiler_text = f"*🔬 Profiler Enabled*\n"
+                if profiler_s3:
+                    profiler_text += f"S3 Location: `{profiler_s3}`\n"
+                if perfetto_file:
+                    profiler_text += f"Perfetto File: `{perfetto_file}`\n"
+                if profiler_files:
+                    profiler_text += f"Files: {len(profiler_files)} profiler files generated"
+                
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": profiler_text
                     }
                 })
             

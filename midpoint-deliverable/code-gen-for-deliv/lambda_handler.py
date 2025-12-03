@@ -18,16 +18,64 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 import sys
 
-sys.path.append('/opt/python')
-sys.path.append(os.path.dirname(__file__))
+# Set LD_LIBRARY_PATH to include system library paths (for libcrypt.so.2 and other shared libs)
+# For container-based Lambda, libraries are in standard Linux locations
+current_ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+# Add common library paths for container Lambda
+library_paths = [
+    '/lib64',
+    '/usr/lib64', 
+    '/var/lang/lib64',
+    '/usr/lib',
+    '/lib',
+    '/var/task',  # In case pymupdf has bundled libs
+]
+os.environ['LD_LIBRARY_PATH'] = ':'.join(library_paths) + (':' + current_ld_path if current_ld_path else '')
 
-from chunked_generator import ChunkedPyTorchGenerator  # type: ignore
+# Lambda layers are automatically added to sys.path, but ensure /opt/python is there
+if '/opt/python' not in sys.path:
+    sys.path.insert(0, '/opt/python')
+sys.path.append(os.path.dirname(__file__))
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Debug: Check if layer is accessible and test import (before importing modules that need pymupdf)
+logger.info("=== Lambda Layer Debug ===")
+if os.path.exists('/opt/python'):
+    try:
+        layer_contents = os.listdir('/opt/python')[:10]
+        logger.info(f"✅ /opt/python exists. Contents: {layer_contents}")
+        if os.path.exists('/opt/python/fitz'):
+            logger.info("✅ /opt/python/fitz directory found")
+            # Try to import fitz directly from layer
+            try:
+                import fitz
+                logger.info(f"✅ SUCCESS: fitz imported from layer! Version: {fitz.version if hasattr(fitz, 'version') else 'unknown'}")
+            except ImportError as e:
+                logger.error(f"❌ FAILED to import fitz from layer: {e}")
+            except Exception as e:
+                logger.error(f"❌ ERROR importing fitz: {e}")
+        else:
+            logger.warning("⚠️ /opt/python/fitz directory NOT found")
+    except Exception as e:
+        logger.warning(f"⚠️ Error checking layer: {e}")
+else:
+    logger.warning("⚠️ /opt/python does not exist - Lambda layer may not be mounted")
+logger.info("=== End Lambda Layer Debug ===")
+
+from chunked_generator import ChunkedPyTorchGenerator  # type: ignore
+
+# Import SlackNotifier for initial paper notifications
+try:
+    from slack_notifier import SlackNotifier
+    SLACK_AVAILABLE = True
+except ImportError:
+    SLACK_AVAILABLE = False
+    logger.warning("slack_notifier module not available - initial paper notifications will be disabled")
 
 # Flask app endpoint for code execution
 FLASK_EXECUTE_ENDPOINT = os.getenv('FLASK_EXECUTE_ENDPOINT')  # e.g., "http://1.2.3.4:8000/execute"
@@ -131,6 +179,28 @@ class PipelineHandler:
         }
         
         try:
+            # Step 0: Send initial paper notification to Slack (creates thread)
+            slack_thread_ts = None
+            if SLACK_AVAILABLE:
+                try:
+                    # Get paper from OpenSearch to send initial notification
+                    paper = self.generator.opensearch_client.get_paper_by_id(paper_id)
+                    if paper:
+                        filtered_paper = {k: v for k, v in paper.items() if k != 'embeddings'}
+                        filtered_paper['_id'] = paper_id
+                        slack_notifier = SlackNotifier()
+                        slack_thread_ts = slack_notifier.send_paper_info(filtered_paper)
+                        if slack_thread_ts:
+                            logger.info(f"✅ Sent initial paper notification to Slack (thread_ts: {slack_thread_ts})")
+                        else:
+                            logger.warning("⚠️ Failed to send initial paper notification to Slack")
+                    else:
+                        logger.warning(f"Paper {paper_id} not found in OpenSearch - skipping initial Slack notification")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error sending initial paper notification to Slack: {e}")
+            
+            # Note: slack_thread_ts from parameter takes precedence if provided
+            
             # Step 1: Generate code
             logger.info(f"Step 1: Generating code for paper {paper_id}...")
             code_gen_result = self.generator.generate_code_for_paper(paper_id)
@@ -151,13 +221,36 @@ class PipelineHandler:
                 "recommended_dataset": code_gen_result.get("recommended_dataset")
             }
 
+            # Step 1.5: Send code generation notification to Slack (first follow-up)
+            if SLACK_AVAILABLE and slack_thread_ts:
+                try:
+                    slack_notifier = SlackNotifier()
+                    # Get code S3 key if available
+                    code_s3_key = None
+                    if hasattr(self.generator, 'opensearch_client'):
+                        paper = self.generator.opensearch_client.get_paper_by_id(paper_id)
+                        if paper:
+                            code_s3_key = paper.get('code_s3_key')
+                    
+                    slack_notifier.send_code_generation_notification(
+                        paper_id=paper_id,
+                        code_length=len(code_gen_result["code"]),
+                        model_used=code_gen_result.get("model_used"),
+                        recommended_dataset=code_gen_result.get("recommended_dataset"),
+                        code_s3_key=code_s3_key,
+                        thread_ts=slack_thread_ts
+                    )
+                    logger.info(f"✅ Sent code generation notification to Slack")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to send code generation notification: {e}")
+
             # Step 2: Send generated code to Flask app for execution
             logger.info("Step 2: Sending generated code to Flask app for execution...")
             flask_result = send_to_flask_app(
                 paper_id=paper_id,
                 code=code_gen_result["code"],
                 paper_title=code_gen_result.get("paper_title"),
-                slack_thread_ts=slack_thread_ts
+                slack_thread_ts=slack_thread_ts  # Pass thread_ts so Flask app can reply in thread
             )
             
             result["flask_app"] = flask_result

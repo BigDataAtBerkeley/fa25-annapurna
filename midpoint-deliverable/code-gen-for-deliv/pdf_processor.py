@@ -18,9 +18,13 @@ logger = logging.getLogger(__name__)
 try:
     import fitz  # PyMuPDF
     PYMUPDF_AVAILABLE = True
-except ImportError:
+    logger.info(f"✅ PyMuPDF imported successfully (version: {getattr(fitz, 'version', 'unknown')})")
+except ImportError as e:
     PYMUPDF_AVAILABLE = False
-    logger.warning("PyMuPDF not available. Install with: pip install pymupdf")
+    logger.warning(f"PyMuPDF not available. ImportError: {e}")
+except Exception as e:
+    PYMUPDF_AVAILABLE = False
+    logger.error(f"PyMuPDF import failed with exception: {type(e).__name__}: {e}")
 
 try:
     from PIL import Image

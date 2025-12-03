@@ -100,3 +100,6 @@ midpoint-deliverable/**/*.pyc
 
 # Secrets/keys (ensure local env not committed)
 midpoint-deliverable/.env
+# Lambda test files
+payload.json
+response.json

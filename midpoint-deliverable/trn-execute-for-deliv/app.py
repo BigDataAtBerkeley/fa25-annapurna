@@ -151,7 +151,9 @@ def collect_profiler_artifacts(paper_id: str, profiler_path: str):
         logger.error(f"Failed to upload profiler artifacts: {e}")
 
 def upload_execution_results(paper_id: str, result: Dict[str, Any]):
+    """Upload execution results to S3 and update OpenSearch."""
     try:
+        # Upload to S3
         s3_client = boto3.client('s3')
         s3_key = f"results/{paper_id}/execution_result.json"
         s3_client.put_object(
@@ -159,7 +161,49 @@ def upload_execution_results(paper_id: str, result: Dict[str, Any]):
             Key=s3_key,
             Body=json.dumps(result, indent=2)
         )
-        logger.info(f"Uploaded execution results for {paper_id}")
+        logger.info(f"Uploaded execution results to S3 for {paper_id}")
+        
+        # Update OpenSearch with execution results
+        if OPENSEARCH_AVAILABLE:
+            try:
+                opensearch_client = OpenSearchClient()
+                
+                # Prepare execution results for OpenSearch
+                execution_data = {
+                    "execution_success": result.get('success', False),
+                    "execution_time_seconds": round(result.get('execution_time', 0), 2),
+                    "execution_return_code": result.get('return_code', -1),
+                    "execution_error": result.get('error_message') if not result.get('success') else None,
+                    "execution_error_type": result.get('error_type') if not result.get('success') else None,
+                    "execution_completed_at": datetime.now().isoformat(),
+                    "results_s3_location": f"s3://{RESULTS_BUCKET}/{s3_key}",
+                }
+                
+                # Add metrics if available
+                if result.get('metrics'):
+                    execution_data["execution_metrics"] = result.get('metrics')
+                
+                # Add profiler info if available
+                profiler_info = result.get('profiler', {})
+                if profiler_info and profiler_info.get('profiler_enabled'):
+                    execution_data["profiler_enabled"] = True
+                    execution_data["profiler_output_dir"] = profiler_info.get('profiler_output_dir')
+                    execution_data["profiler_files"] = profiler_info.get('profiler_files', [])
+                    if profiler_info.get('perfetto_file'):
+                        execution_data["profiler_perfetto_file"] = profiler_info.get('perfetto_file')
+                
+                # Update OpenSearch
+                success = opensearch_client.update_paper_execution_results(paper_id, execution_data)
+                if success:
+                    logger.info(f"✅ Updated OpenSearch with execution results for {paper_id}")
+                else:
+                    logger.warning(f"⚠️ Failed to update OpenSearch for {paper_id}")
+            except Exception as e:
+                logger.error(f"Error updating OpenSearch with execution results: {e}")
+                logger.error(traceback.format_exc())
+        else:
+            logger.warning("OpenSearch not available - skipping execution results update")
+            
     except Exception as e:
         logger.error(f"Failed to upload results: {e}")
 
@@ -250,6 +294,18 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
         if execution_result.get('s3_results_key'):
             filtered_paper['results_s3_location'] = execution_result.get('s3_results_key')
         
+        # Add profiler information if available
+        profiler_info = execution_result.get('profiler', {})
+        if profiler_info and profiler_info.get('profiler_enabled'):
+            filtered_paper['profiler_enabled'] = True
+            filtered_paper['profiler_output_dir'] = profiler_info.get('profiler_output_dir')
+            filtered_paper['profiler_files'] = profiler_info.get('profiler_files', [])
+            if profiler_info.get('perfetto_file'):
+                filtered_paper['profiler_perfetto_file'] = profiler_info.get('perfetto_file')
+                # Add S3 link for profiler files
+                profiler_s3_prefix = f"s3://{RESULTS_BUCKET}/profiler/{paper_id}/"
+                filtered_paper['profiler_s3_location'] = profiler_s3_prefix
+        
         # Send to Slack using custom formatting (reply in thread if thread_ts provided)
         success = slack_notifier.send_execution_notification(filtered_paper, execution_result, thread_ts=thread_ts)
         if success:
@@ -261,16 +317,22 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
         logger.error(f"Error sending Slack notification for {paper_id}: {e}")
         logger.error(traceback.format_exc())
 
-
+    
 def execute_code_sync(paper_id: str, code: str, timeout: int, paper_title: Optional[str] = None) -> Dict[str, Any]:
     """
     Execute code synchronously (blocking).
     This is the core execution function used by both /execute and /code_review.
     
+    Process Management:
+    - Uses start_new_session=True to create a new process group
+    - When timeout is reached, subprocess.run() kills the entire process group
+    - This ensures all child processes are properly terminated
+    - Only ONE execution runs at a time per paper_id (synchronous/blocking)
+    
     Args:
-        paper_id: Paper/document ID
+        paper_id: Paper/document ID (code review tests use {paper_id}_review_test)
         code: Python code to execute
-        timeout: Maximum execution time
+        timeout: Maximum execution time (process is killed if exceeded)
         paper_title: Paper title (optional)
         
     Returns:
@@ -374,14 +436,17 @@ sys.path.append('{exec_dir}')
         
         logger.info(f"Executing code for {paper_id} (timeout: {timeout}s)")
         
-        # Execute
+        # Execute with process group to ensure child processes are killed on timeout
+        # Use start_new_session=True to create a new process group
+        # This ensures all child processes are killed when the parent is killed
         result = subprocess.run(
             cmd,
             cwd='/tmp',
             capture_output=True,
             text=True,
             timeout=timeout,
-            env=exec_env
+            env=exec_env,
+            start_new_session=True  # Create new process group for proper cleanup
         )
         
         execution_time = time.time() - start_time
@@ -459,7 +524,11 @@ sys.path.append('{exec_dir}')
         return execution_result
         
     except subprocess.TimeoutExpired as e:
+        # Timeout occurred - subprocess.run() with start_new_session=True ensures
+        # the process group (including child processes) is killed
         execution_time = time.time() - start_time
+        logger.warning(f"Execution timeout ({timeout}s) reached for {paper_id} - process killed")
+        
         with execution_lock:
             running_executions.pop(paper_id, None)
         
@@ -471,7 +540,8 @@ sys.path.append('{exec_dir}')
             "stderr": e.stderr.decode('utf-8') if e.stderr else "",
             "timeout": True,
             "error_message": f"Execution timed out after {timeout} seconds",
-            "error_type": "timeout"
+            "error_type": "timeout",
+            "profiler_output_path": profiler_output_path
         }
         
     except Exception as e:
@@ -873,12 +943,21 @@ def get_env_vars():
     })
 
 
-def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Optional[str] = None, slack_thread_ts: Optional[str] = None) -> Dict[str, Any]:
+def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Optional[str] = None, slack_thread_ts: Optional[str] = None, should_send_slack: bool = True, should_trigger_review: bool = True) -> Dict[str, Any]:
     """
     Internal execute function (can be called directly or via HTTP endpoint).
     Returns dictionary instead of Flask response.
+    
+    Args:
+        paper_id: Paper ID
+        code: Code to execute
+        timeout: Execution timeout
+        paper_title: Optional paper title
+        slack_thread_ts: Optional Slack thread timestamp for notifications
+        should_send_slack: Whether to send Slack notification (True for final execution, False for code review tests)
+        should_trigger_review: Whether to trigger code review on failure (False for final execution after max iterations)
     """
-    logger.info(f"Executing code for {paper_id}")
+    logger.info(f"Executing code for {paper_id} (should_send_slack={should_send_slack})")
     
     # Save code to S3 first
     s3_key = save_code(paper_id, code)
@@ -889,52 +968,66 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
     def execute_and_handle():
         exec_result = execute_code_sync(paper_id, code, timeout, paper_title)
         
-        # Send Slack notification after execution completes (success or failure)
-        logger.info(f"Execution completed for {paper_id}, sending Slack notification...")
-        try:
-            send_slack_notification(paper_id, exec_result, thread_ts=slack_thread_ts)
-            logger.info(f"Slack notification attempt completed for {paper_id}")
-        except Exception as e:
-            logger.error(f"Failed to send Slack notification for {paper_id}: {e}")
-            logger.error(traceback.format_exc())
+        # Only send Slack notification for final execution results (not code review tests)
+        if should_send_slack:
+            logger.info(f"Execution completed for {paper_id}, sending final Slack notification...")
+            try:
+                send_slack_notification(paper_id, exec_result, thread_ts=slack_thread_ts)
+                logger.info(f"Final Slack notification sent for {paper_id}")
+            except Exception as e:
+                logger.error(f"Failed to send final Slack notification for {paper_id}: {e}")
+                logger.error(traceback.format_exc())
+        else:
+            logger.info(f"Execution completed for {paper_id} (code review test - skipping Slack notification)")
         
         if exec_result.get('success'):
             logger.info(f"Execution succeeded for {paper_id}")
             upload_execution_results(paper_id, exec_result)
-            profiler_trace = "profiler_output_path"
-            if profiler_trace:
-                collect_profiler_artifacts(paper_id, exec_result.get("profiler_output_path"))
+            
+            # Collect profiler artifacts if available
+            profiler_output_path = exec_result.get("profiler_output_path")
+            if profiler_output_path:
+                collect_profiler_artifacts(paper_id, profiler_output_path)
+            
             # Success - clear any previous errors
             clear_errors(paper_id)
         else:
-            # Failure - save error to DB and trigger code review
-            logger.warning(f"Execution failed for {paper_id}, saving error and triggering review")
-            error_data = {
-                "stderr": exec_result.get('stderr', ''),
-                "stdout": exec_result.get('stdout', ''),
-                "error_message": exec_result.get('error_message', ''),
-                "error_type": exec_result.get('error_type', 'execution_error'),
-                "return_code": exec_result.get('return_code', -1),
-                "execution_time": exec_result.get('execution_time', 0)
-            }
-            save_error(paper_id, error_data)
-            
-            # Call code_review endpoint with error_data as fallback
-            try:
-                review_payload = {
-                    "paper_id": paper_id, 
-                    "paper_title": paper_title,
-                    "slack_thread_ts": slack_thread_ts,  # Pass thread_ts for Slack threading
-                    "error_data": error_data  # Pass error directly in case DynamoDB fails
+            # Failure - handle based on whether we should trigger review
+            if should_trigger_review:
+                # Normal execution failure - save error and trigger code review
+                logger.warning(f"Execution failed for {paper_id}, saving error and triggering review")
+                error_data = {
+                    "stderr": exec_result.get('stderr', ''),
+                    "stdout": exec_result.get('stdout', ''),
+                    "error_message": exec_result.get('error_message', ''),
+                    "error_type": exec_result.get('error_type', 'execution_error'),
+                    "return_code": exec_result.get('return_code', -1),
+                    "execution_time": exec_result.get('execution_time', 0)
                 }
-                review_response = requests.post(
-                    f"http://localhost:8000/code_review",
-                    json=review_payload,
-                    timeout=300  # 5 minute timeout for review
-                )
-                logger.info(f"Code review triggered for {paper_id}: {review_response.status_code}")
-            except Exception as e:
-                logger.error(f"Failed to trigger code review: {e}")
+                save_error(paper_id, error_data)
+                
+                # Call code_review endpoint with error_data as fallback
+                try:
+                    review_payload = {
+                        "paper_id": paper_id, 
+                        "paper_title": paper_title,
+                        "slack_thread_ts": slack_thread_ts,  # Pass thread_ts for Slack threading
+                        "error_data": error_data  # Pass error directly in case DynamoDB fails
+                    }
+                    review_response = requests.post(
+                        f"http://localhost:8000/code_review",
+                        json=review_payload,
+                        timeout=300  # 5 minute timeout for review
+                    )
+                    logger.info(f"Code review triggered for {paper_id}: {review_response.status_code}")
+                except Exception as e:
+                    logger.error(f"Failed to trigger code review: {e}")
+            else:
+                # Final execution failure (after max iterations or after successful code review)
+                # Don't trigger another review - just log the failure
+                logger.warning(f"Final execution failed for {paper_id} (not triggering code review - already at max iterations or post-review)")
+                # Still upload results even on failure (for debugging)
+                upload_execution_results(paper_id, exec_result)
     
     # Start execution in background
     thread = threading.Thread(target=execute_and_handle, daemon=True)
@@ -998,8 +1091,18 @@ def execute():
             }), 400
         
         # Call internal execute function
-        logger.info(f"Beginning internal execution.")
-        result = execute_internal(paper_id, code, timeout, paper_title, slack_thread_ts)
+        # NOTE: Initial execution from Lambda should NOT send Slack notifications
+        # because this is not the final code - it will trigger code review if it fails.
+        # Only the final execution (after code review) should send execution results.
+        logger.info(f"Beginning internal execution (initial - will not send Slack notifications).")
+        result = execute_internal(
+            paper_id=paper_id,
+            code=code,
+            timeout=timeout,
+            paper_title=paper_title,
+            slack_thread_ts=slack_thread_ts,
+            should_send_slack=False  # Initial execution is not final - don't send results yet
+        )
         return jsonify(result), 202
         
     except Exception as e:
@@ -1059,19 +1162,83 @@ def code_review():
         
         # Safety limit to prevent infinite loops
         if error_count >= MAX_REVIEW_ITERATIONS:
-            logger.warning(f"Max code review depth reached for {paper_id} ({error_count}). Triggering final execution attempt to send Slack notification...")
+            logger.warning(f"Max code review depth reached for {paper_id} ({error_count}). Sending final code and execution results...")
             
-            # Remove once debugging is done.
+            # Get final code from S3
+            final_code = get_code(paper_id)
+            if not final_code:
+                logger.error(f"No code found in S3 for {paper_id} - cannot send final notifications")
+                return jsonify({
+                    "success": False,
+                    "error": f"Max review iterations ({MAX_REVIEW_ITERATIONS}) reached, but no code found in S3.",
+                    "paper_id": paper_id,
+                    "error_count": error_count
+                }), 400
+            
+            # Get code S3 key
+            code_s3_key = f"code/{paper_id}.py"
+            
+            # Get paper title if available
+            paper_title = data.get('paper_title')
+            if not paper_title and OPENSEARCH_AVAILABLE:
+                try:
+                    opensearch_client = OpenSearchClient()
+                    paper = opensearch_client.get_paper_by_id(paper_id)
+                    if paper:
+                        paper_title = paper.get('title')
+                except Exception as e:
+                    logger.warning(f"Could not get paper title from OpenSearch: {e}")
+            
+            # Send final code notification (second follow-up) - even though max iterations reached
+            # IMPORTANT: Send this BEFORE triggering final execution to ensure correct order in Slack
+            if SLACK_AVAILABLE and data.get('slack_thread_ts'):
+                try:
+                    slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
+                    final_code_sent = slack_notifier.send_final_code_notification(
+                        paper_id=paper_id,
+                        code_length=len(final_code),
+                        code_review_iterations=error_count,
+                        code_s3_key=code_s3_key,
+                        thread_ts=data.get('slack_thread_ts')
+                    )
+                    if final_code_sent:
+                        logger.info(f"✅ Sent final code notification to Slack (max iterations reached)")
+                        # Small delay to ensure Slack processes the message before execution results
+                        time.sleep(1)
+                    else:
+                        logger.warning(f"⚠️ Final code notification returned False")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to send final code notification: {e}")
+            
+            # Trigger final execution with the final code (this will send execution results as third follow-up)
+            # This happens AFTER the final code notification is sent to ensure correct order
+            try:
+                logger.info(f"Triggering final execution for {paper_id} (max iterations reached - using final code)")
+                execute_internal(
+                    paper_id=paper_id,
+                    code=final_code,
+                    timeout=MAX_EXECUTION_TIME,
+                    paper_title=paper_title,
+                    slack_thread_ts=data.get('slack_thread_ts'),
+                    should_send_slack=True,  # This is the final execution - send notification
+                    should_trigger_review=False  # Don't trigger review - already at max iterations
+                )
+                logger.info(f"Final execution triggered for {paper_id}")
+            except Exception as e:
+                logger.error(f"Failed to trigger final execution: {e}")
+            
+            # Clear errors after sending notifications
             clear_errors(paper_id)
             logger.info(f"Cleared errors for {paper_id}")
             
             return jsonify({
-                "success": False,
-                "error": f"Max review iterations ({MAX_REVIEW_ITERATIONS}) reached.",
+                "success": True,
+                "message": f"Max review iterations ({MAX_REVIEW_ITERATIONS}) reached. Final code and execution results sent.",
                 "paper_id": paper_id,
                 "error_count": error_count,
-                "message": "Max review iterations reached - code review failed."
-            }), 400
+                "final_code_sent": True,
+                "final_execution_triggered": True
+            }), 200
             
         # Extract error message from most recent error
         error_message = ""
@@ -1153,24 +1320,94 @@ def code_review():
         else:
             logger.info(f"No errors to fix. Testing execution.")
         
-        # Test code with 2-minute timeout to check for immediate errors
+        # Test code with 2-minute (120s) timeout to check for immediate errors
         # If it runs for 2 minutes without errors, consider it stable
-        logger.info(f"Executing code.")
+        # NOTE: This runs SYNCHRONOUSLY (blocks) - only one test at a time per paper
+        # The process is killed after 120s if still running (via subprocess timeout)
+        CODE_REVIEW_TEST_TIMEOUT = 120  # 2 minutes as specified
+        logger.info(f"Executing code with {CODE_REVIEW_TEST_TIMEOUT}s timeout for code review test (synchronous, will kill process if timeout).")
         test_result = execute_code_sync(
-            paper_id=f"{paper_id}_review_test",
+            paper_id=f"{paper_id}_review_test",  # Different paper_id to avoid conflicts with full execution
             code=code,
-            timeout=MAX_EXECUTION_TIME,
+            timeout=CODE_REVIEW_TEST_TIMEOUT,  # Process is killed after 120s
             paper_title=data.get('paper_title')
         )
         
-        # Check if code ran successfully for the stability period
-        if test_result.get('success'):
+        # Check if code ran successfully OR ran for >120s (assume success)
+        execution_time = test_result.get('execution_time', 0)
+        if test_result.get('success') or execution_time >= CODE_REVIEW_TEST_TIMEOUT:
+            if execution_time >= CODE_REVIEW_TEST_TIMEOUT:
+                logger.info(f"Code executed for {execution_time}s (>= {CODE_REVIEW_TEST_TIMEOUT}s) - assuming success and continuing")
+            
+            # Send final code notification (second follow-up) - code after code review
+            # IMPORTANT: Send this BEFORE triggering final execution to ensure correct order in Slack
+            if SLACK_AVAILABLE and data.get('slack_thread_ts'):
+                try:
+                    # Get the final code from S3
+                    final_code = get_code(paper_id)
+                    if not final_code:
+                        final_code = code
+                    
+                    # Get code S3 key (use standard format: code/{paper_id}.py)
+                    code_s3_key = f"code/{paper_id}.py"
+                    # Try to get from OpenSearch if available (might have different format)
+                    if OPENSEARCH_AVAILABLE:
+                        try:
+                            opensearch_client = OpenSearchClient()
+                            paper = opensearch_client.get_paper_by_id(paper_id)
+                            if paper and paper.get('code_s3_key'):
+                                code_s3_key = paper.get('code_s3_key')
+                        except Exception as e:
+                            logger.warning(f"Could not get code S3 key from OpenSearch, using default: {e}")
+                    
+                    slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
+                    final_code_sent = slack_notifier.send_final_code_notification(
+                        paper_id=paper_id,
+                        code_length=len(final_code),
+                        code_review_iterations=error_count,
+                        code_s3_key=code_s3_key,
+                        thread_ts=data.get('slack_thread_ts')
+                    )
+                    if final_code_sent:
+                        logger.info(f"✅ Sent final code notification to Slack")
+                        # Small delay to ensure Slack processes the message before execution results
+                        time.sleep(1)
+                    else:
+                        logger.warning(f"⚠️ Final code notification returned False")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to send final code notification: {e}")
+            
+            # Trigger full execution with the fixed code (this is the FINAL execution - send Slack notification)
+            # This happens AFTER the final code notification is sent to ensure correct order
+            try:
+                # Get the fixed code from S3 (or use current code)
+                final_code = get_code(paper_id)
+                if not final_code:
+                    final_code = code
+                
+                # Trigger full execution with should_send_slack=True (final execution)
+                # Call execute_internal directly to ensure Slack notification is sent
+                logger.info(f"Triggering final execution for {paper_id} (code review succeeded)")
+                execute_internal(
+                    paper_id=paper_id,
+                    code=final_code,
+                    timeout=MAX_EXECUTION_TIME,
+                    paper_title=data.get('paper_title'),
+                    slack_thread_ts=data.get('slack_thread_ts'),
+                    should_send_slack=True,  # This is the final execution - send notification
+                    should_trigger_review=False  # Don't trigger review - code already reviewed and stable
+                )
+                logger.info(f"Final execution triggered for {paper_id}")
+            except Exception as e:
+                logger.error(f"Failed to trigger final execution: {e}")
+            
             return jsonify({
                 "success": True,
                 "message": f"Code is stable after {error_count} iterations. Full execution triggered.",
                 "paper_id": paper_id,
                 "iteration": error_count,
-                "stability_test_time": test_result.get('execution_time'),
+                "stability_test_time": execution_time,
+                "assumed_success": execution_time >= CODE_REVIEW_TEST_TIMEOUT
             })
 
         

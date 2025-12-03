@@ -27,9 +27,28 @@ mkdir -p $DEPLOY_DIR
 echo "📥 Copying code-gen-for-deliv files..."
 cp midpoint-deliverable/code-gen-for-deliv/*.py $DEPLOY_DIR/
 
-# Install dependencies
-echo "📥 Installing dependencies..."
-pip install -r midpoint-deliverable/code-gen-for-deliv/requirements.txt -t $DEPLOY_DIR/
+# Install dependencies for Linux (Lambda runs on Amazon Linux)
+echo "📥 Installing dependencies for Linux (Lambda environment)..."
+echo "Note: Installing all dependencies including pymupdf (using pre-built x86_64 wheel)"
+
+# Download pre-built x86_64 wheel for pymupdf (more reliable than building from source)
+echo "Downloading pre-built pymupdf wheel for x86_64..."
+pip download --platform manylinux2014_x86_64 --only-binary=:all: --python-version 3.9 --no-deps pymupdf==1.23.0 -d /tmp/lambda-wheels 2>/dev/null || true
+
+# Install all dependencies
+echo "Installing dependencies..."
+if [ -f /tmp/lambda-wheels/*.whl ]; then
+    echo "Installing pymupdf from pre-built wheel..."
+    pip install --find-links /tmp/lambda-wheels --no-index pymupdf==1.23.0 -t $DEPLOY_DIR/ || \
+    pip install --platform manylinux2014_x86_64 --only-binary=:all: --python-version 3.9 pymupdf==1.23.0 -t $DEPLOY_DIR/
+    rm -rf /tmp/lambda-wheels
+fi
+
+# Install other dependencies
+pip install -r midpoint-deliverable/code-gen-for-deliv/requirements.txt -t $DEPLOY_DIR/ --no-deps || true
+pip install boto3 opensearch-py python-dotenv requests "urllib3>=1.26.0,<2.0.0" Pillow -t $DEPLOY_DIR/
+
+echo "✅ Dependencies installed"
 
 # Create deployment package
 echo "🗜️ Creating deployment package..."
@@ -39,17 +58,37 @@ cd ..
 
 # Clean up
 echo "🧹 Cleaning up temporary files..."
-rm -rf $DEPLOY_DIR
+rm -rf "$DEPLOY_DIR" 2>/dev/null || true
 
 echo "Package created: deployment/$ZIP_FILE"
-echo "Package size: $(du -h deployment/$ZIP_FILE | cut -f1)"
+# Get file size (works on both Linux and macOS)
+PACKAGE_SIZE=$(stat -f%z "deployment/$ZIP_FILE" 2>/dev/null || stat -c%s "deployment/$ZIP_FILE" 2>/dev/null || ls -l "deployment/$ZIP_FILE" | awk '{print $5}')
+PACKAGE_SIZE_MB=$((PACKAGE_SIZE / 1024 / 1024))
+echo "Package size: ${PACKAGE_SIZE_MB}MB (${PACKAGE_SIZE} bytes)"
 
 cd deployment
 
-echo "🚀 Updating $FUNCTION_NAME in AWS..."
-aws lambda update-function-code \
-  --function-name $FUNCTION_NAME \
-  --zip-file fileb://$ZIP_FILE
+# Check if package is too large for direct upload (>50MB)
+if [ $PACKAGE_SIZE -gt 52428800 ]; then
+    echo "⚠️  Package is larger than 50MB, uploading to S3 first..."
+    
+    S3_BUCKET="${LAMBDA_DEPLOY_BUCKET:-papers-code-artifacts}"
+    S3_KEY="lambda-deployments/${FUNCTION_NAME}-$(date +%s).zip"
+    
+    echo "📤 Uploading to s3://${S3_BUCKET}/${S3_KEY}..."
+    aws s3 cp $ZIP_FILE s3://${S3_BUCKET}/${S3_KEY}
+    
+    echo "🚀 Updating $FUNCTION_NAME from S3..."
+    aws lambda update-function-code \
+      --function-name $FUNCTION_NAME \
+      --s3-bucket ${S3_BUCKET} \
+      --s3-key ${S3_KEY}
+else
+    echo "🚀 Updating $FUNCTION_NAME in AWS (direct upload)..."
+    aws lambda update-function-code \
+      --function-name $FUNCTION_NAME \
+      --zip-file fileb://$ZIP_FILE
+fi
 
 echo "✅ Code deployed successfully."
 

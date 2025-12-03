@@ -107,13 +107,16 @@ class SlackNotifier:
                 }
             })
         
-        # All other fields in a collapsible section
+        # Exclude error fields from old runs (only show current/clean metadata)
         other_fields = {}
         known_fields = {'title', 'authors', 'abstract', '_id', 's3_bucket', 's3_key', 
                        'abstract_embedding', 'sha_abstract', 'title_normalized'}
+        # Exclude error-related fields from initial message
+        error_fields = {'has_errors', 'error_message', 'error_type', 'errors', 'tested', 
+                       'code_generated', 'code_s3_key', 'code_s3_bucket', 'code_generated_at'}
         
         for key, value in paper.items():
-            if key not in known_fields:
+            if key not in known_fields and key not in error_fields:
                 # Format the value
                 if isinstance(value, (dict, list)):
                     value_str = json.dumps(value, indent=2)[:200]
@@ -217,6 +220,146 @@ class SlackNotifier:
         except Exception as e:
             logger.error(f"Unexpected error sending to Slack: {e}")
             return None
+    
+    def send_code_generation_notification(self, paper_id: str, code_length: int, 
+                                         model_used: Optional[str] = None, 
+                                         recommended_dataset: Optional[str] = None,
+                                         code_s3_key: Optional[str] = None,
+                                         channel: Optional[str] = None, 
+                                         thread_ts: Optional[str] = None) -> bool:
+        """
+        Send initial code generation notification as follow-up in thread.
+        
+        Args:
+            paper_id: Paper ID
+            code_length: Length of generated code
+            model_used: Model used for generation (optional)
+            recommended_dataset: Recommended dataset (optional)
+            code_s3_key: S3 key for code file (optional)
+            channel: Slack channel ID or name (default: use default_channel)
+            thread_ts: Thread timestamp to reply in thread (required)
+            
+        Returns:
+            True if message sent successfully, False otherwise
+        """
+        if not self.enabled:
+            logger.warning("Slack notifier is disabled (no bot token)")
+            return False
+        
+        if not thread_ts:
+            logger.error("thread_ts is required for code generation notification")
+            return False
+        
+        target_channel = channel or self.default_channel
+        if not target_channel:
+            logger.error("No Slack channel specified")
+            return False
+        
+        try:
+            blocks = []
+            
+            # Header
+            blocks.append({
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": "✅ Initial Code Generation Complete"
+                }
+            })
+            
+            blocks.append({"type": "divider"})
+            
+            # Code generation details
+            fields = [
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Paper ID:*\n`{paper_id}`"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Code Length:*\n{code_length:,} characters"
+                }
+            ]
+            
+            if model_used:
+                fields.append({
+                    "type": "mrkdwn",
+                    "text": f"*Model:*\n{model_used}"
+                })
+            
+            if recommended_dataset:
+                fields.append({
+                    "type": "mrkdwn",
+                    "text": f"*Recommended Dataset:*\n{recommended_dataset}"
+                })
+            
+            # Split into sections of 2 fields each
+            for i in range(0, len(fields), 2):
+                section_fields = fields[i:i+2]
+                blocks.append({
+                    "type": "section",
+                    "fields": section_fields
+                })
+            
+            # S3 link if available
+            if code_s3_key:
+                code_s3_bucket = os.getenv('CODE_BUCKET', 'papers-code-artifacts')
+                aws_region = os.getenv('AWS_REGION', 'us-east-1')
+                # Create clickable S3 console URL
+                s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{code_s3_bucket}?prefix={code_s3_key}"
+                # Also show the s3:// path for reference
+                s3_path = f"s3://{code_s3_bucket}/{code_s3_key}"
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Code Location:*\n<{s3_console_url}|View in S3 Console>\n`{s3_path}`"
+                    }
+                })
+            
+            blocks.append({
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "📤 Code sent to Flask app for execution and code review"
+                    }
+                ]
+            })
+            
+            # Send message to Slack
+            url = "https://slack.com/api/chat.postMessage"
+            headers = {
+                "Authorization": f"Bearer {self.bot_token}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "channel": target_channel,
+                "blocks": blocks,
+                "text": f"Initial code generation complete for {paper_id}",
+                "thread_ts": thread_ts
+            }
+            
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            if result.get("ok"):
+                logger.info(f"✅ Sent code generation notification to Slack (thread: {thread_ts})")
+                return True
+            else:
+                error = result.get("error", "Unknown error")
+                logger.error(f"❌ Failed to send to Slack: {error}")
+                return False
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error sending code generation notification to Slack: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error sending to Slack: {e}")
+            return False
     
     def send_execution_notification(self, paper: Dict[str, Any], execution_result: Dict[str, Any], 
                                     channel: Optional[str] = None, thread_ts: Optional[str] = None) -> bool:

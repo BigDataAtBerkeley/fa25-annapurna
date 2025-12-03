@@ -12,8 +12,9 @@ if [ -f .env ]; then
 fi
 
 # Configuration
-TRAINIUM_IP="${TRAINIUM_ENDPOINT:-http://3.134.87.226:8000}"
-TRAINIUM_IP=$(echo $TRAINIUM_IP | sed 's|http://||; s|https://||; s|:8000||')
+TRAINIUM_ENDPOINT="${TRAINIUM_ENDPOINT:-http://3.21.7.129:8000}"
+TRAINIUM_IP=$(echo $TRAINIUM_ENDPOINT | sed 's|http://||; s|https://||; s|:8000||')
+TRAINIUM_INSTANCE_ID="${TRAINIUM_INSTANCE_ID:-i-0f0bf0de25aa4fd57}"
 TRAINIUM_USER="ec2-user"
 SSH_KEY="${1:-$SSH_KEY}"
 
@@ -61,14 +62,147 @@ fi
 echo "🚀 Deploying Flask app to Trainium instance at $TRAINIUM_IP"
 echo ""
 
-# Step 1: Test SSH connection first
-echo "🔌 Testing SSH connection..."
-if ! ssh -i "$SSH_KEY" -o ConnectTimeout=10 -o StrictHostKeyChecking=no "$TRAINIUM_USER@$TRAINIUM_IP" "echo 'Connection successful'" 2>/dev/null; then
-    echo "❌ SSH connection failed!"
+# Step 0: Check and start instance if needed
+echo "🔍 Step 0: Checking instance status..."
+AWS_REGION="${AWS_REGION:-us-east-2}"
+
+# Use provided instance ID or try to find it from IP
+if [ -n "$TRAINIUM_INSTANCE_ID" ]; then
+    INSTANCE_ID="$TRAINIUM_INSTANCE_ID"
+    echo "   Using provided instance ID: $INSTANCE_ID"
+else
+    # Fallback: Find instance ID from IP address
+    echo "   Looking up instance ID from IP $TRAINIUM_IP..."
+    INSTANCE_ID=$(aws ec2 describe-instances --region "$AWS_REGION" \
+        --filters "Name=ip-address,Values=$TRAINIUM_IP" \
+        --query 'Reservations[*].Instances[*].InstanceId' \
+        --output text 2>/dev/null | head -1)
+    
+    if [ -z "$INSTANCE_ID" ]; then
+        echo "⚠️  Could not find instance ID for IP $TRAINIUM_IP"
+        echo "   Attempting to continue with SSH connection test..."
+        INSTANCE_ID=""
+    else
+        echo "   Found instance: $INSTANCE_ID"
+    fi
+fi
+
+if [ -n "$INSTANCE_ID" ]; then
+    
+    # Check instance state (optional - skip if it causes issues)
+    # Since we'll verify via SSH anyway, we can make this optional
+    echo "   Checking instance state from AWS (optional)..."
+    
+    INSTANCE_STATE=""
+    AWS_CLI_EXIT_CODE=1
+    
+    # Try to get state, but don't block - use a simple non-blocking approach
+    # Write to a file in background, then check it
+    STATE_FILE="/tmp/trainium_state_$$"
+    (aws ec2 describe-instances --region "$AWS_REGION" \
+        --instance-ids "$INSTANCE_ID" \
+        --query 'Reservations[0].Instances[0].State.Name' \
+        --output text 2>/dev/null > "$STATE_FILE" &)
+    
+    # Give it 1 second, then check
+    sleep 1
+    
+    if [ -f "$STATE_FILE" ] && [ -s "$STATE_FILE" ]; then
+        # Got result
+        INSTANCE_STATE=$(cat "$STATE_FILE" | tr -d '[:space:]')
+        rm -f "$STATE_FILE"
+        AWS_CLI_EXIT_CODE=0
+        echo "   Instance state: $INSTANCE_STATE"
+    else
+        # Didn't get result in time - skip it
+        rm -f "$STATE_FILE"
+        echo "   ⚠️  State check skipped (will verify via SSH connection)..."
+        INSTANCE_STATE=""
+    fi
+    
+    # Check if command failed or state is invalid
+    if [ $AWS_CLI_EXIT_CODE -ne 0 ] || [ -z "$INSTANCE_STATE" ] || [[ "$INSTANCE_STATE" == *"error"* ]] || [[ "$INSTANCE_STATE" == *"Error"* ]] || [[ "$INSTANCE_STATE" == *"InvalidInstanceID"* ]]; then
+        echo "⚠️  Failed to get instance state (exit code: $AWS_CLI_EXIT_CODE)"
+        echo "   AWS CLI output: $INSTANCE_STATE_OUTPUT"
+        echo "   Attempting to continue with SSH connection test..."
+        INSTANCE_STATE=""
+    else
+        echo "   Instance state: $INSTANCE_STATE"
+    fi
+    
+    if [ -n "$INSTANCE_STATE" ] && [ "$INSTANCE_STATE" = "stopped" ]; then
+        echo "🔄 Instance is stopped. Starting instance..."
+        aws ec2 start-instances --region "$AWS_REGION" --instance-ids "$INSTANCE_ID" > /dev/null
+        
+        if [ $? -eq 0 ]; then
+            echo "   Waiting for instance to be running..."
+            aws ec2 wait instance-running --region "$AWS_REGION" --instance-ids "$INSTANCE_ID"
+            
+            if [ $? -eq 0 ]; then
+                echo "✅ Instance is now running"
+                echo "   Waiting 30 seconds for SSH to be ready..."
+                sleep 30
+            else
+                echo "❌ Failed to start instance or timeout waiting for running state"
+                exit 1
+            fi
+        else
+            echo "❌ Failed to start instance"
+            exit 1
+        fi
+    elif [ -n "$INSTANCE_STATE" ] && [ "$INSTANCE_STATE" = "stopping" ]; then
+        echo "⏳ Instance is stopping. Waiting for it to stop, then starting..."
+        aws ec2 wait instance-stopped --region "$AWS_REGION" --instance-ids "$INSTANCE_ID"
+        echo "🔄 Starting instance..."
+        aws ec2 start-instances --region "$AWS_REGION" --instance-ids "$INSTANCE_ID" > /dev/null
+        aws ec2 wait instance-running --region "$AWS_REGION" --instance-ids "$INSTANCE_ID"
+        echo "✅ Instance is now running"
+        echo "   Waiting 30 seconds for SSH to be ready..."
+        sleep 30
+    elif [ -n "$INSTANCE_STATE" ] && [ "$INSTANCE_STATE" = "pending" ]; then
+        echo "⏳ Instance is starting. Waiting for it to be running..."
+        aws ec2 wait instance-running --region "$AWS_REGION" --instance-ids "$INSTANCE_ID"
+        echo "✅ Instance is now running"
+        echo "   Waiting 30 seconds for SSH to be ready..."
+        sleep 30
+    elif [ -n "$INSTANCE_STATE" ] && [ "$INSTANCE_STATE" = "running" ]; then
+        echo "✅ Instance is already running"
+    else
+        echo "⚠️  Instance is in state: $INSTANCE_STATE"
+        echo "   Attempting to continue..."
+    fi
+fi
+echo ""
+
+# Step 1: Test SSH connection
+echo "🔌 Step 1: Testing SSH connection..."
+MAX_SSH_RETRIES=5
+SSH_RETRY_COUNT=0
+SSH_SUCCESS=false
+
+while [ $SSH_RETRY_COUNT -lt $MAX_SSH_RETRIES ]; do
+    if ssh -i "$SSH_KEY" -o ConnectTimeout=10 -o StrictHostKeyChecking=no "$TRAINIUM_USER@$TRAINIUM_IP" "echo 'Connection successful'" 2>/dev/null; then
+        SSH_SUCCESS=true
+        break
+    fi
+    
+    SSH_RETRY_COUNT=$((SSH_RETRY_COUNT + 1))
+    if [ $SSH_RETRY_COUNT -lt $MAX_SSH_RETRIES ]; then
+        echo "   SSH connection failed, retrying in 10 seconds... (attempt $SSH_RETRY_COUNT/$MAX_SSH_RETRIES)"
+        sleep 10
+    fi
+done
+
+if [ "$SSH_SUCCESS" = false ]; then
+    echo "❌ SSH connection failed after $MAX_SSH_RETRIES attempts!"
     echo ""
     echo "Troubleshooting:"
     echo "1. Check if the instance is running:"
-    echo "   aws ec2 describe-instances --region us-east-2 --instance-ids <INSTANCE_ID>"
+    if [ -n "$INSTANCE_ID" ]; then
+        echo "   aws ec2 describe-instances --region $AWS_REGION --instance-ids $INSTANCE_ID"
+    else
+        echo "   aws ec2 describe-instances --region $AWS_REGION --filters 'Name=ip-address,Values=$TRAINIUM_IP'"
+    fi
     echo ""
     echo "2. Verify security group allows SSH (port 22) from your IP"
     echo ""
@@ -85,8 +219,8 @@ echo ""
 
 SSH_KEY=$(cd "$(dirname "$SSH_KEY")" && pwd)/$(basename "$SSH_KEY")
 
-# Step 1: Upload files
-echo "📦 Step 1: Uploading app files..."
+# Step 2: Upload files
+echo "📦 Step 2: Uploading app files..."
 cd "$SCRIPT_DIR/../midpoint-deliverable/trn-execute-for-deliv" || exit 1
 
 # Check files exist
@@ -103,8 +237,8 @@ scp -i "$SSH_KEY" -o ConnectTimeout=30 -v app.py error_db.py s3_code_storage.py 
 echo "✅ Files uploaded"
 echo ""
 
-# Step 2: Install dependencies and start Flask
-echo "⚙️  Step 2: Installing dependencies on Trainium..."
+# Step 3: Install dependencies and start Flask
+echo "⚙️  Step 3: Installing dependencies on Trainium..."
 ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" << 'EOF'
     # Update system
     echo "Installing system packages..."
@@ -139,9 +273,9 @@ ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" << 'EOF'
     echo "✅ System installation complete"
 EOF
 
-# Step 2b: Install packages in Neuron venv (for generated code execution)
+# Step 3b: Install packages in Neuron venv (for generated code execution)
 echo ""
-echo "📦 Step 2b: Installing packages in Neuron venv for generated code..."
+echo "📦 Step 3b: Installing packages in Neuron venv for generated code..."
 INSTALL_SCRIPT="$SCRIPT_DIR/install_all_packages_trainium.sh"
 
 if [ ! -f "$INSTALL_SCRIPT" ]; then
@@ -160,7 +294,7 @@ ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" << 'EOF'
 EOF
 
 echo ""
-echo "🔧 Step 3: Setting up systemd service..."
+echo "🔧 Step 4: Setting up systemd service..."
 ssh -i "$SSH_KEY" "$TRAINIUM_USER@$TRAINIUM_IP" << 'EOF'
     # Create logs directory first (before systemd service)
     mkdir -p ~/trainium-executor/logs

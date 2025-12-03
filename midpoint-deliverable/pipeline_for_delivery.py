@@ -7,6 +7,14 @@ This pipeline processes one paper at a time:
 2. Generates PyTorch code using Bedrock (with Neuron SDK requirements)
 3. Executes on Trainium
 4. Monitors and saves results at each step
+
+Note: This script runs code generation locally using ChunkedPyTorchGenerator.
+The same code generation logic is also available in AWS Lambda:
+- PapersCodeGenerator-container (container-based, recommended - fixes pymupdf issues)
+- PapersCodeGenerator (old zip-based, has pymupdf dependency issues)
+
+The Lambda function is triggered by SQS queue (code-evaluation.fifo) and uses
+the same ChunkedPyTorchGenerator code for consistency.
 """
 
 import os
