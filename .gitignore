@@ -52,7 +52,6 @@ scratch/
 datasets/dataset_cache/
 *.parquet
 test_*.json
-paper_results.csv
 output*.json
 
 # Test artifacts
