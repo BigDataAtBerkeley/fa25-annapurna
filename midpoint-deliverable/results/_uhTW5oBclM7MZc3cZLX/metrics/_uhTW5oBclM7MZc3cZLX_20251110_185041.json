@@ -1,0 +1,13 @@
+{
+  "paper_id": "_uhTW5oBclM7MZc3cZLX",
+  "paper_title": "Directional Gradient Projection for Robust Fine-Tuning of Foundation Models",
+  "metrics": {
+    "final_epoch_loss": 1.5449,
+    "initial_epoch_loss": 2.2905,
+    "num_epochs": 5,
+    "test_accuracy": 46.06,
+    "training_loss": 1.5449
+  },
+  "execution_time": 103.95,
+  "success": true
+}

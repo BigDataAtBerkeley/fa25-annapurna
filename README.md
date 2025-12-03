@@ -528,8 +528,73 @@ aws ec2 stop-instances --region us-east-2 --instance-ids i-0f0bf0de25aa4fd57
 # Start instance when needed
 aws ec2 start-instances --region us-east-2 --instance-ids i-0f0bf0de25aa4fd57
 
-# Terminate instance (permanent - cannot be restarted)
-aws ec2 terminate-instances --region us-east-2 --instance-ids i-0f0bf0de25aa4fd57
+**Download Code/Results:**
+```bash
+# Download generated code from S3
+python download_s3_code.py
+
+# Download test results from S3
+python download_test_results.py
 ```
+
+### Setup Scripts
+
+```bash
+# Setup SQS queues and Lambda triggers (first time only)
+./deployment/setup_sqs_queues.sh
+
+# Setup pipeline infrastructure (S3 buckets, IAM policies) FIRST TIME ONLY
+./deployment/setup_pipeline.sh
+
+# Deploy Trainium executor (Ask Dan for SSH key)
+./deployment/deploy_trainium.sh /path/to/your-key.pem
+
+```
+
+### Code gen --> test on trn
+```bash
+python grab_papers_for_code_gen.py ## this grabs 3 random papers from opensearch and then sends them to code eval SQS
+python monitor_pipeline.py --paper-ids <Paper ID> <Paper ID> <Paper ID> --watch --interval 15
+```
+
+---
+
+## Midpoint Deliverable Pipeline
+
+Grabs a single random paper from opensearch, generates its code, sends it to the code reviewer, then the flask app executes it on trn & stores neuron profiler results + overall trn results. All files are in the `midpoint-deliverable/` directory.
+
+### Quick Start
+
+```bash
+cd midpoint-deliverable
+
+# Process a specific paper
+python pipeline_for_delivery.py --paper-id <paper_id>
+
+# Process recent papers
+python pipeline_for_delivery.py --recent-days 30 --max-papers 5
+
+# Check results for a paper
+python check_results.py <paper_id>
+```
+
+### Key Features
+
+- **Neuron SDK Integration**: Generated code uses `torch_xla` for Trainium compatibility
+- **Hardware-Level Profiling**: Neuron Profiler captures hardware execution traces
+- **CloudWatch Metrics**: Automatic logging of training and execution metrics
+
+### Directory Structure
+
+```
+midpoint-deliverable/
+├── code-gen-for-deliv/      # Code generation module
+├── trn-execute-for-deliv/   # Trainium execution module
+├── results/                 # Results (per-paper folders)
+├── pipeline_for_delivery.py # Main pipeline script
+└── README.md                # Complete documentation
+```
+
+See `midpoint-deliverable/README.md` for full documentation.
 
 ---

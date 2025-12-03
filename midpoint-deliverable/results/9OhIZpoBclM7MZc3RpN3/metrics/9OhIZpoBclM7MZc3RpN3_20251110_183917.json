@@ -1,0 +1,13 @@
+{
+  "paper_id": "9OhIZpoBclM7MZc3RpN3",
+  "paper_title": "ADAM Optimization with Adaptive Batch Selection",
+  "metrics": {
+    "final_epoch_loss": 1.249,
+    "initial_epoch_loss": 1.7527,
+    "num_epochs": 5,
+    "test_accuracy": 55.23,
+    "training_loss": 1.249
+  },
+  "execution_time": 231.55,
+  "success": true
+}

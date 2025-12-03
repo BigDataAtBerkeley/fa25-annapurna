@@ -1,0 +1,48 @@
+{
+  "code": "import math\nimport torch\nimport torch.nn as nn\nimport torch.nn.functional as F\nimport torch_xla.core.xla_model as xm\nfrom dataset_loader import load_dataset\n\nclass RingmasterASGD(nn.Module):\n    def __init__(self, input_dim, hidden_dim, output_dim):\n        super(RingmasterASGD, self).__init__()\n        self.fc1 = nn.Linear(input_dim, hidden_dim)\n        self.fc2 = nn.Linear(hidden_dim, hidden_dim)\n        self.fc3 = nn.Linear(hidden_dim, output_dim)\n        \n    def forward(self, x):\n        x = F.relu(self.fc1(x))\n        x = F.relu(self.fc2(x))\n        x = self.fc3(x)\n        return x\n\n# Load CIFAR-10 dataset\ntrain_loader, test_loader = load_dataset('cifar10', batch_size=128)\n\n# Initialize model, loss, and optimizer\ninput_dim = 3 * 32 * 32  # CIFAR-10 images are 3x32x32\nhidden_dim = 512\noutput_dim = 10  # CIFAR-10 has 10 classes\nmodel = RingmasterASGD(input_dim, hidden_dim, output_dim)\n\n# Get Trainium device via Neuron SDK\ndevice = xm.xla_device()\nmodel = model.to(device)\n\ncriterion = nn.CrossEntropyLoss()\noptimizer = torch.optim.Adam(model.parameters(), lr=0.001)\n\n# Training loop\nnum_epochs = 5\nfor epoch in range(num_epochs):\n    model.train()\n    running_loss = 0.0\n    for i, (inputs, labels) in enumerate(train_loader):\n        inputs = inputs.view(inputs.size(0), -1).to(device)  # Flatten and move to device\n        labels = labels.to(device)\n        \n        optimizer.zero_grad()\n        outputs = model(inputs)\n        loss = criterion(outputs, labels)\n        loss.backward()\n        \n        # Use XLA-compatible optimizer step\n        xm.optimizer_step(optimizer)\n        # Synchronize XLA computation\n        xm.mark_step()\n        \n        running_loss += loss.item()\n        \n        if i % 100 == 99:\n            print(f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], Loss: {running_loss/100:.4f}')\n            running_loss = 0.0\n\n# Evaluation\nmodel.eval()\ncorrect = 0\ntotal = 0\nwith torch.no_grad():\n    for inputs, labels in test_loader:\n        inputs = inputs.view(inputs.size(0), -1).to(device)\n        labels = labels.to(device)\n        outputs = model(inputs)\n        _, predicted = torch.max(outputs.data, 1)\n        total += labels.size(0)\n        correct += (predicted == labels).sum().item()\n\nprint(f'Accuracy on test set: {100 * correct / total:.2f}%')\n\n# Save the model\ntorch.save(model.state_dict(), 'ringmaster_asgd_model.pth')",
+  "metadata": {
+    "success": true,
+    "paper_id": "sOhIW5oBclM7MZc3HpLf",
+    "paper_title": "Ringmaster ASGD: The First Asynchronous SGD with Optimal Time Complexity",
+    "code_length": 2398,
+    "model_used": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0",
+    "recommended_dataset": "cifar10",
+    "code_file": "results-for-deliv/code-generation/sOhIW5oBclM7MZc3HpLf_20251110_171906.py",
+    "generation_time": 218.47828578948975,
+    "truncated": false
+  },
+  "dataset_recommendations": {
+    "paper_id": null,
+    "paper_title": "Ringmaster ASGD: The First Asynchronous SGD with Optimal Time Complexity",
+    "recommended_datasets": [
+      "cifar10",
+      "cifar100",
+      "mnist"
+    ],
+    "available_datasets": [
+      "imdb",
+      "mnist",
+      "cifar100",
+      "wikitext2",
+      "synthetic",
+      "fashion_mnist",
+      "cifar10"
+    ],
+    "explicitly_mentioned": [
+      "wmt",
+      "ptb"
+    ],
+    "domain_inferred": [],
+    "reasoning": "",
+    "confidence": "medium",
+    "llm_recommended": [
+      "cifar10",
+      "cifar100",
+      "mnist"
+    ],
+    "llm_reasoning": "The paper focuses on Asynchronous Stochastic Gradient Descent (ASGD) for distributed machine learning, which is commonly applied to large-scale optimization problems. Image classification tasks on datasets like CIFAR-100 and CIFAR-10 are frequently used to benchmark distributed optimization algorithms due to their complexity and size. CIFAR-100, with its larger number of classes, provides a more challenging task that could better demonstrate the advantages of the proposed Ringmaster ASGD method, especially in handling heterogeneous computation times across workers. MNIST is included as a simpler baseline for comparison.",
+    "llm_confidence": "medium",
+    "primary_dataset": "cifar10"
+  },
+  "explanation": ""
+}
