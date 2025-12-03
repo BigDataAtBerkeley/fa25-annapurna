@@ -191,18 +191,6 @@ def search_similar_papers_rag(abstract: str, size: int = 5) -> List[Dict]:
         logger.warning(f"RAG search failed: {e}")
         return []
 
-def is_paper_redundant(similar: List[Dict]) -> Dict[str, any]:
-    if not similar:
-        return {"is_redundant": False, "reason": "No similar papers found", "max_similarity": 0.0}
-    most_similar = similar[0]
-    max_sim = most_similar.get('similarity_score', 0.0) or 0.0
-    return {
-        "is_redundant": max_sim >= SIMILARITY_THRESHOLD,
-        "reason": f"Most similar has {max_sim:.3f} similarity (threshold={SIMILARITY_THRESHOLD})",
-        "max_similarity": max_sim,
-        "most_similar_paper": most_similar.get('title', 'Unknown')
-    }
-
 def index_paper_document(doc_id: str, doc: Dict) -> str:
     try:
         result = os_client.index(index=OPENSEARCH_INDEX, id=doc_id, body=doc, refresh=True)
@@ -499,12 +487,10 @@ def retrieve_rag_context_window(
     title: str, 
     abstract: str, 
     embedding: List[float],
-    exclude_id: str = None,
-    similar: List[Dict] = None
+    exclude_id: str = None
 ) -> str:
     
-    if similar is None:
-        similar = search_similar_papers_with_embedding(embedding, exclude_id=exclude_id, size=5)
+    similar = search_similar_papers_with_embedding(embedding, exclude_id=exclude_id, size=5)
     logger.info(f"Found {len(similar)} similar papers for RAG redundancy check.")
     
     if not similar:
@@ -690,15 +676,8 @@ def lambda_handler(event, context):
                 #index_paper_document(reject_doc)
                 logger.info(f"Skipped (exact duplicate) | {title} | {reason}")
                 continue
-            similar_hits = search_similar_papers_with_embedding(precomputed_embedding, exclude_id=paper_id, size=10)
-            redundancy = is_paper_redundant(similar_hits)
-            if redundancy.get("is_redundant"):
-                reason = redundancy.get("reason", "RAG redundancy")
-                write_discard_record(doc_id, "rag", reason, body, msg_id)
-                logger.info(f"Rejected by RAG | {title} | {reason}")
-                continue
             
-            rag_context_window = retrieve_rag_context_window(title, abstract, precomputed_embedding, paper_id, similar_hits)
+            rag_context_window = retrieve_rag_context_window(title, abstract, precomputed_embedding, paper_id)
 
             # Evaluate with Claude (Bedrock)
             evaluation = evaluate_paper_with_claude(title, abstract, rag_context_window)
