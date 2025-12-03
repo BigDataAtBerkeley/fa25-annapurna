@@ -594,3 +594,7 @@ python debugging/check_error.py <paper_id>
 ```
 
 ---
+
+
+RESTART FLASK APP: 
+`ssh -i ~/.ssh/trainium-deploy-key.pem ec2-user@3.21.7.129 "sudo systemctl restart trainium-executor"`
