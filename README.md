@@ -582,6 +582,15 @@ python debugging/check_error.py <paper_id>
 - **Hardware-Level Profiling**: Neuron Profiler captures hardware execution traces
 - **CloudWatch Metrics**: Automatic logging of training and execution metrics
 
+
+### Starting and stoping the cron job 
+# pause cron job
+`aws events disable-rule --name papers-cron-job-1hour --region us-east-1`
+# resume cron job
+`aws events enable-rule --name papers-cron-job-1hour --region us-east-1`
+# check if its disabled or enabled
+`aws events describe-rule --name papers-cron-job-1hour --region us-east-1 --query 'State' --output text`
+
 ### Directory Structure
 
 ```

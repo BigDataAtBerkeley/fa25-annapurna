@@ -105,6 +105,14 @@ lambda_deploy/
 deployment/*.zip
 deployment/*.tar.gz
 
+# --- Cron Lambda build artifacts ---
+cron_lambda/build/
+cron_lambda/__pycache__/
+cron_lambda/**/*.pyc
+cron_lambda/**/*.pyo
+cron_lambda/**/*.dist-info/
+cron_lambda/**/*.egg-info/
+
 # Lambda test files
 payload.json
 response.json

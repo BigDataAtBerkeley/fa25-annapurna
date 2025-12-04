@@ -192,6 +192,20 @@ class PipelineHandler:
                         slack_thread_ts = slack_notifier.send_paper_info(filtered_paper)
                         if slack_thread_ts:
                             logger.info(f"✅ Sent initial paper notification to Slack (thread_ts: {slack_thread_ts})")
+                            # Store slack_thread_ts in OpenSearch for thread continuity
+                            try:
+                                self.generator.opensearch_client.client.update(
+                                    index=self.generator.opensearch_client.opensearch_index,
+                                    id=paper_id,
+                                    body={
+                                        "doc": {
+                                            "slack_thread_ts": slack_thread_ts
+                                        }
+                                    }
+                                )
+                                logger.info(f"✅ Stored slack_thread_ts in OpenSearch for {paper_id}")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Failed to store slack_thread_ts in OpenSearch: {e}")
                         else:
                             logger.warning("⚠️ Failed to send initial paper notification to Slack")
                     else:
@@ -286,18 +300,68 @@ def lambda_handler(event, context):
     3. Shuts down (execution, review, retries handled by async Flask app)
     
     Args:
-        event: Lambda event with 'paper_id' (and optionally 'slack_thread_ts')
+        event: Lambda event - can be:
+            - Direct invocation: {'paper_id': '...', 'slack_thread_ts': '...'}
+            - SQS event: {'Records': [{'body': '{"paper_id": "..."}'}]}
         context: Lambda context
         
     Returns:
-        Response dictionary with pipeline results
+        Response dictionary with pipeline results (or batch results for SQS)
     """
     try:
         logger.info("Pipeline Lambda invoked")
+        logger.info(f"Event type: {'SQS' if 'Records' in event else 'Direct'}")
         
         handler = PipelineHandler()
         
-        # Extract paper_id from event
+        # Check if this is an SQS event
+        if 'Records' in event:
+            # Process batch of SQS records
+            results = []
+            batch_item_failures = []
+            
+            for i, record in enumerate(event['Records']):
+                try:
+                    # Parse SQS message body
+                    if 'body' in record:
+                        body = json.loads(record['body'])
+                        paper_id = body.get('paper_id')
+                        slack_thread_ts = body.get('slack_thread_ts')  # Optional
+                    else:
+                        # Fallback: try to get paper_id directly from record
+                        paper_id = record.get('paper_id')
+                        slack_thread_ts = record.get('slack_thread_ts')
+                    
+                    if not paper_id:
+                        logger.warning(f"Record {i} missing paper_id, skipping")
+                        batch_item_failures.append({"itemIdentifier": record.get('messageId', str(i))})
+                        continue
+                    
+                    logger.info(f"Processing paper {paper_id} from SQS (record {i+1}/{len(event['Records'])})")
+                    
+                    # Process paper: generate code, review it, send to Flask app
+                    result = handler.process_paper(paper_id, slack_thread_ts=slack_thread_ts)
+                    results.append(result)
+                    
+                    if not result.get('success'):
+                        # Mark as failed for SQS batch processing
+                        batch_item_failures.append({"itemIdentifier": record.get('messageId', str(i))})
+                    
+                except Exception as e:
+                    logger.error(f"Error processing record {i}: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    batch_item_failures.append({"itemIdentifier": record.get('messageId', str(i))})
+            
+            # Return batch response for SQS
+            return {
+                "batchItemFailures": batch_item_failures,
+                "results": results,
+                "processed": len(results),
+                "failed": len(batch_item_failures)
+            }
+        else:
+            # Direct invocation (non-SQS)
         paper_id = event.get('paper_id')
         if not paper_id:
             return {
