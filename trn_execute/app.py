@@ -42,6 +42,7 @@ import json
 import traceback
 import threading
 import requests
+import signal
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import psutil
@@ -116,6 +117,11 @@ AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
 BEDROCK_MODEL_ID = os.getenv('BEDROCK_MODEL_ID', 'anthropic.claude-3-sonnet-20240229-v1:0')
 SLACK_BOT_TOKEN = os.getenv('SLACK_BOT_TOKEN', 'xoxb-552112250854-10031003801584-OFAzmiCTvAsECqlzIKmy9Ck1')
 SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', 'apl-research-papers')
+TRAINIUM_EXECUTION_QUEUE_URL = os.getenv('TRAINIUM_EXECUTION_QUEUE_URL', 'https://sqs.us-east-1.amazonaws.com/478852001205/trainium-execution.fifo')
+MAX_TRAINIUM_CONCURRENT = int(os.getenv('MAX_TRAINIUM_CONCURRENT', '1'))  # Max concurrent executions
+BATCH_SIZE_FOR_EXECUTION = int(os.getenv('BATCH_SIZE_FOR_EXECUTION', '3'))  # Papers to process per batch
+QUEUE_POLL_INTERVAL = int(os.getenv('QUEUE_POLL_INTERVAL', '30'))  # Seconds between queue polls
+ENABLE_AUTO_QUEUE_POLLING = os.getenv('ENABLE_AUTO_QUEUE_POLLING', 'true').lower() == 'true'  # Enable automatic queue polling
 
 # Initialize Bedrock client for code review
 bedrock_client = None
@@ -134,6 +140,15 @@ os.makedirs(PROFILER_OUTPUT_DIR, exist_ok=True)
 # Track running executions (for 5-minute success assumption)
 running_executions = {}
 execution_lock = threading.Lock()
+
+# Track papers that have already sent final execution notifications (prevent duplicates)
+execution_notifications_sent = set()
+# Track papers that have already sent final code review notifications (prevent duplicates)
+final_code_notifications_sent = set()
+notification_lock = threading.Lock()
+
+# SQS client for queue polling
+sqs_client = boto3.client('sqs', region_name=AWS_REGION) if TRAINIUM_EXECUTION_QUEUE_URL else None
 
 def collect_profiler_artifacts(paper_id: str, profiler_path: str):
     if not os.path.exists(profiler_path):
@@ -171,6 +186,7 @@ def upload_execution_results(paper_id: str, result: Dict[str, Any]):
                 # Prepare execution results for OpenSearch
                 execution_data = {
                     "execution_success": result.get('success', False),
+                    "executed_on_trn": result.get('success', False),
                     "execution_time_seconds": round(result.get('execution_time', 0), 2),
                     "execution_return_code": result.get('return_code', -1),
                     "execution_error": result.get('error_message') if not result.get('success') else None,
@@ -237,6 +253,25 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
             logger.error(f"Error retrieving paper {paper_id} from OpenSearch: {e}")
             logger.error(traceback.format_exc())
             return
+        
+        # Check if this execution result was already sent (prevent duplicates after Flask restart)
+        # Compare execution result timestamp with what's stored in OpenSearch
+        current_execution_time = execution_result.get('execution_time', 0)
+        stored_execution_time = paper.get('execution_time_seconds', 0)
+        stored_execution_completed_at = paper.get('execution_completed_at')
+        
+        # If OpenSearch has execution results with same execution time and completion timestamp,
+        # this notification was likely already sent (duplicate from previous run)
+        if stored_execution_completed_at and abs(current_execution_time - stored_execution_time) < 0.1:
+            # Check if this is the same execution (within 0.1s tolerance)
+            logger.info(f"Skipping duplicate notification for {paper_id} - execution results already in OpenSearch (execution_time: {current_execution_time}s, completed_at: {stored_execution_completed_at})")
+            return
+        
+        # If thread_ts not provided, try to get it from OpenSearch
+        if not thread_ts:
+            thread_ts = paper.get('slack_thread_ts')
+            if thread_ts:
+                logger.info(f"Retrieved slack_thread_ts from OpenSearch for {paper_id}: {thread_ts}")
         
         # Filter out embeddings and other large binary fields
         fields_to_exclude = {
@@ -566,7 +601,354 @@ sys.path.append('{exec_dir}')
                 shutil.rmtree(exec_dir)
         except Exception as e:
             logger.warning(f"Failed to cleanup {exec_dir}: {e}")
+
+
+def execute_code_sync_with_monitoring(paper_id: str, code: str, monitor_timeout: int, paper_title: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Execute code with monitoring but without killing after timeout.
+    This is used for code review tests where we want to:
+    - Monitor for errors for a specific duration (e.g., 120s)
+    - If it runs for that duration without errors, assume success and let it continue
+    - If errors are detected, kill the process and return failure
+    
+    Args:
+        paper_id: Paper/document ID
+        code: Python code to execute
+        monitor_timeout: Duration to monitor for errors (process continues after if no errors)
+        paper_title: Paper title (optional)
+        
+    Returns:
+        Execution result dictionary with monitoring results
+    """
+    exec_dir = tempfile.mkdtemp(prefix=f'trainium_exec_{paper_id}_', dir='/tmp')
+    
+    try:
+        # Write main.py
+        main_py_path = os.path.join(exec_dir, 'main.py')
+        with open(main_py_path, 'w') as f:
+            f.write(f"""
+import sys
+import os
+sys.path.append('{exec_dir}')
+
+{code}
+""")
+        
+        # Copy dataset_loader.py
+        loader_source = os.path.join(os.path.dirname(__file__), 'dataset_loader.py')
+        loader_dest = os.path.join(exec_dir, 'dataset_loader.py')
+        if os.path.exists(loader_source):
+            shutil.copy2(loader_source, loader_dest)
+        
+        # Remove any torch conflicts
+        for item in os.listdir(exec_dir):
+            item_path = os.path.join(exec_dir, item)
+            if item.lower() in ['torch', '_torch', 'torch.py', '_torch.py']:
+                if os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+                else:
+                    os.remove(item_path)
+        
+        # Initialize metrics logger
+        metrics_logger = None
+        if SAGEMAKER_METRICS_ENABLED:
+            try:
+                instance_type = os.getenv('TRAINIUM_INSTANCE_TYPE', 'trn1.2xlarge')
+                metrics_logger = create_metrics_logger(
+                    paper_id=paper_id,
+                    paper_title=paper_title,
+                    instance_type=instance_type
+                )
+            except Exception as e:
+                logger.warning(f"Failed to initialize metrics logger: {e}")
+        
+        # Set up Neuron environment
+        user_home = os.path.expanduser('~')
+        neuron_bin_paths = [
+            '/opt/aws_neuronx_venv_pytorch_2_8_nxd_training/bin',
+            '/opt/aws_neuronx_venv_pytorch_2_8/bin',
+            f'{user_home}/.local/bin',
+            '/opt/aws/neuron/bin',
+            '/usr/local/bin',
+            '/usr/bin',
+            '/bin'
+        ]
+        current_path = os.environ.get('PATH', '')
+        neuron_path = ':'.join(neuron_bin_paths + [current_path])
+        neuron_python = '/opt/aws_neuronx_venv_pytorch_2_8_nxd_training/bin/python3'
+        
+        # Set up profiler
+        profiler_output_path = None
+        if NEURON_PROFILER_ENABLED:
+            profiler_output_path = os.path.join(PROFILER_OUTPUT_DIR, f'{paper_id}_{int(time.time())}')
+            os.makedirs(profiler_output_path, exist_ok=True)
+        
+        exec_env = {
+            **os.environ,
+            'PATH': neuron_path,
+            'PYTHONUNBUFFERED': '1',
+            'DATASET_CACHE_DIR': DATASET_CACHE_DIR,
+            'PYTHONDONTWRITEBYTECODE': '1',
+            'NEURON_RT_LOG_LEVEL': 'ERROR',
+            'NEURON_RETRY_FAILED_COMPILATION': '1'
+        }
+        
+        # Build command
+        if NEURON_PROFILER_ENABLED and profiler_output_path:
+            neuron_profile_cmd = '/opt/aws/neuron/bin/neuron-profile'
+            if os.path.exists(neuron_profile_cmd):
+                cmd = [
+                    neuron_profile_cmd,
+                    'inspect',
+                    '-o', profiler_output_path,
+                    neuron_python, main_py_path
+                ]
+            else:
+                cmd = [neuron_python, main_py_path]
+        else:
+            cmd = [neuron_python, main_py_path]
+        
+        # Track execution start
+        start_time = time.time()
+        with execution_lock:
+            running_executions[paper_id] = {
+                'start_time': start_time,
+                'paper_id': paper_id
+            }
+        
+        logger.info(f"Executing code for {paper_id} with monitoring (monitor timeout: {monitor_timeout}s, process will continue if no errors)")
+        
+        # Start process with Popen so we can monitor it without killing
+        process = subprocess.Popen(
+            cmd,
+            cwd='/tmp',
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=exec_env,
+            start_new_session=True  # Create new process group for proper cleanup if needed
+        )
+        
+        # Monitor the process for the specified duration
+        stdout_chunks = []
+        stderr_chunks = []
+        error_detected = False
+        error_message = ""
+        
+        # Critical errors that should trigger immediate failure
+        # Only look for actual Python errors/tracebacks, not generic words that might appear in normal output
+        critical_error_patterns = [
+            "traceback (most recent call last)",
+            "file \"",
+            "line ",
+            "error:",
+            "exception:",
+            "fatal error",
+            "segmentation fault",
+            "core dumped",
+            "abort",
+            "assertionerror",
+            "improper teardown",
+            "object(s) leaked"
+        ]
+        
+        # Read output in real-time
+        def read_output(pipe, chunks_list, is_stderr=False):
+            """Read from pipe and check for errors"""
+            nonlocal error_detected, error_message
+            try:
+                for line in iter(pipe.readline, ''):
+                    if not line:
+                        break
+                    chunks_list.append(line)
+                    # Check for critical errors in real-time
+                    if not error_detected:
+                        line_lower = line.lower().strip()
+                        # Only check stderr for errors (stdout might have false positives)
+                        # Or check for clear traceback patterns
+                        if is_stderr or "traceback" in line_lower:
+                            # Look for actual error patterns
+                            if any(pattern in line_lower for pattern in critical_error_patterns):
+                                # Additional validation: traceback should have "file" or "line" nearby
+                                if "traceback" in line_lower or "file \"" in line_lower or "line " in line_lower:
+                                    error_detected = True
+                                    error_message = line.strip()
+                                    logger.warning(f"Error detected in {'stderr' if is_stderr else 'stdout'}: {line.strip()}")
+            except Exception as e:
+                logger.warning(f"Error reading from pipe: {e}")
+        
+        # Start threads to read stdout and stderr
+        stdout_thread = threading.Thread(target=read_output, args=(process.stdout, stdout_chunks, False), daemon=True)
+        stderr_thread = threading.Thread(target=read_output, args=(process.stderr, stderr_chunks, True), daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+        
+        # Monitor for the specified duration
+        elapsed = 0
+        check_interval = 1.0  # Check every second
+        while elapsed < monitor_timeout:
+            time.sleep(check_interval)
+            elapsed = time.time() - start_time
             
+            # Check if process has exited
+            return_code = process.poll()
+            if return_code is not None:
+                # Process finished
+                execution_time = time.time() - start_time
+                logger.info(f"Process finished after {execution_time:.2f}s with return code {return_code}")
+                
+                # Wait for output threads to finish
+                stdout_thread.join(timeout=2)
+                stderr_thread.join(timeout=2)
+                
+                stdout = ''.join(stdout_chunks)
+                stderr = ''.join(stderr_chunks)
+                
+                # Check for errors in final output
+                success = return_code == 0
+                if not error_detected and stderr:
+                    stderr_lower = stderr.lower()
+                    # Check for traceback or error patterns in stderr
+                    if any(pattern in stderr_lower for pattern in critical_error_patterns):
+                        # Additional validation for traceback patterns
+                        if "traceback" in stderr_lower or "file \"" in stderr_lower:
+                            error_detected = True
+                            success = False
+                
+                # Extract metrics
+                metrics = {}
+                try:
+                    for line in stdout.split('\n'):
+                        if line.startswith('METRICS:'):
+                            json_str = line.replace('METRICS:', '').strip()
+                            metrics.update(json.loads(json_str))
+                except:
+                    pass
+                
+                # Log metrics
+                if metrics_logger:
+                    try:
+                        metrics_logger.extract_and_log_metrics_from_output(stdout)
+                        metrics_logger.log_execution_metrics(
+                            execution_time=execution_time,
+                            success=success,
+                            peak_memory_mb=0
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to log metrics: {e}")
+                
+                with execution_lock:
+                    running_executions.pop(paper_id, None)
+                
+                return {
+                    "success": success,
+                    "execution_time": round(execution_time, 2),
+                    "return_code": return_code,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "timeout": False,
+                    "profiler_output_path": profiler_output_path,
+                    "detailed_metrics": metrics,
+                    **metrics
+                }
+            
+            # Check if error was detected during monitoring
+            if error_detected:
+                execution_time = time.time() - start_time
+                logger.warning(f"Error detected after {execution_time:.2f}s - killing process")
+                
+                # Kill the process group
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    time.sleep(2)
+                    if process.poll() is None:
+                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except Exception as e:
+                    logger.warning(f"Error killing process: {e}")
+                    process.kill()
+                
+                # Wait for output threads
+                stdout_thread.join(timeout=2)
+                stderr_thread.join(timeout=2)
+                
+                stdout = ''.join(stdout_chunks)
+                stderr = ''.join(stderr_chunks)
+                
+                with execution_lock:
+                    running_executions.pop(paper_id, None)
+                
+                return {
+                    "success": False,
+                    "execution_time": round(execution_time, 2),
+                    "return_code": -1,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "timeout": False,
+                    "error_message": error_message or "Error detected during monitoring",
+                    "error_type": "monitoring_error",
+                    "profiler_output_path": profiler_output_path
+                }
+        
+        # If we reach here, process is still running after monitor_timeout
+        execution_time = time.time() - start_time
+        logger.info(f"Code executed for {execution_time:.2f}s (>= {monitor_timeout}s) without errors - assuming success, letting process continue")
+        
+        # Wait a bit for output threads to catch up
+        time.sleep(0.5)
+        stdout = ''.join(stdout_chunks)
+        stderr = ''.join(stderr_chunks)
+        
+        # Don't kill the process - let it continue running
+        # Remove from running_executions but note that process is still running
+        with execution_lock:
+            running_executions.pop(paper_id, None)
+        
+        # Extract metrics from what we have so far
+        metrics = {}
+        try:
+            for line in stdout.split('\n'):
+                if line.startswith('METRICS:'):
+                    json_str = line.replace('METRICS:', '').strip()
+                    metrics.update(json.loads(json_str))
+        except:
+            pass
+        
+        return {
+            "success": True,  # Assume success since it ran without errors
+            "execution_time": round(execution_time, 2),
+            "return_code": None,  # Process still running
+            "stdout": stdout,
+            "stderr": stderr,
+            "timeout": False,
+            "process_continuing": True,  # Flag that process is still running
+            "profiler_output_path": profiler_output_path,
+            "detailed_metrics": metrics,
+            **metrics
+        }
+        
+    except Exception as e:
+        with execution_lock:
+            running_executions.pop(paper_id, None)
+        
+        logger.error(f"Error executing code for {paper_id}: {e}")
+        return {
+            "success": False,
+            "execution_time": 0,
+            "return_code": -1,
+            "stdout": "",
+            "stderr": str(e),
+            "error_message": f"Execution error: {str(e)}",
+            "error_type": "execution_error"
+        }
+    
+    finally:
+        # Cleanup
+        try:
+            if os.path.exists(exec_dir):
+                shutil.rmtree(exec_dir)
+        except Exception as e:
+            logger.warning(f"Failed to cleanup {exec_dir}: {e}")
+
 
 def extract_errors_from_result(exec_result: Dict[str, Any]) -> str:
     """Extract error message for display/logging (simplified)."""
@@ -936,14 +1318,41 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
         exec_result = execute_code_sync(paper_id, code, timeout, paper_title)
         
         # Only send Slack notification for final execution results (not code review tests)
+        # Check if we've already sent notification for this paper to prevent duplicates
+        # Also check OpenSearch to prevent duplicates after Flask app restart
         if should_send_slack:
-            logger.info(f"Execution completed for {paper_id}, sending final Slack notification...")
-            try:
-                send_slack_notification(paper_id, exec_result, thread_ts=slack_thread_ts)
-                logger.info(f"Final Slack notification sent for {paper_id}")
-            except Exception as e:
-                logger.error(f"Failed to send final Slack notification for {paper_id}: {e}")
-                logger.error(traceback.format_exc())
+            with notification_lock:
+                # Check in-memory set first (fast check)
+                if paper_id in execution_notifications_sent:
+                    logger.info(f"Execution notification already sent for {paper_id} (in-memory check) - skipping duplicate")
+                else:
+                    # Double-check OpenSearch to prevent duplicates after Flask restart
+                    # The send_slack_notification function will also check, but we check here too for early exit
+                    try:
+                        opensearch_client = OpenSearchClient()
+                        paper = opensearch_client.get_paper_by_id(paper_id)
+                        if paper:
+                            stored_execution_time = paper.get('execution_time_seconds', 0)
+                            stored_execution_completed_at = paper.get('execution_completed_at')
+                            current_execution_time = exec_result.get('execution_time', 0)
+                            
+                            # If OpenSearch has execution results with same execution time, this was already sent
+                            if stored_execution_completed_at and abs(current_execution_time - stored_execution_time) < 0.1:
+                                logger.info(f"Execution notification already sent for {paper_id} (OpenSearch check - execution_time: {current_execution_time}s) - skipping duplicate")
+                                execution_notifications_sent.add(paper_id)  # Add to set to prevent future checks
+                                return
+                    except Exception as e:
+                        logger.warning(f"Could not check OpenSearch for duplicate notification: {e}")
+                        # Continue anyway - send_slack_notification will also check
+                    
+                    logger.info(f"Execution completed for {paper_id}, sending final Slack notification...")
+                    try:
+                        send_slack_notification(paper_id, exec_result, thread_ts=slack_thread_ts)
+                        execution_notifications_sent.add(paper_id)
+                        logger.info(f"Final Slack notification sent for {paper_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to send final Slack notification for {paper_id}: {e}")
+                        logger.error(traceback.format_exc())
         else:
             logger.info(f"Execution completed for {paper_id} (code review test - skipping Slack notification)")
         
@@ -1158,24 +1567,46 @@ def code_review():
             
             # Send final code notification (second follow-up) - even though max iterations reached
             # IMPORTANT: Send this BEFORE triggering final execution to ensure correct order in Slack
-            if SLACK_AVAILABLE and data.get('slack_thread_ts'):
-                try:
-                    slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
-                    final_code_sent = slack_notifier.send_final_code_notification(
-                        paper_id=paper_id,
-                        code_length=len(final_code),
-                        code_review_iterations=error_count,
-                        code_s3_key=code_s3_key,
-                        thread_ts=data.get('slack_thread_ts')
-                    )
-                    if final_code_sent:
-                        logger.info(f"✅ Sent final code notification to Slack (max iterations reached)")
-                        # Small delay to ensure Slack processes the message before execution results
-                        time.sleep(1)
-                    else:
-                        logger.warning(f"⚠️ Final code notification returned False")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to send final code notification: {e}")
+            if SLACK_AVAILABLE:
+                # Get slack_thread_ts from request or OpenSearch
+                slack_thread_ts = data.get('slack_thread_ts')
+                if not slack_thread_ts and OPENSEARCH_AVAILABLE:
+                    try:
+                        opensearch_client = OpenSearchClient()
+                        paper = opensearch_client.get_paper_by_id(paper_id)
+                        if paper:
+                            slack_thread_ts = paper.get('slack_thread_ts')
+                            if slack_thread_ts:
+                                logger.info(f"Retrieved slack_thread_ts from OpenSearch for final code notification: {slack_thread_ts}")
+                    except Exception as e:
+                        logger.warning(f"Could not get slack_thread_ts from OpenSearch: {e}")
+                
+                if slack_thread_ts:
+                    # Check if we've already sent a final code notification for this paper (prevent duplicates)
+                    with notification_lock:
+                        if paper_id in final_code_notifications_sent:
+                            logger.info(f"Skipping duplicate final code notification for {paper_id} (max iterations) - already sent")
+                        else:
+                            try:
+                                slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
+                                final_code_sent = slack_notifier.send_final_code_notification(
+                                    paper_id=paper_id,
+                                    code_length=len(final_code),
+                                    code_review_iterations=error_count,
+                                    code_s3_key=code_s3_key,
+                                    thread_ts=slack_thread_ts
+                                )
+                                if final_code_sent:
+                                    logger.info(f"✅ Sent final code notification to Slack (max iterations reached)")
+                                    final_code_notifications_sent.add(paper_id)
+                                    # Small delay to ensure Slack processes the message before execution results
+                                    time.sleep(1)
+                                else:
+                                    logger.warning(f"⚠️ Final code notification returned False")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Failed to send final code notification: {e}")
+                else:
+                    logger.warning(f"⚠️ No slack_thread_ts available - skipping final code notification")
             
             # Trigger final execution with the final code (this will send execution results as third follow-up)
             # This happens AFTER the final code notification is sent to ensure correct order
@@ -1331,62 +1762,102 @@ def code_review():
         else:
             logger.info(f"No errors to fix. Testing execution.")
         
-        # Test code with 2-minute (120s) timeout to check for immediate errors
-        # If it runs for 2 minutes without errors, consider it stable
+        # Test code with 2-minute (120s) monitoring to check for immediate errors
+        # If it runs for 2 minutes without errors, consider it stable and let it continue
         # NOTE: This runs SYNCHRONOUSLY (blocks) - only one test at a time per paper
-        # The process is killed after 120s if still running (via subprocess timeout)
+        # The process is NOT killed after 120s - it continues running if no errors detected
         CODE_REVIEW_TEST_TIMEOUT = 120  # 2 minutes as specified
-        logger.info(f"Executing code with {CODE_REVIEW_TEST_TIMEOUT}s timeout for code review test (synchronous, will kill process if timeout).")
-        test_result = execute_code_sync(
+        logger.info(f"Executing code with {CODE_REVIEW_TEST_TIMEOUT}s monitoring for code review test (process will continue if no errors).")
+        test_result = execute_code_sync_with_monitoring(
             paper_id=f"{paper_id}_review_test",  # Different paper_id to avoid conflicts with full execution
             code=code,
-            timeout=CODE_REVIEW_TEST_TIMEOUT,  # Process is killed after 120s
+            monitor_timeout=CODE_REVIEW_TEST_TIMEOUT,  # Monitor for 120s, but don't kill if still running
             paper_title=data.get('paper_title')
         )
         
-        # Check if code ran successfully OR ran for >120s (assume success)
+        # Check if code ran successfully OR ran for >120s without errors (assume success)
         execution_time = test_result.get('execution_time', 0)
-        if test_result.get('success') or execution_time >= CODE_REVIEW_TEST_TIMEOUT:
-            if execution_time >= CODE_REVIEW_TEST_TIMEOUT:
-                logger.info(f"Code executed for {execution_time}s (>= {CODE_REVIEW_TEST_TIMEOUT}s) - assuming success and continuing")
+        process_continuing = test_result.get('process_continuing', False)
+        if test_result.get('success') or (execution_time >= CODE_REVIEW_TEST_TIMEOUT and process_continuing):
+            if execution_time >= CODE_REVIEW_TEST_TIMEOUT and process_continuing:
+                logger.info(f"Code executed for {execution_time}s (>= {CODE_REVIEW_TEST_TIMEOUT}s) without errors - assuming success, process continuing in background")
             
             # Send final code notification (second follow-up) - code after code review
             # IMPORTANT: Send this BEFORE triggering final execution to ensure correct order in Slack
-            if SLACK_AVAILABLE and data.get('slack_thread_ts'):
-                try:
-                    # Get the final code from S3
-                    final_code = get_code(paper_id)
-                    if not final_code:
-                        final_code = code
-                    
-                    # Get code S3 key (use standard format: code/{paper_id}.py)
-                    code_s3_key = f"code/{paper_id}.py"
-                    # Try to get from OpenSearch if available (might have different format)
-                    if OPENSEARCH_AVAILABLE:
-                        try:
-                            opensearch_client = OpenSearchClient()
-                            paper = opensearch_client.get_paper_by_id(paper_id)
-                            if paper and paper.get('code_s3_key'):
-                                code_s3_key = paper.get('code_s3_key')
-                        except Exception as e:
-                            logger.warning(f"Could not get code S3 key from OpenSearch, using default: {e}")
-                    
-                    slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
-                    final_code_sent = slack_notifier.send_final_code_notification(
-                        paper_id=paper_id,
-                        code_length=len(final_code),
-                        code_review_iterations=error_count,
-                        code_s3_key=code_s3_key,
-                        thread_ts=data.get('slack_thread_ts')
-                    )
-                    if final_code_sent:
-                        logger.info(f"✅ Sent final code notification to Slack")
-                        # Small delay to ensure Slack processes the message before execution results
-                        time.sleep(1)
-                    else:
-                        logger.warning(f"⚠️ Final code notification returned False")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to send final code notification: {e}")
+            if SLACK_AVAILABLE:
+                # Get slack_thread_ts from request or OpenSearch
+                slack_thread_ts = data.get('slack_thread_ts')
+                if not slack_thread_ts and OPENSEARCH_AVAILABLE:
+                    try:
+                        opensearch_client = OpenSearchClient()
+                        paper = opensearch_client.get_paper_by_id(paper_id)
+                        if paper:
+                            slack_thread_ts = paper.get('slack_thread_ts')
+                            if slack_thread_ts:
+                                logger.info(f"Retrieved slack_thread_ts from OpenSearch for final code notification: {slack_thread_ts}")
+                    except Exception as e:
+                        logger.warning(f"Could not get slack_thread_ts from OpenSearch: {e}")
+                
+                if slack_thread_ts:
+                    # Check if we've already sent a final code notification for this paper (prevent duplicates)
+                    with notification_lock:
+                        if paper_id in final_code_notifications_sent:
+                            logger.info(f"Skipping duplicate final code notification for {paper_id} - already sent")
+                        else:
+                            # Check OpenSearch to see if notification was already sent (persistent check across restarts)
+                            already_sent = False
+                            if OPENSEARCH_AVAILABLE:
+                                try:
+                                    opensearch_client = OpenSearchClient()
+                                    paper = opensearch_client.get_paper_by_id(paper_id)
+                                    if paper:
+                                        # If execution was already completed, final code notification was likely already sent
+                                        # This prevents duplicates after Flask restarts
+                                        if paper.get('execution_completed_at'):
+                                            logger.info(f"Final code notification likely already sent for {paper_id} (execution already completed)")
+                                            already_sent = True
+                                            final_code_notifications_sent.add(paper_id)  # Add to set to prevent future checks
+                                except Exception as e:
+                                    logger.warning(f"Could not check OpenSearch for duplicate notification: {e}")
+                            
+                            if not already_sent:
+                                try:
+                                    # Get the final code from S3
+                                    final_code = get_code(paper_id)
+                                    if not final_code:
+                                        final_code = code
+                                    
+                                    # Get code S3 key (use standard format: code/{paper_id}.py)
+                                    code_s3_key = f"code/{paper_id}.py"
+                                    # Try to get from OpenSearch if available (might have different format)
+                                    if OPENSEARCH_AVAILABLE:
+                                        try:
+                                            opensearch_client = OpenSearchClient()
+                                            paper = opensearch_client.get_paper_by_id(paper_id)
+                                            if paper and paper.get('code_s3_key'):
+                                                code_s3_key = paper.get('code_s3_key')
+                                        except Exception as e:
+                                            logger.warning(f"Could not get code S3 key from OpenSearch, using default: {e}")
+                                    
+                                    slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
+                                    final_code_sent = slack_notifier.send_final_code_notification(
+                                        paper_id=paper_id,
+                                        code_length=len(final_code),
+                                        code_review_iterations=error_count,
+                                        code_s3_key=code_s3_key,
+                                        thread_ts=slack_thread_ts
+                                    )
+                                    if final_code_sent:
+                                        logger.info(f"✅ Sent final code notification to Slack")
+                                        final_code_notifications_sent.add(paper_id)
+                                        # Small delay to ensure Slack processes the message before execution results
+                                        time.sleep(1)
+                                    else:
+                                        logger.warning(f"⚠️ Final code notification returned False")
+                                except Exception as e:
+                                    logger.warning(f"⚠️ Failed to send final code notification: {e}")
+                else:
+                    logger.warning(f"⚠️ No slack_thread_ts available - skipping final code notification")
             
             # Trigger full execution with the fixed code (this is the FINAL execution - send Slack notification)
             # This happens AFTER the final code notification is sent to ensure correct order
@@ -1572,6 +2043,170 @@ def trigger_slack_notification(paper_id: str):
         }), 500
 
 
+def is_trainium_available() -> bool:
+    """
+    Check if Trainium is available (not currently executing papers).
+    
+    Returns:
+        True if Trainium is available (no running executions), False otherwise
+    """
+    with execution_lock:
+        current_executions = len(running_executions)
+        is_available = current_executions < MAX_TRAINIUM_CONCURRENT
+        logger.info(f"Trainium availability check: {current_executions} running, max {MAX_TRAINIUM_CONCURRENT}, available: {is_available}")
+        return is_available
+
+
+def poll_and_process_queue():
+    """
+    Poll the trainium-execution queue and process papers in batches.
+    Only processes if Trainium is available.
+    """
+    if not sqs_client or not TRAINIUM_EXECUTION_QUEUE_URL:
+        logger.warning("SQS client or queue URL not configured - queue polling disabled")
+        return
+    
+    try:
+        # Check if Trainium is available
+        if not is_trainium_available():
+            logger.info("Trainium is busy - skipping queue poll")
+            return
+        
+        # Receive up to 3 messages (batch size)
+        logger.info(f"Polling queue for up to {BATCH_SIZE_FOR_EXECUTION} papers...")
+        response = sqs_client.receive_message(
+            QueueUrl=TRAINIUM_EXECUTION_QUEUE_URL,
+            MaxNumberOfMessages=BATCH_SIZE_FOR_EXECUTION,
+            WaitTimeSeconds=0,  # Short polling (no long polling to avoid blocking)
+            VisibilityTimeout=900  # 15 minutes (messages become visible again if not deleted)
+        )
+        
+        messages = response.get('Messages', [])
+        if not messages:
+            logger.info("No messages in queue")
+            return
+        
+        logger.info(f"Received {len(messages)} papers from queue")
+        
+        # Process each paper sequentially
+        for message in messages:
+            try:
+                # Parse message body
+                body = json.loads(message['Body'])
+                paper_id = body.get('paper_id')
+                code = body.get('code')
+                paper_title = body.get('paper_title')
+                slack_thread_ts = body.get('slack_thread_ts')
+                
+                if not paper_id or not code:
+                    logger.warning(f"Invalid message: missing paper_id or code")
+                    # Delete invalid message
+                    sqs_client.delete_message(
+                        QueueUrl=TRAINIUM_EXECUTION_QUEUE_URL,
+                        ReceiptHandle=message['ReceiptHandle']
+                    )
+                    continue
+                
+                # Check Trainium availability before processing
+                if not is_trainium_available():
+                    logger.info(f"Trainium became busy - stopping batch processing. Will retry {paper_id} later.")
+                    # Don't delete message - let it become visible again for retry
+                    break  # Stop processing remaining papers in this batch
+                
+                logger.info(f"Processing paper {paper_id} from queue")
+                
+                # Execute paper (this will handle code review internally if needed)
+                result = execute_internal(
+                    paper_id=paper_id,
+                    code=code,
+                    timeout=MAX_EXECUTION_TIME,
+                    paper_title=paper_title,
+                    slack_thread_ts=slack_thread_ts,
+                    should_send_slack=False,  # Initial execution - code review will handle final notification
+                    should_trigger_review=True
+                )
+                
+                # Delete message from queue after successful processing
+                if result.get('status') == 'accepted':
+                    sqs_client.delete_message(
+                        QueueUrl=TRAINIUM_EXECUTION_QUEUE_URL,
+                        ReceiptHandle=message['ReceiptHandle']
+                    )
+                    logger.info(f"✅ Paper {paper_id} accepted for execution, message deleted from queue")
+                else:
+                    logger.warning(f"Paper {paper_id} execution not accepted: {result}")
+                    # Don't delete message - let it retry
+                    
+            except Exception as e:
+                logger.error(f"Error processing message from queue: {e}")
+                logger.error(traceback.format_exc())
+                # Don't delete message on error - let it retry
+        
+    except ClientError as e:
+        logger.error(f"AWS error polling queue: {e}")
+    except Exception as e:
+        logger.error(f"Error polling queue: {e}")
+        logger.error(traceback.format_exc())
+
+
+@app.route('/poll-queue', methods=['POST'])
+def poll_queue_endpoint():
+    """
+    Endpoint to manually trigger queue polling.
+    Useful for testing or external triggers.
+    """
+    try:
+        poll_and_process_queue()
+        return jsonify({
+            "success": True,
+            "message": "Queue polled successfully"
+        })
+    except Exception as e:
+        logger.error(f"Error in poll-queue endpoint: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route('/queue-status', methods=['GET'])
+def queue_status():
+    """
+    Get status of the execution queue.
+    """
+    if not sqs_client or not TRAINIUM_EXECUTION_QUEUE_URL:
+        return jsonify({
+            "success": False,
+            "error": "Queue not configured"
+        }), 503
+    
+    try:
+        response = sqs_client.get_queue_attributes(
+            QueueUrl=TRAINIUM_EXECUTION_QUEUE_URL,
+            AttributeNames=['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']
+        )
+        attrs = response['Attributes']
+        
+        with execution_lock:
+            current_executions = len(running_executions)
+        
+        return jsonify({
+            "success": True,
+            "queue_url": TRAINIUM_EXECUTION_QUEUE_URL,
+            "messages_available": int(attrs.get('ApproximateNumberOfMessages', 0)),
+            "messages_in_flight": int(attrs.get('ApproximateNumberOfMessagesNotVisible', 0)),
+            "current_executions": current_executions,
+            "max_concurrent": MAX_TRAINIUM_CONCURRENT,
+            "trainium_available": is_trainium_available()
+        })
+    except Exception as e:
+        logger.error(f"Error getting queue status: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 if __name__ == '__main__':
     try:
         logger.info("Starting Trainium Executor Service v2")
@@ -1636,6 +2271,32 @@ if __name__ == '__main__':
         logger.info("=" * 80)
         logger.info("Starting Flask server on 0.0.0.0:8000")
         logger.info("=" * 80)
+        
+        # Start background thread for automatic queue polling
+        if ENABLE_AUTO_QUEUE_POLLING and sqs_client and TRAINIUM_EXECUTION_QUEUE_URL:
+            def queue_polling_worker():
+                """Background worker that polls the queue periodically."""
+                logger.info(f"Starting queue polling worker (interval: {QUEUE_POLL_INTERVAL}s)")
+                while True:
+                    try:
+                        poll_and_process_queue()
+                    except Exception as e:
+                        logger.error(f"Error in queue polling worker: {e}")
+                        logger.error(traceback.format_exc())
+                    finally:
+                        # Sleep before next poll
+                        time.sleep(QUEUE_POLL_INTERVAL)
+            
+            polling_thread = threading.Thread(target=queue_polling_worker, daemon=True)
+            polling_thread.start()
+            logger.info("✅ Automatic queue polling enabled")
+        else:
+            if not ENABLE_AUTO_QUEUE_POLLING:
+                logger.info("⚠️ Automatic queue polling disabled (ENABLE_AUTO_QUEUE_POLLING=false)")
+            elif not sqs_client:
+                logger.warning("⚠️ SQS client not available - automatic queue polling disabled")
+            elif not TRAINIUM_EXECUTION_QUEUE_URL:
+                logger.warning("⚠️ Queue URL not configured - automatic queue polling disabled")
         
         app.run(host='0.0.0.0', port=8000, threaded=True)
     except Exception as e:
