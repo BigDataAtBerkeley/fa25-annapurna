@@ -150,7 +150,7 @@ def analyze_pdf_visual(pdf_bytes: bytes):
                 ]
             }
         ],
-        "max_tokens": 4000,
+        "max_tokens": 8194 ,
         "temperature": 0
     }
 
@@ -271,15 +271,16 @@ if __name__ == "__main__":
     # Method 1: Text-only mode
     print("\n======== TEXT-ONLY MODE ========\n")
     try:
-        result_text = analyze_pdf_text_only(single_page_pdf)
-        print(result_text)
+        #result_text = analyze_pdf_text_only(single_page_pdf)
+        #print(result_text)
+        print("Text-only mode does not return optimal results.")
     except Exception as e:
         print(f"Error in text-only mode: {e}")
     
     # Method 2: Visual mode
     print("\n======== VISUAL MODE ========\n")
     try:
-        result_visual = analyze_pdf_visual(single_page_pdf)
+        result_visual = analyze_pdf_visual(pdf_bytes)
         print(result_visual)
     except Exception as e:
         print(f"Error in visual mode: {e}")
@@ -287,7 +288,8 @@ if __name__ == "__main__":
     # Method 3: Image-based mode
     print("\n======== IMAGE-BASED MODE (PyMu → Images) ========\n")
     try:
-        result_images = analyze_pdf_as_images(pdf_bytes, page_num)
-        print(result_images)
+        #result_images = analyze_pdf_as_images(pdf_bytes, page_num)
+        #print(result_images)
+        print("Image-based mode does not return optimal results.")
     except Exception as e:
         print(f"Error in image-based mode: {e}")

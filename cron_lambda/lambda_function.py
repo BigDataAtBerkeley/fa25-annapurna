@@ -37,8 +37,7 @@ CODE_EVAL_QUEUE_URL = os.getenv("CODE_EVAL_QUEUE_URL")  # SQS queue for code gen
 TRAINIUM_ENDPOINT = os.getenv("TRAINIUM_ENDPOINT")  # Flask app endpoint for execution
 MAX_CODE_GEN_CONCURRENT = int(os.getenv("MAX_CODE_GEN_CONCURRENT", "5"))  # Max concurrent code gen requests
 MAX_TRAINIUM_CONCURRENT = int(os.getenv("MAX_TRAINIUM_CONCURRENT", "1"))  # Max concurrent trainium executions (how many papers can run simultaneously)
-BATCH_SIZE_FOR_EXECUTION = int(os.getenv("BATCH_SIZE_FOR_EXECUTION", "10"))  # DEPRECATED: Not used in new logic (replaced by MAX_PAPERS_PER_RUN)
-MAX_PAPERS_PER_RUN = int(os.getenv("MAX_PAPERS_PER_RUN", "3"))  # Maximum papers to process per cron job run (matches Lambda batch size)
+MAX_PAPERS_PER_RUN = int(os.getenv("MAX_PAPERS_PER_RUN", "1"))  # Maximum papers to process per cron job run (matches Lambda batch size)
 TRAINIUM_INSTANCE_ID = os.getenv("TRAINIUM_INSTANCE_ID")  # EC2 instance ID for auto start/stop
 TRAINIUM_EXECUTION_QUEUE_URL = os.getenv("TRAINIUM_EXECUTION_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/478852001205/trainium-execution.fifo")  # SQS queue for execution
 
@@ -62,14 +61,13 @@ os_client = OpenSearch(
 )
 
 
-def get_papers_without_execution(size: int = 100) -> List[Dict[str, Any]]:
+def get_papers_without_execution(size: int = 3) -> List[Dict[str, Any]]:
     """
     Query OpenSearch for papers that don't have executed_on_trn = true.
     
     Returns papers that either:
     - Don't have executed_on_trn field
     - Have executed_on_trn = false
-    - Have executed_on_trn != true
     """
     max_retries = 3
     for attempt in range(max_retries):
@@ -564,9 +562,9 @@ def lambda_handler(event, context):
                 stop_trainium_instance()
         
         # Step 1: Get papers without execution
-        papers = get_papers_without_execution(size=100)
+        papers_to_process = get_papers_without_execution(size=MAX_PAPERS_PER_RUN)
         
-        if not papers:
+        if not papers_to_process:
             logger.info("No papers found without executed_on_trn = true")
             return {
                 "statusCode": 200,
@@ -576,14 +574,7 @@ def lambda_handler(event, context):
                 })
             }
         
-        logger.info(f"Found {len(papers)} papers to process")
-        
-        # Step 2: Limit to MAX_PAPERS_PER_RUN (default 10) papers per cron run
-        papers_to_process = papers[:MAX_PAPERS_PER_RUN]
-        papers_skipped = len(papers) - len(papers_to_process)
-        
-        if papers_skipped > 0:
-            logger.info(f"Limiting to {MAX_PAPERS_PER_RUN} papers per run. {papers_skipped} papers will wait for next cron job.")
+        logger.info(f"Executing {len(papers_to_process)}.")
         
         # Step 3: Send ALL papers to code-evaluation queue for code regeneration
         # If executed_on_trn != true, regenerate code and restart the entire process
@@ -596,9 +587,6 @@ def lambda_handler(event, context):
             paper_id = paper.get('_id')
             if send_to_code_eval_queue(paper_id, paper):
                 code_gen_sent += 1
-        
-        if len(papers) > MAX_PAPERS_PER_RUN:
-            logger.info(f"Skipped {len(papers) - MAX_PAPERS_PER_RUN} papers (batch size limit: {MAX_PAPERS_PER_RUN} per run)")
         
         # Step 4: No direct execution - papers will be executed after code generation completes
         # The code generation lambda will send papers to Trainium after generating code
@@ -625,9 +613,7 @@ def lambda_handler(event, context):
             "statusCode": 200,
             "body": json.dumps({
                 "message": "Cron job completed",
-                "papers_checked": len(papers),
                 "papers_processed": len(papers_to_process),
-                "papers_skipped": papers_skipped,
                 "code_gen_sent": code_gen_sent,
                 "trainium_sent": trainium_sent,
                 "trainium_concurrent": trainium_concurrent if trainium_available else None,

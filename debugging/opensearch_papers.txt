@@ -3975,52 +3975,7 @@ Document #198 (ID: 7cfda9a391d386ccc02024ad400d7de320dfa9b4ba9c373f03fa6a6cd4987
   title_normalized: generative_flows_on_synthetic_pathway_for_drug_design
 
 ================================================================================
-Document #199 (ID: caaba49566752a61df60a45aa08436e22606e817d9c98f5fe368890d2e5d1bcf)
-================================================================================
-  abstract: Text-conditioned human motion generation, which allows for user interaction through natural language, has become increasingly popular. Existing methods typically generate short, isolated motions based on a single input sentence. However, human motions are continuous and can extend over long periods, carrying rich semantics. Creating long, complex motions that precisely respond to streams of text descriptions, particularly in an online and real-time setting, remains a significant challenge. Furthermore, incorporating spatial constraints into text-conditioned motion generation presents additional challenges, as it requires aligning the motion semantics specified by text descriptions with geometric information, such as goal locations and 3D scene geometry. To address these limitations, we propose **DartC**ontrol, in short **DART**, a **D**iffusion-based **A**utoregressive motion primitive model for **R**eal-time **T**ext-driven motion **C**ontrol. Our model, DART, effectively learns a compact motion primitive space jointly conditioned on motion history and text inputs using latent diffusion models. By autoregressively generating motion primitives based on the preceding history and current text input, DART enables real-time, sequential motion generation driven by natural language descriptions. Additionally,  the learned motion primitive space allows for precise spatial motion control, which we formulate either as a latent noise optimization problem or as a Markov decision process addressed through reinforcement learning. We present effective algorithms for both approaches, demonstrating our model’s versatility and superior performance in various motion synthesis tasks. Experiments show our method outperforms existing baselines in motion realism, efficiency, and controllability. Video results and code are available at https://zkf1997.github.io/DART/.
-  abstract_embedding: [0.3203125, 0.41015625, 0.279296875]... (1536 items)
-  authors: ['Kaifeng Zhao', 'Gen Li', 'Siyu Tang']
-  date: 2024-10-04
-  decision: accept
-  executed_on_trn: False
-  ingested_at: 1764804599597
-  novelty: yes
-  reason: Relevance: The paper proposes a novel diffusion-based autoregressive motion model for real-time text-driven motion control, which is an innovative new model architecture. | Novelty: The proposed DART ...
-  relevance: yes
-  s3_bucket: llm-research-papers
-  s3_key: DartControl__A_Diffusion-Based_Autoregressive_Motion_Model_for_Real-Time_Text-Driven_Motion_Control.pdf
-  sha_abstract: c5cff511537f9ff25f26e8617c6df3710ba8fe868246632636d9a345b69d63be
-  slack_thread_ts: 1764808437.156999
-  title: DartControl: A Diffusion-Based Autoregressive Motion Model for Real-Time Text-Driven Motion Control
-  title_normalized: dartcontrol_a_diffusionbased_autoregressive_motion_model_for_realtime_textdriven_motion_control
-
-================================================================================
-Document #200 (ID: f94d0e8e9546a1353ebe419f923e877bf8560585ade728fe2fadbfd1e9d9c226)
-================================================================================
-  abstract: Modern language models have demonstrated remarkable reasoning capabilities by using chain-of-thought (CoT). One hypothesis about the inner workings of CoT is that it breaks down originally complex tasks into smaller subtasks that are more amenable to learning. We formalize this notion by showing possibility and impossibility results of learning from in-context demonstrations with and without CoT. In particular, with CoT, we examine a family of learning algorithms that learn a task step-by-step, capable of composing simpler functions from individual reasoning steps to form an overall complex function. This process reduces the difficulty of learning a task to that of the hardest reasoning step in the chain. Moreover, we prove Transformers can express this algorithm and thus they can efficiently in-context learn arbitrary tasks as long as these tasks can be decomposed into a finite number of subtasks, each of which are efficiently learnable. In contrast, without CoT, we demonstrate that there exist tasks that are inherently unlearnable by the same algorithm. Overall, our results suggest several provably effective ways for decomposing target problems to instantiate CoT. Empirically, we demonstrate our proposed CoT construction significantly enhances the reasoning capabilities of real-world LLMs in solving challenging arithmetic reasoning tasks, including learning polynomials and Boolean formulas.
-  abstract_embedding: [0.5703125, -0.150390625, 0.224609375]... (1536 items)
-  authors: ['Chenxiao Yang', 'Zhiyuan Li', 'David Wipf']
-  date: 2024-10-04
-  decision: accept
-  executed_on_trn: False
-  execution_completed_at: 2025-12-04T00:40:43.516467
-  execution_return_code: 1
-  execution_success: False
-  execution_time_seconds: 19.03
-  ingested_at: 1764804601917
-  novelty: yes
-  reason: Relevance: The paper proposes a novel chain-of-thought (CoT) training algorithm that can learn complex tasks by decomposing them into simpler subtasks, which is highly relevant for building efficient ...
-  relevance: yes
-  results_s3_location: s3://trainium-execution-results/results/f94d0e8e9546a1353ebe419f923e877bf8560585ade728fe2fadbfd1e9d9c226/execution_result.json
-  s3_bucket: llm-research-papers
-  s3_key: Chain-of-Thought_Provably_Enables_Learning_the__Otherwise__Unlearnable.pdf
-  sha_abstract: bfd8f4faa8a534eac651d564ba4e8c06e23f674cc628d719487541d41f4e6e89
-  slack_thread_ts: 1764808437.159059
-  title: Chain-of-Thought Provably Enables Learning the (Otherwise) Unlearnable
-  title_normalized: chainofthought_provably_enables_learning_the_otherwise_unlearnable
-
-================================================================================
-Document #201 (ID: f20540916c8bf3353e6bc0d5738a21b96f242e27d86281950a6bc00839d1bb0e)
+Document #199 (ID: f20540916c8bf3353e6bc0d5738a21b96f242e27d86281950a6bc00839d1bb0e)
 ================================================================================
   abstract: SMILES, a crucial textual representation of molecular structures, has garnered significant attention as a foundation for pre-trained language models (LMs). However, most existing pre-trained SMILES LMs focus solely on the single-token level supervision during pre-training, failing to fully leverage the substructural information of molecules. This limitation makes the pre-training task overly simplistic, preventing the models from capturing richer molecular semantic information. Moreover, during pre-training, these SMILES LMs only process corrupted SMILES inputs, never encountering any valid SMILES, which leads to a train-inference mismatch. To address these challenges, we propose SMI-Editor, a novel edit-based pre-trained SMILES LM. SMI-Editor disrupts substructures within a molecule at random and feeds the resulting SMILES back into the model, which then attempts to restore the original SMILES through an editing process. This approach not only introduces fragment-level training signals, but also enables the use of valid SMILES as inputs, allowing the model to learn how to reconstruct complete molecules from these incomplete structures. As a result, the model demonstrates improved scalability and an enhanced ability to capture fragment-level molecular information. Experimental results show that SMI-Editor achieves state-of-the-art performance across multiple downstream molecular tasks, and even outperforming several 3D molecular representation models.
   abstract_embedding: [0.353515625, 0.609375, -0.0059814453125]... (1536 items)
@@ -4039,7 +3994,7 @@ Document #201 (ID: f20540916c8bf3353e6bc0d5738a21b96f242e27d86281950a6bc00839d1b
   title_normalized: smieditor_editbased_smiles_language_model_with_fragmentlevel_supervision
 
 ================================================================================
-Document #202 (ID: 5e86322beaf143c96373245385b2c145a1c922e39608d9265e166ad0b55ce196)
+Document #200 (ID: 5e86322beaf143c96373245385b2c145a1c922e39608d9265e166ad0b55ce196)
 ================================================================================
   abstract: Building a generalist model for user interface (UI) understanding is challenging due to various foundational issues, such as platform diversity, resolution variation, and data limitation. In this paper, we introduce Ferret-UI 2, a multimodal large language model (MLLM) designed for universal UI understanding across a wide range of platforms, including iPhone, Android, iPad, Webpage, and AppleTV. Building on the foundation of Ferret-UI, Ferret-UI 2 introduces three key innovations: support for multiple platform types, high-resolution perception through adaptive scaling, and advanced task training data generation powered by GPT-4o with set-of-mark visual prompting. These advancements enable Ferret-UI 2 to perform complex, user-centered interactions, making it highly versatile and adaptable for the expanding diversity of platform ecosystems. Extensive empirical experiments on referring, grounding, user-centric advanced tasks (comprising 9 subtasks $\times$ 5 platforms), GUIDE next-action prediction dataset, and GUI-World multi-platform benchmark demonstrate that Ferret-UI 2 significantly outperforms Ferret-UI, and also shows strong cross-platform transfer capabilities.
   abstract_embedding: [0.435546875, -0.28125, 0.248046875]... (1536 items)
@@ -4058,7 +4013,7 @@ Document #202 (ID: 5e86322beaf143c96373245385b2c145a1c922e39608d9265e166ad0b55ce
   title_normalized: ferretui_2_mastering_universal_user_interface_understanding_across_platforms
 
 ================================================================================
-Document #203 (ID: 361da2235308c8818fad393b51eee47e7740389a7dbe02515a27fd04a8915f0c)
+Document #201 (ID: 361da2235308c8818fad393b51eee47e7740389a7dbe02515a27fd04a8915f0c)
 ================================================================================
   abstract: Training Large Language Models (LLMs) presents a significant communication bottleneck, predominantly due to the growing scale of the gradient to communicate across multi-device clusters. However, how to mitigate communication overhead in practice remains a formidable challenge due to the weakness of the methodology of the existing compression methods, especially the neglect of the characteristics of the gradient. In this paper, we consider and demonstrate the low-rank properties of gradient and Hessian observed in LLMs training dynamic, and take advantage of such natural properties to design SEPARATE, a simple low-rank projection for gradient compression in modern large-scale model training processes. SEPARATE realizes dimensional reduction by common random Gaussian variables and an improved moving average error-feedback technique. We theoretically demonstrate that SEPARATE-based optimizers maintain the original convergence rate for SGD and Adam-Type optimizers for general non-convex objectives. Experimental results show that SEPARATE accelerates training speed by up to 2× for GPT-2-Medium pre-training, and improves performance on various benchmarks for LLAMA2-7B fine-tuning.
   abstract_embedding: [0.53515625, -0.021728515625, 0.46875]... (1536 items)
@@ -4077,7 +4032,7 @@ Document #203 (ID: 361da2235308c8818fad393b51eee47e7740389a7dbe02515a27fd04a8915
   title_normalized: separate_a_simple_lowrank_projection_for_gradient_compression_in_modern_largescale_model_training_process
 
 ================================================================================
-Document #204 (ID: 1ec7bc725ab9ed71e38dd32d0509a5b8657f18cb6ed619683c939d8906eb31df)
+Document #202 (ID: 1ec7bc725ab9ed71e38dd32d0509a5b8657f18cb6ed619683c939d8906eb31df)
 ================================================================================
   abstract: Modeling human-like action-to-reaction generation has significant real-world applications, like human-robot interaction and games.
 Despite recent advancements in single-person motion generation, it is still challenging to well handle action-to-reaction generation, due to the difficulty of directly predicting reaction from action sequence without prompts, and the absence of a unified representation that effectively encodes multi-person motion.
@@ -4101,7 +4056,7 @@ Extensive experiments demonstrate that TTR outperforms existing baselines, achie
   title_normalized: think_then_react_towards_unconstrained_actiontoreaction_motion_generation
 
 ================================================================================
-Document #205 (ID: 9ad32df4723703816a30c7c6995b646ed4779f0bbad499182e94a56758637d7d)
+Document #203 (ID: 9ad32df4723703816a30c7c6995b646ed4779f0bbad499182e94a56758637d7d)
 ================================================================================
   abstract: Denoising diffusion bridge models (DDBMs) are a powerful variant of diffusion models for interpolating between two arbitrary paired distributions given as endpoints. Despite their promising performance in tasks like image translation, DDBMs require a computationally intensive sampling process that involves the simulation of a (stochastic) differential equation through hundreds of network evaluations. In this work, we take the first step in fast sampling of DDBMs without extra training, motivated by the well-established recipes in diffusion models. We generalize DDBMs via a class of non-Markovian diffusion bridges defined on the discretized timesteps concerning sampling, which share the same marginal distributions and training objectives, give rise to generative processes ranging from stochastic to deterministic, and result in diffusion bridge implicit models (DBIMs). DBIMs are not only up to 25$\times$ faster than the vanilla sampler of DDBMs but also induce a novel, simple, and insightful form of ordinary differential equation (ODE) which inspires high-order numerical solvers. Moreover, DBIMs maintain the generation diversity in a distinguished way, by using a booting noise in the initial sampling step, which enables faithful encoding, reconstruction, and semantic interpolation in image translation tasks. Code is available at \url{https://github.com/thu-ml/DiffusionBridge}.
   abstract_embedding: [0.1435546875, 0.6328125, 0.38671875]... (1536 items)
@@ -4120,7 +4075,7 @@ Document #205 (ID: 9ad32df4723703816a30c7c6995b646ed4779f0bbad499182e94a56758637
   title_normalized: diffusion_bridge_implicit_models
 
 ================================================================================
-Document #206 (ID: 1fd3618e3f671faba42501f795683f6529218e367d7d866199216fb307e81848)
+Document #204 (ID: 1fd3618e3f671faba42501f795683f6529218e367d7d866199216fb307e81848)
 ================================================================================
   abstract: We tackle the problem of parameter-efficient fine-tuning (PEFT) of a pre-trained large deep model on many different but related tasks. Instead of the simple but strong baseline strategy of task-wise independent fine-tuning, we aim to meta-learn the core shared information that can be used for unseen test tasks to improve the prediction performance further. That is, we propose a method for {\em learning-to-fine-tune} (LiFT). LiFT introduces a novel hierarchical Bayesian model that can be superior to both existing general meta learning algorithms like MAML and recent LoRA zoo mixing approaches such as LoRA-Retriever and model-based clustering. In our Bayesian model, the parameters of the task-specific LoRA modules are regarded as random variables where these task-wise LoRA modules are governed/regularized by higher-level latent random variables, which represents the prior of the LoRA modules that capture the shared information across all training tasks. To make the posterior inference feasible, we propose a novel SGLD-Gibbs sampling algorithm that is computationally efficient. To represent the posterior samples from the SGLD-Gibbs, we propose an online EM algorithm that maintains a Gaussian mixture representation for the posterior in an online manner in the course of iterative posterior sampling. We demonstrate the effectiveness of LiFT on NLP and vision multi-task meta learning benchmarks.
   abstract_embedding: [0.02734375, 0.349609375, 0.3828125]... (1536 items)
@@ -4139,7 +4094,7 @@ Document #206 (ID: 1fd3618e3f671faba42501f795683f6529218e367d7d866199216fb307e81
   title_normalized: lift_learning_to_finetune_via_bayesian_parameter_efficient_meta_finetuning
 
 ================================================================================
-Document #207 (ID: 0bc54d1b71c3f848335c5daa772ad110149aa4239b0f4eb0c678e36ab46f0115)
+Document #205 (ID: 0bc54d1b71c3f848335c5daa772ad110149aa4239b0f4eb0c678e36ab46f0115)
 ================================================================================
   abstract: We study beyond worst-case dimensionality reduction for $s$-sparse vectors (vectors with at most $s$ non-zero coordinates). Our work is divided into two parts, each focusing on a different facet of beyond worst-case analysis:
 
@@ -4163,7 +4118,7 @@ Document #207 (ID: 0bc54d1b71c3f848335c5daa772ad110149aa4239b0f4eb0c678e36ab46f0
   title_normalized: beyond_worstcase_dimensionality_reduction_for_sparse_vectors
 
 ================================================================================
-Document #208 (ID: 128122deb3728ec24511d52b14f74812e744a3820d3646e1de2b1ffd049d8300)
+Document #206 (ID: 128122deb3728ec24511d52b14f74812e744a3820d3646e1de2b1ffd049d8300)
 ================================================================================
   abstract: Recently, Multimodal Large Language Models (MLLMs) have been used as agents to control keyboard and mouse inputs by directly perceiving the Graphical User Interface (GUI) and generating corresponding commands.
 However, current agents primarily demonstrate strong understanding capabilities in static environments and are mainly applied to relatively simple domains, such as Web or mobile interfaces.
@@ -4187,7 +4142,7 @@ We evaluate the capabilities of current state-of-the-art MLLMs, including Image 
   title_normalized: guiworld_a_video_benchmark_and_dataset_for_multimodal_guioriented_understanding
 
 ================================================================================
-Document #209 (ID: 29512d27286c3c169d967cf6ef57850f436fc9ef1fb763431e7c779703dcab9e)
+Document #207 (ID: 29512d27286c3c169d967cf6ef57850f436fc9ef1fb763431e7c779703dcab9e)
 ================================================================================
   abstract: Model extraction aims to acquire a pre-trained black-box model concealed behind a black-box API. 
 Existing defense strategies against model extraction primarily concentrate on preventing the unauthorized extraction of API functionality. However, two significant challenges still need to be solved: (i) Neural network architecture of the API constitutes a form of intellectual property that also requires protection; (ii) The current practice of allocating the same network architecture to both attack and benign queries results in substantial resource wastage. To address these challenges, we propose a novel \textit{Dynamic Neural Fortresses} (DNF) defense method, employing a dynamic Early-Exit neural network, deviating from the conventional fixed architecture. Firstly, we facilitate the random exit of attack queries from the network at earlier layers. This strategic exit point selection significantly reduces the computational cost for attack queries. Furthermore, the random exit of attack queries from earlier layers introduces increased uncertainty for attackers attempting to discern the exact architecture, thereby enhancing architectural protection. On the contrary, we aim to facilitate benign queries to exit at later layers, preserving model utility, as these layers typically yield meaningful information. 
@@ -4208,7 +4163,7 @@ Extensive experiments on defending against various model extraction scenarios an
   title_normalized: dynamic_neural_fortresses_an_adaptive_shield_for_model_extraction_defense
 
 ================================================================================
-Document #210 (ID: f344d8422a7eb5537007422cbeed6264a565f8feac9b6d01225bba59a57ea51a)
+Document #208 (ID: f344d8422a7eb5537007422cbeed6264a565f8feac9b6d01225bba59a57ea51a)
 ================================================================================
   abstract: Synthetic tabular data generation has traditionally been a challenging problem due to the high complexity of the underlying distributions that characterise this type of data. Despite recent advances in deep generative models (DGMs), existing methods often fail to produce realistic datapoints that are well-aligned with available background knowledge.
 In this paper, we address this limitation by introducing Disjunctive Refinement Layer (DRL), a novel layer designed
@@ -4231,7 +4186,7 @@ Our experimental analysis shows that DRL not only guarantees constraint satisfac
   title_normalized: beyond_the_convexity_assumption_realistic_tabular_data_generation_under_quantifierfree_real_linear_constraints
 
 ================================================================================
-Document #211 (ID: 758b009c654906702a21a84f572880bbd69bd62a61ba7f6dc08ca9f59ae396e3)
+Document #209 (ID: 758b009c654906702a21a84f572880bbd69bd62a61ba7f6dc08ca9f59ae396e3)
 ================================================================================
   abstract: We present Perm, a learned parametric representation of human 3D hair designed to facilitate various hair-related applications. Unlike previous work that jointly models the global hair structure and local curl patterns, we propose to disentangle them using a PCA-based strand representation in the frequency domain, thereby allowing more precise editing and output control. Specifically, we leverage our strand representation to fit and decompose hair geometry textures into low- to high-frequency hair structures, termed guide textures and residual textures, respectively. These decomposed textures are later parameterized with different generative models, emulating common stages in the hair grooming process. We conduct extensive experiments to validate the architecture design of Perm, and finally deploy the trained model as a generic prior to solve task-agnostic problems, further showcasing its flexibility and superiority in tasks such as single-view hair reconstruction, hairstyle editing, and hair-conditioned image generation. More details can be found on our project page: https://cs.yale.edu/homes/che/projects/perm/.
   abstract_embedding: [-0.2216796875, 0.396484375, -0.11962890625]... (1536 items)
@@ -4250,7 +4205,7 @@ Document #211 (ID: 758b009c654906702a21a84f572880bbd69bd62a61ba7f6dc08ca9f59ae39
   title_normalized: perm_a_parametric_representation_for_multistyle_3d_hair_modeling
 
 ================================================================================
-Document #212 (ID: 8db72f47096b5d294fb92935366d0d18649047a6c7dd391b6763f9d404bff4f7)
+Document #210 (ID: 8db72f47096b5d294fb92935366d0d18649047a6c7dd391b6763f9d404bff4f7)
 ================================================================================
   abstract: Low-rank adaptation, also known as LoRA, has emerged as a prominent method for parameter-efficient fine-tuning of foundation models.
 Despite its computational efficiency, LoRA still yields inferior performance compared to full fine-tuning.
@@ -4277,7 +4232,7 @@ Our code is publicly available at https://github.com/mrflogs/LoRA-Pro.
   title_normalized: lorapro_are_lowrank_adapters_properly_optimized
 
 ================================================================================
-Document #213 (ID: 7196e409834ec9f6ff24196a4d7aa244eebfb00b6962ef3336f5aa1459c0e39c)
+Document #211 (ID: 7196e409834ec9f6ff24196a4d7aa244eebfb00b6962ef3336f5aa1459c0e39c)
 ================================================================================
   abstract: Graph Neural Networks (GNNs) have achieved promising results in tasks such as node classification and graph classification. However, recent studies reveal that GNNs are vulnerable to backdoor attacks, posing a significant threat to their real-world adoption. Despite initial efforts to defend against specific graph backdoor attacks, there is no work on defending against various types of backdoor attacks where generated triggers have different properties. Hence, we first empirically verify that prediction variance under edge dropping is a crucial indicator for identifying poisoned nodes. With this observation, we propose using random edge dropping to detect backdoors and theoretically show that it can efficiently distinguish poisoned nodes from clean ones. Furthermore, we introduce a novel robust training strategy to efficiently counteract the impact of the triggers. Extensive experiments on real-world datasets show that our framework can effectively identify poisoned nodes, significantly degrade the attack success rate, and maintain clean accuracy when defending against various types of graph backdoor attacks with different properties. Our code is available at: https://github.com/zzwjames/RIGBD.
   abstract_embedding: [0.4609375, 1.0078125, 0.0235595703125]... (1536 items)
@@ -4296,7 +4251,7 @@ Document #213 (ID: 7196e409834ec9f6ff24196a4d7aa244eebfb00b6962ef3336f5aa1459c0e
   title_normalized: robustness_inspired_graph_backdoor_defense
 
 ================================================================================
-Document #214 (ID: dc33ac05d1de6b56102d99f341f56495f8ad948ae70411ca081560d221666157)
+Document #212 (ID: dc33ac05d1de6b56102d99f341f56495f8ad948ae70411ca081560d221666157)
 ================================================================================
   abstract: Learned image compression (LIC) has demonstrated superior rate-distortion (R-D) performance compared to traditional codecs, but is challenged by training inefficiency that could incur more than two weeks to train a state-of-the-art model from scratch. Existing LIC methods overlook the slow convergence caused by compacting energy in learning nonlinear transforms. In this paper, we first reveal that such energy compaction consists of two components, \emph{i.e.}, feature decorrelation and uneven energy modulation. On such basis, we propose a linear auxiliary transform (AuxT) to disentangle energy compaction in training nonlinear transforms. The proposed AuxT obtains coarse approximation to achieve efficient energy compaction such that distribution fitting with the nonlinear transforms can be simplified to fine details. We then develop wavelet-based linear shortcuts (WLSs) for AuxT that leverages wavelet-based downsampling and orthogonal linear projection for feature decorrelation and subband-aware scaling for uneven energy modulation. AuxT is lightweight and plug-and-play to be integrated into diverse LIC models to address the slow convergence issue. Experimental results demonstrate that the proposed approach can accelerate training of LIC models by 2  times and simultaneously achieves an average 1\% BD-rate reduction. To our best knowledge, this is one of the first successful attempt that can significantly improve the convergence of LIC with comparable or superior rate-distortion performance.
   abstract_embedding: [-0.146484375, -0.220703125, 0.24609375]... (1536 items)
@@ -4315,7 +4270,7 @@ Document #214 (ID: dc33ac05d1de6b56102d99f341f56495f8ad948ae70411ca081560d221666
   title_normalized: on_disentangled_training_for_nonlinear_transform_in_learned_image_compression
 
 ================================================================================
-Document #215 (ID: 952b81e5651fb161d87e333f79c116d6229668b91cc77dae7cd54ea9e1b4aa50)
+Document #213 (ID: 952b81e5651fb161d87e333f79c116d6229668b91cc77dae7cd54ea9e1b4aa50)
 ================================================================================
   abstract: Large language models (LLMs) often produce errors, including factual inaccuracies, biases, and reasoning failures, collectively referred to as "hallucinations". Recent studies have demonstrated that LLMs' internal states encode information regarding the truthfulness of their outputs, and that this information can be utilized to detect errors. In this work, we show that the internal representations of LLMs encode much more information about truthfulness than previously recognized. We first discover that the truthfulness information is concentrated in specific tokens, and leveraging this property significantly enhances error detection performance. Yet, we show that such error detectors fail to generalize across datasets, implying that---contrary to prior claims---truthfulness encoding is not universal but rather multifaceted. Next, we show that internal representations can also be used for predicting the types of errors the model is likely to make, facilitating the development of tailored mitigation strategies. Lastly, we reveal a discrepancy between LLMs' internal encoding and external behavior: they may encode the correct answer, yet consistently generate an incorrect one. Taken together, these insights deepen our understanding of LLM errors from the model's internal perspective, which can guide future research on enhancing error analysis and mitigation.
   abstract_embedding: [0.384765625, 0.35546875, 0.052734375]... (1536 items)
@@ -4334,7 +4289,7 @@ Document #215 (ID: 952b81e5651fb161d87e333f79c116d6229668b91cc77dae7cd54ea9e1b4a
   title_normalized: llms_know_more_than_they_show_on_the_intrinsic_representation_of_llm_hallucinations
 
 ================================================================================
-Document #216 (ID: d42873b5f219f28d67d4b265799186ebe2354f13a68123e384e311cd5a1329e3)
+Document #214 (ID: d42873b5f219f28d67d4b265799186ebe2354f13a68123e384e311cd5a1329e3)
 ================================================================================
   abstract: The outstanding capability of diffusion models in generating high-quality images poses significant threats when misused by adversaries. In particular, we assume malicious adversaries exploiting diffusion models for inpainting tasks, such as replacing a specific region with a celebrity. While existing methods for protecting images from manipulation in diffusion-based generative models have primarily focused on image-to-image and text-to-image tasks, the challenge of preventing unauthorized inpainting has been rarely addressed, often resulting in suboptimal protection performance. To mitigate inpainting abuses, we propose ADVPAINT, a novel defensive framework that generates adversarial perturbations that effectively disrupt the adversary’s inpainting tasks. ADVPAINT targets the self- and cross-attention blocks in a target diffusion inpainting model to distract semantic understanding and prompt interactions during image generation. ADVPAINT also employs a two-stage perturbation strategy, dividing the perturbation region based on an enlarged bounding box around the object, enhancing robustness across diverse masks of varying shapes and sizes. Our experimental results demonstrate that ADVPAINT’s perturbations are highly effective in disrupting the adversary’s inpainting tasks, outperforming existing methods; ADVPAINT attains over a 100-point increase in FID and substantial decreases in precision.
   abstract_embedding: [0.177734375, 0.68359375, -0.039794921875]... (1536 items)
@@ -4353,7 +4308,7 @@ Document #216 (ID: d42873b5f219f28d67d4b265799186ebe2354f13a68123e384e311cd5a132
   title_normalized: advpaint_protecting_images_from_inpainting_manipulation_via_adversarial_attention_disruption
 
 ================================================================================
-Document #217 (ID: 7521988db362e7791b2cf000e784876f7a4c8690f1bcaad532ce74a98cfe2359)
+Document #215 (ID: 7521988db362e7791b2cf000e784876f7a4c8690f1bcaad532ce74a98cfe2359)
 ================================================================================
   abstract: Instruction tuning is critical for adapting large language models (LLMs) to downstream tasks, and recent studies have demonstrated that small amounts of human-curated data can outperform larger datasets, challenging traditional data scaling laws. While LLM-based data quality rating systems offer a cost-effective alternative to human annotation, they often suffer from inaccuracies and biases, even in powerful models like GPT-4. In this work, we introduce $DS^2$, a **D**iversity-aware **S**core curation method for **D**ata **S**election. By systematically modeling error patterns through a score transition matrix, $DS^2$ corrects LLM-based scores and promotes diversity in the selected data samples. Our approach shows that a curated subset (just 3.3\% of the original dataset) outperforms full-scale datasets (300k samples) across various machine-alignment benchmarks, and matches or surpasses human-aligned datasets such as LIMA with the same sample size (1k samples). These findings challenge conventional data scaling assumptions, highlighting that redundant, low-quality samples can degrade performance and reaffirming that ``more can be less''.
   abstract_embedding: [0.388671875, 0.2041015625, 0.244140625]... (1536 items)
@@ -4372,7 +4327,7 @@ Document #217 (ID: 7521988db362e7791b2cf000e784876f7a4c8690f1bcaad532ce74a98cfe2
   title_normalized: improving_data_efficiency_via_curating_llmdriven_rating_systems
 
 ================================================================================
-Document #218 (ID: 215c640777a892a3cb28f5344b1388d6faa0decf95cd38b2c3c16a515f3a592f)
+Document #216 (ID: 215c640777a892a3cb28f5344b1388d6faa0decf95cd38b2c3c16a515f3a592f)
 ================================================================================
   abstract: Diffusion probabilistic models have achieved remarkable success in generative tasks across diverse data types. While recent studies have explored alternative degradation processes beyond Gaussian noise, this paper bridges two key diffusion paradigms: hot diffusion, which relies entirely on noise, and cold diffusion, which uses only blurring without noise. We argue that hot diffusion fails to exploit the strong correlation between high-frequency image detail and low-frequency structures, leading to random behaviors in the early steps of generation. Conversely, while cold diffusion leverages image correlations for prediction, it neglects the role of noise (randomness) in shaping the data manifold, resulting in out-of-manifold issues and partially explaining its performance drop. To integrate both strengths, we propose Warm Diffusion, a unified Blur-Noise Mixture Diffusion Model (BNMD), to control blurring and noise jointly. Our divide-and-conquer strategy exploits the spectral dependency in images, simplifying score model estimation by disentangling the denoising and deblurring processes. We further analyze the Blur-to-Noise Ratio (BNR) using spectral analysis to investigate the trade-off between model learning dynamics and changes in the data manifold. Extensive experiments across benchmarks validate the effectiveness of our approach for image generation.
   abstract_embedding: [-0.07958984375, 0.484375, 0.07763671875]... (1536 items)
@@ -4391,7 +4346,7 @@ Document #218 (ID: 215c640777a892a3cb28f5344b1388d6faa0decf95cd38b2c3c16a515f3a5
   title_normalized: warm_diffusion_recipe_for_blurnoise_mixture_diffusion_models
 
 ================================================================================
-Document #219 (ID: 60e2fef95ba5b54f06487cc2a5a766161213205272aff8b220adffdbb537cb16)
+Document #217 (ID: 60e2fef95ba5b54f06487cc2a5a766161213205272aff8b220adffdbb537cb16)
 ================================================================================
   abstract: Given the limitations of backpropagation, perturbation-based gradient computation methods have recently gained focus for learning with only forward passes, also referred to as queries. Conventional forward learning consumes enormous queries on each data point for accurate gradient estimation through Monte Carlo sampling, which hinders the scalability of those algorithms. However, not all data points deserve equal queries for gradient estimation. In this paper, we study the problem of improving the forward learning efficiency from a novel perspective: how to reduce the gradient estimation variance with minimum cost? For this, we allocate the optimal number of queries within a set budget during training to balance estimation accuracy and computational efficiency. Specifically, with a simplified proxy objective and a reparameterization technique, we derive a novel plug-and-play query allocator with minimal parameters. Theoretical results are carried out to verify its optimality. We conduct extensive experiments for fine-tuning Vision Transformers on various datasets and further deploy the allocator to two black-box applications: prompt tuning and multimodal alignment for foundation models. All findings demonstrate that our proposed allocator significantly enhances the scalability of forward-learning algorithms, paving the way for real-world applications. The implementation is available at https://github.com/RTkenny/FLOPS-Forward-Learning-with-OPtimal-Sampling.
   abstract_embedding: [-0.1552734375, 0.234375, 0.201171875]... (1536 items)
@@ -4410,7 +4365,7 @@ Document #219 (ID: 60e2fef95ba5b54f06487cc2a5a766161213205272aff8b220adffdbb537c
   title_normalized: flops_forward_learning_with_optimal_sampling
 
 ================================================================================
-Document #220 (ID: 8363e86d91659739d7cbb426139bb2835765131eaae268074d242b5b62ec1594)
+Document #218 (ID: 8363e86d91659739d7cbb426139bb2835765131eaae268074d242b5b62ec1594)
 ================================================================================
   abstract: In scenarios where language models must incorporate new information efficiently without extensive retraining, traditional fine-tuning methods are prone to overfitting, degraded generalization, and unnatural language generation. To address these limitations, we introduce Consistent In-Context Editing (ICE), a novel approach leveraging the model's in-context learning capability to optimize towards a contextual distribution rather than a one-hot target. ICE introduces a simple yet effective optimization framework for the model to internalize new knowledge by aligning its output distributions with and without additional context. This method enhances the robustness and effectiveness of gradient-based tuning methods, preventing overfitting and preserving the model's integrity. We analyze ICE across four critical aspects of knowledge editing: accuracy, locality, generalization, and linguistic quality, demonstrating its advantages. Experimental results confirm the effectiveness of ICE and demonstrate its potential for continual editing, ensuring that the integrity of the model is preserved while updating information.
   abstract_embedding: [0.060546875, 0.515625, -0.31640625]... (1536 items)
@@ -4429,7 +4384,7 @@ Document #220 (ID: 8363e86d91659739d7cbb426139bb2835765131eaae268074d242b5b62ec1
   title_normalized: incontext_editing_learning_knowledge_from_selfinduced_distributions
 
 ================================================================================
-Document #221 (ID: e3dcdcaa2824ee836274d6aa6369a1d5ec98f5cd45a77a8d1e99ff311587ed1d)
+Document #219 (ID: e3dcdcaa2824ee836274d6aa6369a1d5ec98f5cd45a77a8d1e99ff311587ed1d)
 ================================================================================
   abstract: Generative models can now produce photorealistic synthetic data which is virtually indistinguishable from the real data used to train it. This is a significant evolution over previous models which could produce reasonable facsimiles of the training data, but ones which could be visually distinguished from the training data by human evaluation. Recent work on OOD detection has raised doubts that generative model likelihoods are optimal OOD detectors due to issues involving likelihood misestimation, entropy in the generative process, and typicality. We speculate that generative OOD detectors also failed because their models focused on the pixels rather than the semantic content of the data, leading to failures in near-OOD cases where the pixels may be similar but the information content is significantly different. We hypothesize that estimating typical sets using self-supervised learners leads to better OOD detectors. We introduce a novel approach that leverages representation learning, and informative summary statistics based on manifold estimation, to address all of the aforementioned issues. Our method outperforms other unsupervised approaches and achieves state-of-the art performance on well-established challenging benchmarks, and new synthetic data detection tasks.
   abstract_embedding: [0.115234375, 0.212890625, 0.25]... (1536 items)
@@ -4448,7 +4403,7 @@ Document #221 (ID: e3dcdcaa2824ee836274d6aa6369a1d5ec98f5cd45a77a8d1e99ff311587e
   title_normalized: forte__finding_outliers_with_representation_typicality_estimation
 
 ================================================================================
-Document #222 (ID: cd720e0d1c50cb0f33914f91d25c79c05095c94d2682dc19b43ca06783f05113)
+Document #220 (ID: cd720e0d1c50cb0f33914f91d25c79c05095c94d2682dc19b43ca06783f05113)
 ================================================================================
   abstract: Computationally intensive decoding procedures---including search, reranking, and self-critique---can improve the quality of language model (LM) outputs in problems spanning code generation, numerical reasoning, and dialog.
 Existing work typically applies the same decoding procedure for every input to an LM. But not all inputs require the same amount of computation to process. Can we allocate decoding computation adaptively, using more resources to answer questions whose answers will be harder to compute? We present an approach that predicts the distribution of rewards given an input and computation budget, then allocates additional computation to inputs for which it is predicted to be most useful. We apply this approach in two decoding procedures: first, an adaptive best-of-$k$ procedure that dynamically selects the number of samples to generate as input to a reranker; second, a routing procedure that dynamically responds to a query using a decoding procedure that is expensive but accurate, or one that is cheaper but less capable. Across a suite of programming, mathematics, and dialog tasks, we show that accurate computation-allocation procedures can be learned, and reduce computation by up to 50% at no cost to quality.
@@ -4468,7 +4423,7 @@ Existing work typically applies the same decoding procedure for every input to a
   title_normalized: learning_how_hard_to_think_inputadaptive_allocation_of_lm_computation
 
 ================================================================================
-Document #223 (ID: 75698d2819a086b3ec4d19d1caecaf35320e6dbee405bfe7701449531bcbae1a)
+Document #221 (ID: 75698d2819a086b3ec4d19d1caecaf35320e6dbee405bfe7701449531bcbae1a)
 ================================================================================
   abstract: Multi-modal Large Language Models (MLLMs) have recently showcased superior proficiency in general visual scenarios. However, we identify their mathematical capabilities remain under-explored with three areas to be improved: visual encoding of math diagrams, diagram-language alignment, and chain-of-thought (CoT) reasoning. This draws forth an urgent demand for an effective training paradigm and a large-scale, comprehensive dataset with detailed CoT rationales, which is challenging to collect and costly to annotate manually. To tackle this issue, we propose MAVIS, a MAthematical VISual instruction tuning pipeline for MLLMs, featuring an automatic data engine to efficiently create mathematical visual datasets.
 We design the data generation process to be entirely independent of human intervention or GPT API usage, while ensuring the diagram-caption correspondence, question-answer correctness, and CoT reasoning quality. With this approach, we curate two datasets, MAVIS-Caption (558K diagram-caption pairs) and MAVIS-Instruct (834K visual math problems with CoT rationales), and propose four progressive stages for training MLLMs from scratch.
@@ -4490,7 +4445,7 @@ On various mathematical benchmarks, our MAVIS-7B achieves leading results among 
   title_normalized: mavis_mathematical_visual_instruction_tuning_with_an_automatic_data_engine
 
 ================================================================================
-Document #224 (ID: a59b4dc93390f045e5f582e0257c635d7d47c5c7b37fe24ba9b2b37b6f55eb31)
+Document #222 (ID: a59b4dc93390f045e5f582e0257c635d7d47c5c7b37fe24ba9b2b37b6f55eb31)
 ================================================================================
   abstract: Go-Explore is a powerful family of algorithms designed to solve hard-exploration problems built on the principle of archiving discovered states, and iteratively returning to and exploring from the most promising states. This approach has led to superhuman performance across a wide variety of challenging problems including Atari games and robotic control, but requires manually designing heuristics to guide exploration (i.e., determine which states to save and explore from, and what actions to consider next), which is time-consuming and infeasible in general. To resolve this, we propose Intelligent Go-Explore (IGE) which greatly extends the scope of the original Go-Explore by replacing these handcrafted heuristics with the intelligence and internalized human notions of interestingness captured by giant pretrained foundation models (FMs). This provides IGE with a human-like ability to instinctively identify how interesting or promising any new state is (e.g., discovering new objects, locations, or behaviors), even in complex environments where heuristics are hard to define. Moreover, IGE offers the exciting opportunity to recognize and capitalize on serendipitous discoveries---states encountered during exploration that are valuable in terms of exploration, yet where what makes them interesting was not anticipated by the human user. We evaluate our algorithm on a diverse range of language and vision-based tasks that require search and exploration. Across these tasks, IGE strongly exceeds classic reinforcement learning and graph search baselines, and also succeeds where prior state-of-the-art FM agents like Reflexion completely fail. Overall, Intelligent Go-Explore combines the tremendous strengths of FMs and the powerful Go-Explore algorithm, opening up a new frontier of research into creating more generally capable agents with impressive exploration capabilities. All our code is open-sourced at: https://github.com/conglu1997/intelligent-go-explore.
   abstract_embedding: [0.271484375, 0.255859375, 0.0947265625]... (1536 items)
@@ -4509,7 +4464,7 @@ Document #224 (ID: a59b4dc93390f045e5f582e0257c635d7d47c5c7b37fe24ba9b2b37b6f55e
   title_normalized: intelligent_goexplore_standing_on_the_shoulders_of_giant_foundation_models
 
 ================================================================================
-Document #225 (ID: 78695c4de48d35193092052deb7fc2bcac25a085e6fcf82d022dca7588638bcf)
+Document #223 (ID: 78695c4de48d35193092052deb7fc2bcac25a085e6fcf82d022dca7588638bcf)
 ================================================================================
   abstract: Despite the recent progress in long-context language models, it remains elusive how transformer-based models exhibit the capability to retrieve relevant information from arbitrary locations within the long context. This paper aims to address this question. Our systematic investigation across a wide spectrum of models reveals that a special type of attention heads are largely responsible for retrieving information, which we dub retrieval heads. We identify intriguing properties of retrieval heads:(1) universal: all the explored models with long-context capability have a set of retrieval heads; (2) sparse: only a small portion (less than 5\%) of the attention heads are retrieval. (3) intrinsic: retrieval heads already exist in models pretrained with short context. When extending the context length by continual pretraining, it is still the same set of heads that perform information retrieval. (4) dynamically activated: take Llama-2 7B for example, 12 retrieval heads always attend to the required information no matter how the context is changed. The rest of the retrieval heads are activated in different contexts. (5) causal: completely pruning retrieval heads leads to failure in retrieving relevant information and results in hallucination, while pruning random non-retrieval heads does not affect the model's retrieval ability. We further show that retrieval heads strongly influence chain-of-thought (CoT) reasoning, where the model needs to frequently refer back the question and previously-generated context. Conversely, tasks where the model directly generates the answer using its intrinsic knowledge are less impacted by masking out retrieval heads. These observations collectively explain which internal part of the model seeks information from the input tokens. We believe our insights will foster future research on reducing hallucination, improving reasoning, and compressing the KV cache.
   abstract_embedding: [0.2578125, -0.006805419921875, 0.322265625]... (1536 items)
@@ -4528,7 +4483,7 @@ Document #225 (ID: 78695c4de48d35193092052deb7fc2bcac25a085e6fcf82d022dca7588638
   title_normalized: retrieval_head_mechanistically_explains_longcontext_factuality
 
 ================================================================================
-Document #226 (ID: 6bf428ebdee70c673dc17e1f51002edb2327582f07e5a721b320ef465c0a26eb)
+Document #224 (ID: 6bf428ebdee70c673dc17e1f51002edb2327582f07e5a721b320ef465c0a26eb)
 ================================================================================
   abstract: Existing retrieval benchmarks primarily consist of information-seeking queries (e.g., aggregated questions from search engines) where keyword or semantic-based retrieval is usually sufficient. However, many complex real-world queries require in-depth reasoning to identify relevant documents that go beyond surface form matching. For example, finding documentation for a coding question requires understanding the logic and syntax of the functions involved. To better benchmark retrieval on such challenging queries, we introduce BRIGHT, the first text retrieval benchmark that requires intensive reasoning to retrieve relevant documents. Our dataset consists of 1,398 real-world queries spanning diverse domains such as economics, psychology, mathematics, coding, and more. These queries are drawn from naturally occurring or carefully curated human data. Extensive evaluation reveals that even state-of-the-art retrieval models perform poorly on BRIGHT. The leading model on the MTEB leaderboard (Muennighoff et al., 2023), which achieves a score of 59.0 nDCG@10,1 produces a score of nDCG@10 of 18.0 on BRIGHT. We show that incorporating explicit reasoning about the query improves retrieval performance by up to 12.2 points. Moreover, incorporating retrieved documents from the top-performing retriever boosts question answering performance by over 6.6 points. We believe that BRIGHT paves the way for future research on retrieval systems in more realistic and challenging settings.
   abstract_embedding: [0.330078125, 0.50390625, 0.2734375]... (1536 items)
@@ -4547,7 +4502,7 @@ Document #226 (ID: 6bf428ebdee70c673dc17e1f51002edb2327582f07e5a721b320ef465c0a2
   title_normalized: bright_a_realistic_and_challenging_benchmark_for_reasoningintensive_retrieval
 
 ================================================================================
-Document #227 (ID: cc5f142b21e4bca419121714a2fb3e19758f54fd2c91bd82756b1b7cae2d9cb0)
+Document #225 (ID: cc5f142b21e4bca419121714a2fb3e19758f54fd2c91bd82756b1b7cae2d9cb0)
 ================================================================================
   abstract: Scientific discovery contributes largely to the prosperity of human society, and recent progress shows that LLMs could potentially catalyst the process. However, it is still unclear whether LLMs can discover novel and valid hypotheses in chemistry. In this work, we investigate this main research question: whether LLMs can automatically discover novel and valid chemistry research hypotheses, given only a research question? With extensive discussions with chemistry experts, we adopt the assumption that a majority of chemistry hypotheses can be resulted from a research background question and several inspirations. With this key insight, we break the main question into three smaller fundamental questions. In brief, they are: (1) given a background question, whether LLMs can retrieve good inspirations; (2) with background and inspirations, whether LLMs can lead to hypothesis; and (3) whether LLMs can identify good hypotheses to rank them higher. To investigate these questions, we construct a benchmark consisting of 51 chemistry papers published in Nature or a similar level in 2024 (all papers are only available online since 2024). Every paper is divided by chemistry PhD students into three components: background, inspirations, and hypothesis. The goal is to rediscover the hypothesis given only the background and a large chemistry literature corpus consisting the ground truth inspiration papers, with LLMs trained with data up to 2023. We also develop an LLM-based multi-agent framework that leverages the assumption, consisting of three stages reflecting the more smaller questions. The proposed method can rediscover many hypotheses with very high similarity with the ground truth ones, covering the main innovations.
   abstract_embedding: [0.80859375, 0.404296875, 0.1845703125]... (1536 items)
@@ -4566,7 +4521,7 @@ Document #227 (ID: cc5f142b21e4bca419121714a2fb3e19758f54fd2c91bd82756b1b7cae2d9
   title_normalized: moosechem_large_language_models_for_rediscovering_unseen_chemistry_scientific_hypotheses
 
 ================================================================================
-Document #228 (ID: 9bf818e170ba517686853206e3cff57be8aa3bb68232cd95833fa445ba6d2edb)
+Document #226 (ID: 9bf818e170ba517686853206e3cff57be8aa3bb68232cd95833fa445ba6d2edb)
 ================================================================================
   abstract: We propose a novel approach for 3D mesh reconstruction from multi-view images. We improve upon the large reconstruction model LRM that use a transformer-based triplane generator and a Neural Radiance Field (NeRF) model trained on multi-view images. We introduce three key components to significantly enhance the 3D reconstruction quality. First of all, we examine the original LRM architecture and find several shortcomings. Subsequently, we introduce respective modifications to the LRM architecture, which lead to improved multi-view image representation and more computationally efficient training. Second, in order to improve geometry reconstruction and enable supervision at full image resolution, we extract meshes from the NeRF in a differentiable manner and fine-tune the NeRF model through mesh rendering. These modifications allow us to achieve state-of-the-art performance on both 2D and 3D evaluation metrics on Google Scanned Objects (GSO) dataset and OmniObject3D dataset. Finally, we introduce a lightweight per-instance texture refinement procedure to better reconstruct complex textures, such as text and portraits on assets. To address this, we introduce a lightweight per-instance texture refinement procedure. This procedure fine-tunes the triplane representation and the NeRF's color estimation model on the mesh surface using the input multi-view images in just 4 seconds. This refinement achieves faithful reconstruction of complex textures. Additionally, our approach enables various downstream applications, including text/image-to-3D generation.
   abstract_embedding: [0.287109375, 0.046875, -0.002655029296875]... (1536 items)
@@ -4585,7 +4540,7 @@ Document #228 (ID: 9bf818e170ba517686853206e3cff57be8aa3bb68232cd95833fa445ba6d2
   title_normalized: gtr_improving_large_3d_reconstruction_models_through_geometry_and_texture_refinement
 
 ================================================================================
-Document #229 (ID: a1a727a93fda146e773f15386f9ecf746c222ac2ca9f03a470943f052f6ab087)
+Document #227 (ID: a1a727a93fda146e773f15386f9ecf746c222ac2ca9f03a470943f052f6ab087)
 ================================================================================
   abstract: Will a Visual Language Model (VLM)-based bot warn us about slipping if it detects a wet floor? Recent VLMs have demonstrated impressive capabilities, yet their ability to infer outcomes and causes remains underexplored. To address this, we introduce NL-Eye, a benchmark designed to assess VLMs' visual abductive reasoning skills. NL-Eye adapts the abductive Natural Language Inference (NLI) task to the visual domain, requiring models to evaluate the plausibility of hypothesis images based on a premise image and explain their decisions. NL-Eye consists of 350 carefully curated triplet examples (1,050 images) spanning diverse reasoning categories: physical, functional, logical, emotional, cultural, and social. The data curation process involved two steps—writing textual descriptions and generating images using text-to-image models, both requiring substantial human involvement to ensure high-quality and challenging scenes. Our experiments show that VLMs struggle significantly on NL-Eye, often performing at random baseline levels, while humans excel in both plausibility prediction and explanation quality. This demonstrates a deficiency in the abductive reasoning capabilities of modern VLMs. NL-Eye represents a crucial step toward developing VLMs capable of robust multimodal reasoning for real-world applications, including accident-prevention bots and generated video verification.
   abstract_embedding: [0.41015625, 0.265625, 0.40234375]... (1536 items)
@@ -4604,7 +4559,7 @@ Document #229 (ID: a1a727a93fda146e773f15386f9ecf746c222ac2ca9f03a470943f052f6ab
   title_normalized: nleye_abductive_nli_for_images
 
 ================================================================================
-Document #230 (ID: 9d05c9b13b2d769fd509fb23506cc085bd54a20d521870dd2a4cd064a828794f)
+Document #228 (ID: 9d05c9b13b2d769fd509fb23506cc085bd54a20d521870dd2a4cd064a828794f)
 ================================================================================
   abstract: Event-guided imaging has received significant attention due to its potential to revolutionize instant imaging systems. However, the prior methods primarily focus on enhancing RGB images in a post-processing manner, neglecting the challenges of image signal processor (ISP) dealing with event sensor and the benefits events provide for reforming the ISP process. To achieve this, we conduct the first research on event-guided ISP. First, we present a new event-RAW paired dataset, collected with a novel but still confidential sensor that records pixel-level aligned events and RAW images. This dataset includes 3373 RAW images with $2248\times 3264$ resolution and their corresponding events, spanning 24 scenes with 3 exposure modes and 3 lenses. Second, we propose a convential ISP pipeline to generate good RGB frames as reference. This convential ISP pipleline performs basic ISP operations, e.g., demosaicing, white balancing, denoising and color space transforming, with a ColorChecker as reference. Third, we classify the existing learnable ISP methods into 3 classes, and select multiple methods to train and evaluate on our new dataset. Lastly, since there is no prior work for reference, we propose a simple event-guided ISP method and test it on our dataset. We further put forward key technical challenges and future directions in RGB-Event ISP. In summary, to the best of our knowledge, this is the very first research focusing on event-guided ISP, and we hope it will inspire the community.
   abstract_embedding: [-0.126953125, 0.06494140625, 0.27734375]... (1536 items)
@@ -4623,7 +4578,7 @@ Document #230 (ID: 9d05c9b13b2d769fd509fb23506cc085bd54a20d521870dd2a4cd064a8287
   title_normalized: rgbevent_isp_the_dataset_and_benchmark
 
 ================================================================================
-Document #231 (ID: db54f043abf73b69acb0154facf870067e0396fffb67e60204132d4d8c852ef6)
+Document #229 (ID: db54f043abf73b69acb0154facf870067e0396fffb67e60204132d4d8c852ef6)
 ================================================================================
   abstract: Large language models (LLMs) could be valuable personal AI agents across various domains, provided they can precisely follow user instructions. However, recent studies have shown significant limitations in LLMs' instruction-following capabilities, raising concerns about their reliability in high-stakes applications. 
 Accurately estimating LLMs' uncertainty in adhering to instructions is critical to mitigating deployment risks. We present, to our knowledge, the first systematic evaluation of the uncertainty estimation abilities of LLMs in the context of instruction-following. 
@@ -4647,7 +4602,7 @@ The insights from our controlled evaluation setups provide a crucial understandi
   title_normalized: do_llms_estimate_uncertainty_well_in_instructionfollowing
 
 ================================================================================
-Document #232 (ID: 00e25bd390d1300ea13f30df1a752b26e246949560e153e195028a755dabb7b0)
+Document #230 (ID: 00e25bd390d1300ea13f30df1a752b26e246949560e153e195028a755dabb7b0)
 ================================================================================
   abstract: Modern text-to-video synthesis models demonstrate coherent, photorealistic generation of complex videos from a text description. However, most existing models lack fine-grained control over camera movement, which is critical for downstream applications related to content creation, visual effects, and 3D vision. Recently, new methods demonstrate the ability to generate videos with controllable camera poses---these techniques leverage pre-trained U-Net-based diffusion models that explicitly disentangle spatial and temporal generation. Still, no existing approach enables camera control for new, transformer-based video diffusion models that process spatial and temporal information jointly. Here, we propose to tame video transformers for 3D camera control using a ControlNet-like conditioning mechanism that incorporates spatiotemporal camera embeddings based on Plucker coordinates. The approach demonstrates state-of-the-art performance for controllable video generation after fine-tuning on the RealEstate10K dataset. To the best of our knowledge, our work is the first to enable camera control for transformer-based video diffusion models.
   abstract_embedding: [0.1494140625, -0.07666015625, 0.39453125]... (1536 items)
@@ -4666,7 +4621,7 @@ Document #232 (ID: 00e25bd390d1300ea13f30df1a752b26e246949560e153e195028a755dabb
   title_normalized: vd3d_taming_large_video_diffusion_transformers_for_3d_camera_control
 
 ================================================================================
-Document #233 (ID: 437de0588521a062496bf46c5996f6485824e7b64d18c28d9b0d8550afa738b5)
+Document #231 (ID: 437de0588521a062496bf46c5996f6485824e7b64d18c28d9b0d8550afa738b5)
 ================================================================================
   abstract: Causal Transformers are trained to predict the next token for a given context. While it is widely accepted that self-attention is crucial for encoding the causal structure of sequences, the precise underlying mechanism behind this in-context autoregressive learning ability remains unclear. In this paper, we take a step towards understanding this phenomenon by studying the approximation ability of Transformers for next-token prediction. Specifically, we explore the capacity of causal Transformers to predict the next token $x_{t+1}$ given an autoregressive sequence $(x_1, \dots, x_t)$ as a prompt, where $ x_{t+1} = f(x_t) $, and $ f $ is a context-dependent function that varies with each sequence.
 On the theoretical side, we focus on specific instances, namely when $ f $ is linear or when $ (x_t)$ is periodic. We explicitly construct a Transformer (with linear, exponential, or softmax attention) that learns the mapping $f$ in-context through a causal kernel descent method. The causal kernel descent method we propose provably estimates $x_{t+1} $ based solely on past and current observations $ (x_1, \dots, x_t) $, with connections to the Kaczmarz algorithm in Hilbert spaces. We present experimental results that validate our theoretical findings and suggest their applicability to more general mappings $f$.
@@ -4686,7 +4641,7 @@ On the theoretical side, we focus on specific instances, namely when $ f $ is li
   title_normalized: towards_understanding_the_universality_of_transformers_for_nexttoken_prediction
 
 ================================================================================
-Document #234 (ID: 9d3bd766039f2ee064d006c1ef9c0eb7424546632992b35dc9d371c6ced500e5)
+Document #232 (ID: 9d3bd766039f2ee064d006c1ef9c0eb7424546632992b35dc9d371c6ced500e5)
 ================================================================================
   abstract: Machine unlearning is a promising approach to mitigate undesirable memorization of training data in ML models. However, in this work we show that existing approaches for unlearning in LLMs are surprisingly susceptible to a simple set of benign relearning attacks. With access to only a small and potentially loosely related set of data, we find that we can “jog” the memory of unlearned models to reverse the effects of unlearning. For example, we show that relearning on public medical articles can lead an unlearned LLM to output harmful knowledge about bioweapons, and relearning general wiki information about the book series Harry Potter can force the model to output verbatim memorized text. We formalize this unlearning-relearning pipeline, explore the attack across three popular unlearning benchmarks, and discuss future directions and guidelines that result from our study. Our work indicates that current approximate unlearning methods simply suppress the model outputs and fail to robustly forget target knowledge in the LLMs.
   abstract_embedding: [0.60546875, 0.53125, 0.00537109375]... (1536 items)
@@ -4705,7 +4660,7 @@ Document #234 (ID: 9d3bd766039f2ee064d006c1ef9c0eb7424546632992b35dc9d371c6ced50
   title_normalized: unlearning_or_obfuscating_jogging_the_memory_of_unlearned_llms_via_benign_relearning
 
 ================================================================================
-Document #235 (ID: a48946b7e180a349bb004360b0cb5fd4b34dc0934dd75debf72ba16cdb09bb5f)
+Document #233 (ID: a48946b7e180a349bb004360b0cb5fd4b34dc0934dd75debf72ba16cdb09bb5f)
 ================================================================================
   abstract: In-Context Learning (ICL) has significantly expanded the general-purpose nature of large language models, allowing them to adapt to novel tasks using merely the inputted context. This has motivated a series of papers that analyze tractable synthetic domains and postulate precise mechanisms that may underlie ICL. However, the use of relatively distinct setups that often lack a sequence modeling nature to them makes it unclear how general the reported insights from such studies are. Motivated by this, we propose a synthetic sequence modeling task that involves learning to simulate a finite mixture of Markov chains. As we show, models trained on this task reproduce most well-known results on ICL, hence offering a unified setting for studying the concept. Building on this setup, we demonstrate we can explain a model’s behavior by decomposing it into four broad algorithms that combine a fuzzy retrieval vs. inference approach with either unigram or bigram statistics of the context. These algorithms engage in a competitive dynamics to dominate model behavior, with the precise experimental conditions dictating which algorithm ends up superseding others: e.g., we find merely varying context size or amount of training yields (at times sharp) transitions between which algorithm dictates the model behavior, revealing a mechanism that explains the transient nature of ICL. In this sense, we argue ICL is best thought of as a mixture of different algorithms, each with its own peculiarities, instead of a monolithic capability. This also implies that making general claims about ICL that hold universally across all settings may be infeasible.
   abstract_embedding: [0.0306396484375, 0.498046875, 0.00074005126953125]... (1536 items)
@@ -4724,7 +4679,7 @@ Document #235 (ID: a48946b7e180a349bb004360b0cb5fd4b34dc0934dd75debf72ba16cdb09b
   title_normalized: competition_dynamics_shape_algorithmic_phases_of_incontext_learning
 
 ================================================================================
-Document #236 (ID: 70215d957a3dfe0084d06a17f29ad50685e634ba7a78a3e3f6b490d369512594)
+Document #234 (ID: 70215d957a3dfe0084d06a17f29ad50685e634ba7a78a3e3f6b490d369512594)
 ================================================================================
   abstract: Jailbreak attacks serve as essential red-teaming tools, proactively assessing whether LLMs can behave responsibly and safely in adversarial environments. Despite diverse strategies (e.g., cipher, low-resource language, persuasions, and so on) that have been proposed and shown success, these strategies are still manually designed, limiting their scope and effectiveness as a red-teaming tool. In this paper, we propose AutoDAN-Turbo, a black-box jailbreak method that can automatically discover as many jailbreak strategies as possible from scratch, without any human intervention or predefined scopes (e.g., specified candidate strategies), and use them for red-teaming. As a result, AutoDAN-Turbo can significantly outperform baseline methods, achieving a 74.3% higher average attack success rate on public benchmarks. Notably, AutoDAN-Turbo achieves an 88.5 attack success rate on GPT-4-1106-turbo. In addition, AutoDAN-Turbo is a unified framework that can incorporate existing human-designed jailbreak strategies in a plug-and-play manner. By integrating human-designed strategies, AutoDAN-Turbo can even achieve a higher attack success rate of 93.4 on GPT-4-1106-turbo.
   abstract_embedding: [0.28125, 0.23046875, 0.326171875]... (1536 items)
@@ -4743,7 +4698,7 @@ Document #236 (ID: 70215d957a3dfe0084d06a17f29ad50685e634ba7a78a3e3f6b490d369512
   title_normalized: autodanturbo_a_lifelong_agent_for_strategy_selfexploration_to_jailbreak_llms
 
 ================================================================================
-Document #237 (ID: 9fb5bcb7f6e697f675425e5c3bbdcd17955a8be4bc42b84a6811d9659160c188)
+Document #235 (ID: 9fb5bcb7f6e697f675425e5c3bbdcd17955a8be4bc42b84a6811d9659160c188)
 ================================================================================
   abstract: Diffusion models have achieved great success in generating high-dimensional samples across various applications. While the theoretical guarantees for continuous-state diffusion models have been extensively studied, the convergence analysis of the discrete-state counterparts remains under-explored. In this paper, we study the theoretical aspects of score-based discrete diffusion models under the Continuous Time Markov Chain (CTMC) framework. We introduce a discrete-time sampling algorithm in the general state space $[S]^d$ that utilizes score estimators at predefined time points. We derive convergence bounds for the Kullback-Leibler (KL) divergence and total variation (TV) distance between the generated sample distribution and the data distribution, considering both scenarios with and without early stopping under reasonable assumptions. Notably, our KL divergence bounds are nearly linear in the dimension $d$, aligning with state-of-the-art results for diffusion models. Our convergence analysis employs a Girsanov-based method and establishes key properties of the discrete score function, which are essential for characterizing the discrete-time sampling process.
   abstract_embedding: [0.5, 0.53515625, 0.25390625]... (1536 items)
@@ -4762,7 +4717,7 @@ Document #237 (ID: 9fb5bcb7f6e697f675425e5c3bbdcd17955a8be4bc42b84a6811d9659160c
   title_normalized: convergence_of_scorebased_discrete_diffusion_models_a_discretetime_analysis
 
 ================================================================================
-Document #238 (ID: 33a068eeef54d3ece7dd0024d6a5bb960c2454def5279a1057db90b16fe3774d)
+Document #236 (ID: 33a068eeef54d3ece7dd0024d6a5bb960c2454def5279a1057db90b16fe3774d)
 ================================================================================
   abstract: Researchers are investing substantial effort in developing powerful general-purpose agents, wherein Foundation Models are used as modules within agentic systems (e.g. Chain-of-Thought, Self-Reflection, Toolformer). However, the history of machine learning teaches us that hand-designed solutions are eventually replaced by learned solutions. We describe a newly forming research area, Automated Design of Agentic Systems (ADAS), which aims to automatically create powerful agentic system designs, including inventing novel building blocks and/or combining them in new ways. We further demonstrate that there is an unexplored yet promising approach within ADAS where agents can be defined in code and new agents can be automatically discovered by a meta agent programming ever better ones in code. Given that programming languages are Turing Complete, this approach theoretically enables the learning of any possible agentic system: including novel prompts, tool use, workflows, and combinations thereof. We present a simple yet effective algorithm named Meta Agent Search to demonstrate this idea, where a meta agent iteratively programs interesting new agents based on an ever-growing archive of previous discoveries. Through extensive experiments across multiple domains including coding, science, and math, we show that our algorithm can progressively invent agents with novel designs that greatly outperform state-of-the-art hand-designed agents. Importantly, we consistently observe the surprising result that agents invented by Meta Agent Search maintain superior performance even when transferred across domains and models, demonstrating their robustness and generality. Provided we develop it safely, our work illustrates the potential of an exciting new research direction toward automatically designing ever-more powerful agentic systems to benefit humanity.
   abstract_embedding: [0.703125, 0.294921875, 0.1923828125]... (1536 items)
@@ -4781,7 +4736,7 @@ Document #238 (ID: 33a068eeef54d3ece7dd0024d6a5bb960c2454def5279a1057db90b16fe37
   title_normalized: automated_design_of_agentic_systems
 
 ================================================================================
-Document #239 (ID: 849cfe1358d8f74caeaa7965fc20bab03a9e91df61514e925e7a4c702e180cec)
+Document #237 (ID: 849cfe1358d8f74caeaa7965fc20bab03a9e91df61514e925e7a4c702e180cec)
 ================================================================================
   abstract: Recently, the study of heavy-tailed noises in first-order nonconvex stochastic optimization has gotten a lot of attention since it was recognized as a more realistic condition as suggested by many empirical observations. Specifically, the stochastic noise (the difference between the stochastic and true gradient) is considered to have only a finite $\mathfrak{p}$-th moment where $\mathfrak{p}\in\left(1,2\right]$ instead of assuming it always satisfies the classical finite variance assumption. To deal with this more challenging setting, people have proposed different algorithms and proved them to converge at an optimal $\mathcal{O}(T^{\frac{1-\mathfrak{p}}{3\mathfrak{p}-2}})$ rate for smooth objectives after $T$ iterations. Notably, all these new-designed algorithms are based on the same technique – gradient clipping. Naturally, one may want to know whether the clipping method is a necessary ingredient and the only way to guarantee convergence under heavy-tailed noises. In this work, by revisiting the existing Batched Normalized Stochastic Gradient Descent with Momentum (Batched NSGDM) algorithm, we provide the first convergence result under heavy-tailed noises but without gradient clipping. Concretely, we prove that Batched NSGDM can achieve the optimal $\mathcal{O}(T^{\frac{1-\mathfrak{p}}{3\mathfrak{p}-2}})$ rate even under the relaxed smooth condition. More interestingly, we also establish the first $\mathcal{O}(T^{\frac{1-\mathfrak{p}}{2\mathfrak{p}}})$ convergence rate in the case where the tail index $\mathfrak{p}$ is unknown in advance, which is arguably the common scenario in practice.
   abstract_embedding: [0.302734375, 0.26171875, 0.203125]... (1536 items)
@@ -4800,7 +4755,7 @@ Document #239 (ID: 849cfe1358d8f74caeaa7965fc20bab03a9e91df61514e925e7a4c702e180
   title_normalized: nonconvex_stochastic_optimization_under_heavytailed_noises_optimal_convergence_without_gradient_clipping
 
 ================================================================================
-Document #240 (ID: 08879129b11496ae1aa5cd3ead1bdb3aa4d8b2063f249be4c39dc3452d3fa5ac)
+Document #238 (ID: 08879129b11496ae1aa5cd3ead1bdb3aa4d8b2063f249be4c39dc3452d3fa5ac)
 ================================================================================
   abstract: The Mixture of Experts (MoE) architecture has emerged as a promising solution to reduce computational overhead by selectively activating subsets of model parameters.
 The effectiveness of MoE models depends primarily on their routing mechanisms, with the widely adopted Top-K routing scheme used for activating experts.
@@ -4835,7 +4790,7 @@ Code and models are available at https://github.com/stiger1000/TC-MoE.
   title_normalized: tcmoe_augmenting_mixture_of_experts_with_ternary_expert_choice
 
 ================================================================================
-Document #241 (ID: 5d9dc8e050a6d9a0fb4028f0b5702e7862ccbcbf7c8d8beda0da40736966c199)
+Document #239 (ID: 5d9dc8e050a6d9a0fb4028f0b5702e7862ccbcbf7c8d8beda0da40736966c199)
 ================================================================================
   abstract: We consider the problem of model multiplicity in downstream decision-making, a setting where two predictive models of equivalent accuracy cannot agree on what action to take for a downstream decision-making problem. Prior work attempts to address model multiplicity by resolving prediction disagreement between models. However, we show that even when the two predictive models approximately agree on their individual predictions almost everywhere, these models can lead the downstream decision-maker to take actions with substantially higher losses. We address this issue by proposing a framework that calibrates the predictive models with respect to both a finite set of downstream decision-making problems and the individual probability prediction. Specifically, leveraging tools from multi-calibration, we provide an algorithm that, at each time-step, first reconciles the differences in individual probability prediction, then calibrates the updated models such that they are indistinguishable from the true probability distribution to the decision-makers. We extend our results to the setting where one does not have direct access to the true probability distribution and instead relies on a set of i.i.d data to be the empirical distribution. Furthermore, we generalize our results to the settings where one has more than two predictive models and an infinitely large downstream action set. Finally, we provide a set of experiments to evaluate our methods empirically. Compared to existing work, our proposed algorithm creates a pair of predictive models with improved downstream decision-making losses and agrees on their best-response actions almost everywhere.
   abstract_embedding: [0.6171875, -0.01055908203125, 0.345703125]... (1536 items)
@@ -4854,7 +4809,7 @@ Document #241 (ID: 5d9dc8e050a6d9a0fb4028f0b5702e7862ccbcbf7c8d8beda0da40736966c
   title_normalized: reconciling_model_multiplicity_for_downstream_decision_making
 
 ================================================================================
-Document #242 (ID: faba204626cab2cabc2b7d8d4cd40335cd90a57ab47ca4bb0f8e3a54973bd800)
+Document #240 (ID: faba204626cab2cabc2b7d8d4cd40335cd90a57ab47ca4bb0f8e3a54973bd800)
 ================================================================================
   abstract: Connectionist Temporal Classification (CTC) is a widely used method for automatic speech recognition (ASR), renowned for its simplicity and computational efficiency. However, it often falls short in recognition performance.  In this work, we propose the Consistency-Regularized CTC (CR-CTC), which enforces consistency between two CTC distributions obtained from different augmented views of the input speech mel-spectrogram. We provide in-depth insights into its essential behaviors from three perspectives: 1) it conducts self-distillation between random pairs of sub-models that process different augmented views; 2) it learns contextual representation through masked prediction for positions within time-masked regions, especially when we increase the amount of time masking; 3) it suppresses the extremely peaky CTC distributions, thereby reducing overfitting and improving the generalization ability. Extensive experiments on LibriSpeech, Aishell-1, and GigaSpeech datasets demonstrate the effectiveness of our CR-CTC. It significantly improves the CTC performance, achieving state-of-the-art results comparable to those attained by transducer or systems combining CTC and attention-based encoder-decoder (CTC/AED). We release our code at \url{https://github.com/k2-fsa/icefall}.
   abstract_embedding: [0.263671875, 0.423828125, 0.57421875]... (1536 items)
@@ -4873,7 +4828,7 @@ Document #242 (ID: faba204626cab2cabc2b7d8d4cd40335cd90a57ab47ca4bb0f8e3a54973bd
   title_normalized: crctc_consistency_regularization_on_ctc_for_improved_speech_recognition
 
 ================================================================================
-Document #243 (ID: d0cdcac281c874ff746b53d21961326c0d8d756f8ef457f1741fc7481002712f)
+Document #241 (ID: d0cdcac281c874ff746b53d21961326c0d8d756f8ef457f1741fc7481002712f)
 ================================================================================
   abstract: Crowd counting and localization involve extracting the number and distribution of crowds from images or videos using computer vision techniques. Most counting methods are based on density regression and are based on an ``intersection'' hypothesis, *i.e.*, one pixel is influenced by multiple points in the ground truth, which is inconsistent with reality since one pixel would not contain two objects. This paper proposes Proximal Mapping Loss (PML), a density regression method that eliminates this hypothesis. {PML} divides the predicted density map into multiple point-neighbor cases through the nearest neighbor, and then dynamically constructs a learning target for each sub-case via proximal mapping, leading to more robust and accurate training. {Furthermore}, PML is theoretically linked to various existing loss functions, such as Gaussian-blurred L2 loss, Bayesian loss, and the training schemes in P2PNet and DMC, demonstrating its versatility and adaptability. Experimentally, PML significantly improves the performance of crowd counting and localization, and illustrates the robustness against annotation noise. The code is available at [https://github.com/Elin24/pml](https://github.com/Elin24/pml).
   abstract_embedding: [-0.326171875, 0.2578125, 0.35546875]... (1536 items)
@@ -4892,7 +4847,7 @@ Document #243 (ID: d0cdcac281c874ff746b53d21961326c0d8d756f8ef457f1741fc74810027
   title_normalized: proximal_mapping_loss_understanding_loss_functions_in_crowd_counting__localization
 
 ================================================================================
-Document #244 (ID: 9056dd11cc645883aec30a0aff23089e65128ceef0ee7e444428b0382c0dd27b)
+Document #242 (ID: 9056dd11cc645883aec30a0aff23089e65128ceef0ee7e444428b0382c0dd27b)
 ================================================================================
   abstract: Scene image editing is crucial for entertainment, photography, and advertising design. Existing methods solely focus on either 2D individual object or 3D global scene editing. This results in a lack of a unified approach to effectively control and manipulate scenes at the 3D level with different levels of granularity. In this work, we propose 3DitScene, a novel and unified scene editing framework leveraging language-guided disentangled Gaussian Splatting that enables seamless editing from 2D to 3D, allowing precise control over scene composition and individual objects. We first incorporate 3D Gaussians that are refined through generative priors and optimization techniques. Language features from CLIP then introduce semantics into 3D geometry for object disentanglement. With the disentangled Gaussians, 3DitScene allows for manipulation at both the global and individual levels, revolutionizing creative expression and empowering control over scenes and objects. Experimental results demonstrate the effectiveness and versatility of 3DitScene in scene image editing.
   abstract_embedding: [0.431640625, 0.1396484375, -0.138671875]... (1536 items)
@@ -4911,7 +4866,7 @@ Document #244 (ID: 9056dd11cc645883aec30a0aff23089e65128ceef0ee7e444428b0382c0dd
   title_normalized: 3ditscene_editing_any_scene_via_languageguided_disentangled_gaussian_splatting
 
 ================================================================================
-Document #245 (ID: 04c31696fbe23627d0b4c5974167123ddbfba639e31ade31db0f558a3ed1a660)
+Document #243 (ID: 04c31696fbe23627d0b4c5974167123ddbfba639e31ade31db0f558a3ed1a660)
 ================================================================================
   abstract: Risk-sensitive reinforcement learning (RL) with an entropic risk measure typically requires knowledge of the transition kernel or performs unstable updates w.r.t. exponential Bellman equations. As a consequence, algorithms that optimize this objective have been restricted to tabular or low-dimensional continuous environments. In this work we leverage the connection between the entropic risk measure and the RL-as-inference framework to develop a risk-sensitive variational actor-critic algorithm (rsVAC). Our work extends the variational framework to incorporate stochastic rewards and proposes a variational model-based actor-critic approach that modulates policy risk via a risk parameter.  We consider, both, the risk-seeking and risk-averse regimes and present rsVAC learning variants for each setting.  Our experiments demonstrate that this approach produces risk-sensitive policies and yields improvements in both tabular and risk-aware variants of complex continuous control tasks in MuJoCo.
   abstract_embedding: [0.6875, 0.10595703125, 0.0216064453125]... (1536 items)
@@ -4930,7 +4885,7 @@ Document #245 (ID: 04c31696fbe23627d0b4c5974167123ddbfba639e31ade31db0f558a3ed1a
   title_normalized: risksensitive_variational_actorcritic_a_modelbased_approach
 
 ================================================================================
-Document #246 (ID: eb0ac11e6eef3a31bb88de72c72d2c7ae65088005415fc1021be5054514f7978)
+Document #244 (ID: eb0ac11e6eef3a31bb88de72c72d2c7ae65088005415fc1021be5054514f7978)
 ================================================================================
   abstract: We present Agent S, an open agentic framework that enables autonomous interaction with computers through Graphical User Interface (GUI), aimed at transforming human-computer interaction by automating complex, multi-step tasks. Agent S addresses three key challenges in automating computer tasks: acquiring domain-specific knowledge, planning over long task horizons, and handling dynamic, non-uniform interfaces. To this end, Agent S introduces experience-augmented hierarchical planning, which learns from external knowledge search and internal experience retrieval at multiple levels, facilitating efficient task planning and subtask execution. 
 In addition, it employs an Agent-Computer Interface (ACI) to better elicit the reasoning and control capabilities of GUI agents based on Multimodal Large Language Models (MLLMs). Evaluation on the OSWorld benchmark shows that Agent S outperforms the baseline by 9.37\% on success rate (an 83.6\% relative improvement) and achieves a new state-of-the-art. Comprehensive analysis highlights the effectiveness of individual components and provides insights for future improvements. Furthermore, Agent S demonstrates broad generalizability to different operating systems on a newly-released WindowsAgentArena benchmark. Code available at https://github.com/simular-ai/Agent-S.
@@ -4950,7 +4905,7 @@ In addition, it employs an Agent-Computer Interface (ACI) to better elicit the r
   title_normalized: agent_s_an_open_agentic_framework_that_uses_computers_like_a_human
 
 ================================================================================
-Document #247 (ID: 3a97bce64f18d626377c08bd36cc5e562b8b182b16550455703fe0828ccd11d5)
+Document #245 (ID: 3a97bce64f18d626377c08bd36cc5e562b8b182b16550455703fe0828ccd11d5)
 ================================================================================
   abstract: Large language models (LLMs) can solve an increasing number of complex reasoning tasks while making surprising mistakes in basic numerical understanding and processing (such as $9.11 > 9.9$). The latter ability is essential for tackling complex arithmetic and mathematical problems and serves as a foundation for most reasoning tasks, but previous work paid little attention to it or only discussed several restricted tasks (like integer addition). In this paper, we comprehensively investigate the numerical understanding and processing ability (NUPA) of LLMs. Firstly, we introduce a benchmark covering four common numerical representations and 17 distinct numerical tasks in four major categories, resulting in 41 meaningful combinations in total. These tasks are derived from primary and secondary education curricula, encompassing nearly all everyday numerical understanding and processing scenarios, and the rules of these tasks are very simple and clear.
 Through the benchmark, we find that current LLMs fail frequently in many of the tasks. To study the problem, we train small models with existing and potential techniques for enhancing NUPA (such as tokenizers, PEs, and number formats), comprehensively evaluating their effectiveness using our testbed. We also finetune practical-scale LLMs on our proposed NUPA tasks and find that 1) naive finetuning can improve NUPA a lot on many but not all tasks, and 2) surprisingly, techniques designed to enhance NUPA prove ineffective for finetuning pretrained models. We further explore the impact of chain-of-thought techniques on NUPA. Our work provides a more detailed and comprehensive understanding of NUPA in LLMs.
@@ -4970,7 +4925,7 @@ Through the benchmark, we find that current LLMs fail frequently in many of the 
   title_normalized: number_cookbook_number_understanding_of_language_models_and_how_to_improve_it
 
 ================================================================================
-Document #248 (ID: 6e1a346b65ab8cb0a3d4ec3f365b68fc65e10eba7f5973422b5bd18afa24dc3c)
+Document #246 (ID: 6e1a346b65ab8cb0a3d4ec3f365b68fc65e10eba7f5973422b5bd18afa24dc3c)
 ================================================================================
   abstract: Self-supervised learning has the potential of lifting several of the key challenges in reinforcement learning today, such as exploration, representation learning, and reward design. Recent work (METRA) has effectively argued that moving away from mutual information and instead optimizing a certain Wasserstein distance is important for good performance. In this paper, we argue that the benefits seen in that paper can largely be explained within the existing framework of mutual information skill learning (MISL).
 Our analysis suggests a new MISL method (contrastive successor features) that retains the excellent performance of METRA with fewer moving parts, and highlights connections between skill learning, contrastive representation learning, and successor features. Finally, through careful ablation studies, we provide further insight into some of the key ingredients for both our method and METRA.
@@ -4990,7 +4945,7 @@ Our analysis suggests a new MISL method (contrastive successor features) that re
   title_normalized: can_a_misl_fly_analysis_and_ingredients_for_mutual_information_skill_learning
 
 ================================================================================
-Document #249 (ID: 20926a9034bf267aa8d8b22c23136c60872cb01ab741642fdb08a4d59eabb8e4)
+Document #247 (ID: 20926a9034bf267aa8d8b22c23136c60872cb01ab741642fdb08a4d59eabb8e4)
 ================================================================================
   abstract: The development of large language models (LLMs) has significantly advanced the emergence of large multimodal models (LMMs). While LMMs have achieved tremendous success by promoting the synergy between multimodal comprehension and creation, they often face challenges when confronted with out-of-distribution data, such as which can hardly distinguish orientation, quantity, color, structure, etc. This is primarily due to their reliance on image encoders trained to encode images into task-relevant features, which may lead them to disregard irrelevant details. Delving into the modeling capabilities of diffusion models for images naturally prompts the question: Can diffusion models serve as the eyes of large language models for image perception? In this paper, we propose DEEM, a simple but effective approach that utilizes the generative feedback of diffusion models to align the semantic distributions of the image encoder. This addresses the drawbacks of previous methods that solely relied on image encoders like CLIP-ViT, thereby enhancing the model's resilience against out-of-distribution samples and reducing visual hallucinations. Importantly, this is achieved without requiring additional training modules and with fewer training parameters. We extensively evaluated DEEM on both our newly constructed RobustVQA benchmark and other well-known benchmarks, POPE and MMVP, for visual hallucination and perception. In particular, DEEM improves LMM's  visual perception performance to a large extent (e.g., 4\% ↑ on RobustVQA, 6.5\% ↑ on MMVP and 12.8 \% ↑ on POPE ). Compared to the state-of-the-art interleaved content generation models, DEEM  exhibits enhanced robustness and a superior capacity to alleviate model hallucinations while utilizing fewer trainable parameters, less pre-training data (10\%), and a smaller base model size. Extensive experiments demonstrate that DEEM enhances the performance of LMMs on various downstream tasks without inferior performance in the long term, including visual question answering, image captioning, and text-conditioned image synthesis.
   abstract_embedding: [0.177734375, 0.34765625, 0.224609375]... (1536 items)
@@ -5009,7 +4964,7 @@ Document #249 (ID: 20926a9034bf267aa8d8b22c23136c60872cb01ab741642fdb08a4d59eabb
   title_normalized: deem_diffusion_models_serve_as_the_eyes_of_large_language_models_for_image_perception
 
 ================================================================================
-Document #250 (ID: d239472f0f285517cbd032a1993a6aa9190ee13d1c3a204ab75ff104926970b8)
+Document #248 (ID: d239472f0f285517cbd032a1993a6aa9190ee13d1c3a204ab75ff104926970b8)
 ================================================================================
   abstract: Self-supervision has the potential to transform reinforcement learning (RL), paralleling the breakthroughs it has enabled in other areas of machine learning. While self-supervised learning in other domains aims to find patterns in a fixed dataset, self-supervised goal-conditioned reinforcement learning (GCRL) agents discover *new* behaviors by learning from the goals achieved during unstructured interaction with the environment. However, these methods have failed to see similar success, both due to a lack of data from slow environment simulations as well as a lack of stable algorithms. We take a step toward addressing both of these issues by releasing a high-performance codebase and benchmark (`JaxGCRL`) for self-supervised GCRL, enabling researchers to train agents for millions of environment steps in minutes on a single GPU. By utilizing GPU-accelerated replay buffers, environments, and a stable contrastive RL algorithm, we reduce training time by up to $22\times$. Additionally, we assess key design choices in contrastive RL, identifying those that most effectively stabilize and enhance training performance. With this approach, we provide a foundation for future research in self-supervised GCRL, enabling researchers to quickly iterate on new ideas and evaluate them in diverse and challenging environments. Code: [https://anonymous.4open.science/r/JaxGCRL-2316/README.md](https://anonymous.4open.science/r/JaxGCRL-2316/README.md)
   abstract_embedding: [0.67578125, 0.32421875, 0.033203125]... (1536 items)
@@ -5028,7 +4983,7 @@ Document #250 (ID: d239472f0f285517cbd032a1993a6aa9190ee13d1c3a204ab75ff10492697
   title_normalized: accelerating_goalconditioned_reinforcement_learning_algorithms_and_research
 
 ================================================================================
-Document #251 (ID: c9b7ebf4475e926cdc717bd909962817f56a40af1b79f51d9d578d0030a2ab74)
+Document #249 (ID: c9b7ebf4475e926cdc717bd909962817f56a40af1b79f51d9d578d0030a2ab74)
 ================================================================================
   abstract: Electrocardiogram (ECG) is essential for the clinical diagnosis of arrhythmias and other heart diseases, but deep learning methods based on ECG often face limitations due to the need for high-quality annotations. Although previous ECG self-supervised learning (eSSL) methods have made significant progress in representation learning from unannotated ECG data, they typically treat ECG signals as ordinary time-series data, segmenting the signals using fixed-size and fixed-step time windows, which often ignore the form and rhythm characteristics and latent semantic relationships in ECG signals. In this work, we introduce a novel perspective on ECG signals, treating heartbeats as words and rhythms as sentences. Based on this perspective, we first designed the QRS-Tokenizer, which generates semantically meaningful ECG sentences from the raw ECG signals. Building on these, we then propose HeartLang, a novel self-supervised learning framework for ECG language processing, learning general representations at form and rhythm levels. Additionally, we construct the largest heartbeat-based ECG vocabulary to date, which will further advance the development of ECG language processing. We evaluated HeartLang across six public ECG datasets, where it demonstrated robust competitiveness against other eSSL methods. Our data and code are publicly available at https://github.com/PKUDigitalHealth/HeartLang.
   abstract_embedding: [-0.058349609375, 0.455078125, 0.380859375]... (1536 items)
@@ -5047,7 +5002,7 @@ Document #251 (ID: c9b7ebf4475e926cdc717bd909962817f56a40af1b79f51d9d578d0030a2a
   title_normalized: reading_your_heart_learning_ecg_words_and_sentences_via_pretraining_ecg_language_model
 
 ================================================================================
-Document #252 (ID: e16ed180dcd0abc3b05ffe6a85f2bf8446f73baa071fa0074f4763ee57e2b8b4)
+Document #250 (ID: e16ed180dcd0abc3b05ffe6a85f2bf8446f73baa071fa0074f4763ee57e2b8b4)
 ================================================================================
   abstract: Group Equivariant Convolution (GConv) empowers models to explore underlying symmetry in data, improving performance. However, real-world scenarios often deviate from ideal symmetric systems caused by physical permutation, characterized by non-trivial actions of a symmetry group, resulting in asymmetries that affect the outputs, a phenomenon known as Symmetry Breaking. Traditional GConv-based methods are constrained by rigid operational rules within group space, assuming data remains strictly symmetry after limited group transformations. This limitation makes it difficult to adapt to Symmetry-Breaking and non-rigid transformations. Motivated by this, we mainly focus on a common scenario: Rotational Symmetry-Breaking. By relaxing strict group transformations within Strict Rotation-Equivariant group $\mathbf{C}_n$, we redefine a Relaxed Rotation-Equivariant group $\mathbf{R}_n$ and introduce a novel Relaxed Rotation-Equivariant GConv (R2GConv) with only a minimal increase of $4n$ parameters compared to GConv. Based on R2GConv, we propose a Relaxed Rotation-Equivariant Network (R2Net) as the backbone and develop a Relaxed Rotation-Equivariant Object Detector (R2Det) for 2D object detection. Experimental results demonstrate the effectiveness of the proposed R2GConv in natural image classification, and R2Det achieves excellent performance in 2D object detection with improved generalization capabilities and robustness. The code is available in \texttt{https://github.com/wuer5/r2det}.
   abstract_embedding: [0.1103515625, 0.259765625, 0.59375]... (1536 items)
@@ -5066,7 +5021,7 @@ Document #252 (ID: e16ed180dcd0abc3b05ffe6a85f2bf8446f73baa071fa0074f4763ee57e2b
   title_normalized: r2det_exploring_relaxed_rotation_equivariance_in_2d_object_detection
 
 ================================================================================
-Document #253 (ID: fe90438ae33f85896b470fe53d724023fcb80be8204913d891f333023dd57a75)
+Document #251 (ID: fe90438ae33f85896b470fe53d724023fcb80be8204913d891f333023dd57a75)
 ================================================================================
   abstract: Knowledge editing techniques have emerged as essential tools for updating the factual knowledge of large language models (LLMs) and multimodal models (LMMs), allowing them to correct outdated or inaccurate information without retraining from scratch. However, existing benchmarks for multimodal knowledge editing primarily focus on entity-level knowledge represented as simple triplets, which fail to capture the complexity of real-world multimodal information. To address this issue, we introduce MMKE-Bench, a comprehensive **M**ulti**M**odal **K**nowledge **E**diting Benchmark, designed to evaluate the ability of LMMs to edit diverse visual knowledge in real-world scenarios. MMKE-Bench addresses these limitations by incorporating three types of editing tasks: visual entity editing, visual semantic editing, and user-specific editing.  Besides, MMKE-Bench uses free-form natural language to represent and edit knowledge, offering a more flexible and effective format. The benchmark consists of 2,940 pieces of knowledge and 8,363 images across 33 broad categories, with evaluation questions automatically generated and human-verified. We assess five state-of-the-art knowledge editing methods on three prominent LMMs, revealing that no method excels across all criteria, and that visual and user-specific edits are particularly challenging. MMKE-Bench sets a new standard for evaluating the robustness of multimodal knowledge editing techniques, driving progress in this rapidly evolving field.
   abstract_embedding: [0.294921875, 0.423828125, -0.115234375]... (1536 items)
@@ -5085,7 +5040,7 @@ Document #253 (ID: fe90438ae33f85896b470fe53d724023fcb80be8204913d891f333023dd57
   title_normalized: mmkebench_a_multimodal_editing_benchmark_for_diverse_visual_knowledge
 
 ================================================================================
-Document #254 (ID: b98fc11ed8848de435f1f30de5682849404eb9d7f1d6c2ae27d44a2ca1c6cd3e)
+Document #252 (ID: b98fc11ed8848de435f1f30de5682849404eb9d7f1d6c2ae27d44a2ca1c6cd3e)
 ================================================================================
   abstract: Spiking Neural Networks (SNNs) offer a promising, biologically inspired approach for processing spatiotemporal data, particularly for time series forecasting.
 However, conventional neuron models like the Leaky Integrate-and-Fire (LIF) struggle to capture long-term dependencies and effectively process multi-scale temporal dynamics.
@@ -5111,7 +5066,7 @@ TS-LIF advances the application of SNNs in time-series forecasting, providing a 
   title_normalized: tslif_a_temporal_segment_spiking_neuron_network_for_time_series_forecasting
 
 ================================================================================
-Document #255 (ID: c7342e1645ea92604c07a1ddcae59ae46eb24f0d410e55bef01a13c45f008a8f)
+Document #253 (ID: c7342e1645ea92604c07a1ddcae59ae46eb24f0d410e55bef01a13c45f008a8f)
 ================================================================================
   abstract: Consistency distillation is a prevalent way for accelerating diffusion models adopted in consistency (trajectory) models, in which a student model is trained to traverse backward on the probability flow (PF) ordinary differential equation (ODE) trajectory determined by the teacher model. Preconditioning is a vital technique for stabilizing consistency distillation, by linear combining the input data and the network output with pre-defined coefficients as the consistency function. It imposes the boundary condition of consistency functions without restricting the form and expressiveness of the neural network. However, previous preconditionings are hand-crafted and may be suboptimal choices. In this work, we offer the first theoretical insights into the preconditioning in consistency distillation, by elucidating its design criteria and the connection to the teacher ODE trajectory. Based on these analyses, we further propose a principled way dubbed \textit{Analytic-Precond} to analytically optimize the preconditioning according to the consistency gap (defined as the gap between the teacher denoiser and the optimal student denoiser) on a generalized teacher ODE. We demonstrate that Analytic-Precond can facilitate the learning of trajectory jumpers, enhance the alignment of the student trajectory with the teacher's, and achieve $2\times$ to $3\times$ training acceleration of consistency trajectory models in multi-step generation across various datasets.
   abstract_embedding: [0.48828125, 0.40234375, 0.271484375]... (1536 items)
@@ -5130,7 +5085,7 @@ Document #255 (ID: c7342e1645ea92604c07a1ddcae59ae46eb24f0d410e55bef01a13c45f008
   title_normalized: elucidating_the_preconditioning_in_consistency_distillation
 
 ================================================================================
-Document #256 (ID: a35bfec65838ae3743adafe322e412cf2a4924c4607335d5f366b17cd0fc0474)
+Document #254 (ID: a35bfec65838ae3743adafe322e412cf2a4924c4607335d5f366b17cd0fc0474)
 ================================================================================
   abstract: Recent advancements in Large Vision-Language Models (LVLMs) have significantly expanded their utility in tasks like image captioning and visual question answering. However, they still struggle with object hallucination, where models generate descriptions that inaccurately reflect the visual content by including nonexistent objects or misrepresenting existing ones. While previous methods, such as data augmentation and training-free approaches, strive to tackle this issue, they still encounter scalability challenges and often depend on additional external modules. In this work, we propose Ensemble Decoding (ED), a novel strategy that splits the input image into sub-images and combines logit distributions by assigning weights through the attention map. Furthermore, we introduce ED adaptive plausibility constraint to calibrate logit distribution and FastED, a variant designed for speed-critical applications. Extensive experiments across hallucination benchmarks demonstrate that our proposed method achieves state-of-the-art performance, validating the effectiveness of our approach.
   abstract_embedding: [0.212890625, 0.08935546875, 0.390625]... (1536 items)
@@ -5149,7 +5104,7 @@ Document #256 (ID: a35bfec65838ae3743adafe322e412cf2a4924c4607335d5f366b17cd0fc0
   title_normalized: do_you_keep_an_eye_on_what_i_ask_mitigating_multimodal_hallucination_via_attentionguided_ensemble_decoding
 
 ================================================================================
-Document #257 (ID: dba8b0cd6a14472da629f0baf38ee01ba799396d3de5e2f1e21c73598ff0a812)
+Document #255 (ID: dba8b0cd6a14472da629f0baf38ee01ba799396d3de5e2f1e21c73598ff0a812)
 ================================================================================
   abstract: Leveraging billions of years of evolution, scientists have trained protein language models (pLMs) to understand the sequence and structure space of proteins aiding in the design of more functional proteins. Although they have shown ability to improve efficiency in engineering, it remains unclear under what conditions they will succeed or fail. We aim to predict the circumstances in which pLMs can successfully perform zero-shot fitness estimation. Our work demonstrates the trends observed over hundreds of deep mutational scans across multiple different fitness objectives. We find that the likelihood, or abstractly, implicit preference of a certain protein sequence imbued during pretraining is predictive fitness prediction capabilities. Both over-preferred and under-preferred wild type sequences harm performance. Generating a causal link between training data and likelihood, we show a power law tail over what data increases protein likelihood which is tied to training sequence homology. Lastly, proteins of low likelihood can be remedied by unsupervised finetuning. In sum, the zero-shot fitness estimation abilities of pLMs can be predicted by the likelihood of the engineered sequence, thus suggesting when pLMs should be deployed in protein maturation campaigns and a way to improve their performance under circumstances of low likelihood.
   abstract_embedding: [0.012939453125, 0.66796875, 0.007293701171875]... (1536 items)
@@ -5168,7 +5123,7 @@ Document #257 (ID: dba8b0cd6a14472da629f0baf38ee01ba799396d3de5e2f1e21c73598ff0a
   title_normalized: protein_language_model_fitness_is_a_matter_of_preference
 
 ================================================================================
-Document #258 (ID: 194862b5d3ee40be75c75f1b40c6ae3e3cb8cdcc506ed47b992cf5d1a3eafc10)
+Document #256 (ID: 194862b5d3ee40be75c75f1b40c6ae3e3cb8cdcc506ed47b992cf5d1a3eafc10)
 ================================================================================
   abstract: Sampling algorithms play an important role in controlling the quality and runtime of diffusion model inference. In recent years, a number of works (Chen et al., 2023c;b; Benton et al., 2023; Lee et al., 2022) have analyzed algorithms for diffusion sampling with provable guarantees; these works show that for essentially any data distribution, one can approximately sample in polynomial time given a sufficiently accurate estimate of its score functions at different noise levels. 
 
@@ -5191,7 +5146,7 @@ As a byproduct of our methods, for the well-studied problem of log-concave sampl
   title_normalized: faster_diffusion_sampling_with_randomized_midpoints_sequential_and_parallel
 
 ================================================================================
-Document #259 (ID: 0467e96b12355cb2e37583a2cc44fad2675e0a24fa70561bf5d9a57bb80bd823)
+Document #257 (ID: 0467e96b12355cb2e37583a2cc44fad2675e0a24fa70561bf5d9a57bb80bd823)
 ================================================================================
   abstract: Diffusion and flow-matching models achieve remarkable generative performance but at the cost of many neural function evaluations (NFE), which slows inference and limits applicability to time-critical tasks. The ReFlow procedure can accelerate sampling by straightening generation trajectories. But it is an iterative procedure, typically requiring training on simulated data, and results in reduced sample quality. To mitigate sample deterioration, we examine the design space of ReFlow and highlight potential pitfalls in prior heuristic practices. We then propose seven improvements for training dynamics, learning and inference, which are verified with thorough ablation studies on CIFAR10 $32 \times 32$, AFHQv2 $64 \times 64$, and FFHQ $64 \times 64$. Combining all our techniques, we achieve state-of-the-art FID scores (without / with guidance, resp.) for fast generation via neural ODEs: $2.23$ / $1.98$ on CIFAR10, $2.30$ / $1.91$ on AFHQv2, $2.84$ / $2.67$ on FFHQ, and $3.49$ / $1.74$ on ImageNet-64, all with merely $9$ NFEs.
   abstract_embedding: [0.45703125, 0.1337890625, 0.2431640625]... (1536 items)
@@ -5210,7 +5165,7 @@ Document #259 (ID: 0467e96b12355cb2e37583a2cc44fad2675e0a24fa70561bf5d9a57bb80bd
   title_normalized: simple_reflow_improved_techniques_for_fast_flow_models
 
 ================================================================================
-Document #260 (ID: 386384e642b8f1b88cda829e53ae148804a9436663998729c84bb53106e1091e)
+Document #258 (ID: 386384e642b8f1b88cda829e53ae148804a9436663998729c84bb53106e1091e)
 ================================================================================
   abstract: In the field of equivariant networks, achieving affine equivariance, particularly for general group representations, has long been a challenge.
 In this paper, we propose the steerable EquivarLayer, a generalization of InvarLayer (Li et al., 2024), by building on the concept of equivariants beyond invariants.
@@ -5233,108 +5188,7 @@ We conduct experiments on image classification tasks involving group transformat
   title_normalized: affine_steerable_equivariant_layer_for_canonicalization_of_neural_networks
 
 ================================================================================
-Document #261 (ID: b5d31df8cb3e2fb4cfebf2ff70ee2f15df924e7371db8e7a81002fa0e9214ca8)
-================================================================================
-  abstract: Feedback data is widely used for fine-tuning and evaluating state-of-the-art AI models. Pairwise text preferences, where human or AI annotators select the “better” of two options, are particularly common. Such preferences are used to train (reward) models or to rank models with aggregate statistics. For many applications it is desirable to understand annotator preferences in addition to modelling them  – not least because extensive prior work has shown various unintended biases in preference datasets. Yet, preference datasets remain challenging to interpret. Neither black-box reward models nor statistics can answer why one text is preferred over another. Manual interpretation of the numerous (long) response pairs is usually equally infeasible. In this paper, we introduce the Inverse Constitutional AI (ICAI) problem, formulating the interpretation of pairwise text preference data as a compression task. In constitutional AI, a set of principles (a constitution) is used to provide feedback and fine-tune AI models. ICAI inverts this process: given a feedback dataset, we aim to extract a constitution that best enables a large language model (LLM) to reconstruct the original annotations. We propose a corresponding ICAI algorithm and validate its generated constitutions quantitatively based on annotation reconstruction accuracy on several datasets: (a) synthetic feedback data with known principles; (b) AlpacaEval cross-annotated human feedback data; (c) crowdsourced Chatbot Arena data; and (d) PRISM data from diverse demographic groups. As an example application, we further demonstrate the detection of biases in human feedback data. As a short and interpretable representation of the original dataset, generated constitutions have many potential use cases: they may help identify undesirable annotator biases, better understand model performance, scale feedback to unseen data, or assist with adapting AI models to individual user or group preferences. We release the source code for our algorithm and experiments at https://github.com/rdnfn/icai.
-  abstract_embedding: [-0.01092529296875, 0.330078125, -0.11669921875]... (1536 items)
-  authors: ['Arduin Findeis', 'Timo Kaufmann', 'Eyke Hüllermeier']... (5 items)
-  date: 2024-10-04
-  decision: accept
-  executed_on_trn: False
-  executed_on_trn_updated_at: 2025-12-04T00:41:43.703870
-  ingested_at: 1764804597481
-  novelty: yes
-  reason: Relevance: The paper proposes a novel method called Inverse Constitutional AI (ICAI) that aims to extract a set of principles (a constitution) from pairwise text preference data, which can be used to ...
-  relevance: yes
-  s3_bucket: llm-research-papers
-  s3_key: Inverse_Constitutional_AI__Compressing_Preferences_into_Principles.pdf
-  sha_abstract: 25a816fd95f6c5a39f7fabdbec1f2aa6234d2f164a4bb794c354c6baf254d857
-  slack_thread_ts: 1764808437.158339
-  title: Inverse Constitutional AI: Compressing Preferences into Principles
-  title_normalized: inverse_constitutional_ai_compressing_preferences_into_principles
-
-================================================================================
-Document #262 (ID: 4778d0ada460a0d8b43c999e139be079a99a1839e6d241f645dd4680c1b95294)
-================================================================================
-  abstract: This paper proposes the Degradation Classification Pre-Training (DCPT), which enables models to learn how to classify the degradation type of input images for universal image restoration pre-training. Unlike the existing self-supervised pre-training methods, DCPT utilizes the degradation type of the input image as an extremely weak supervision, which can be effortlessly obtained, even intrinsic in all image restoration datasets. DCPT comprises two primary stages. Initially, image features are extracted from the encoder. Subsequently, a lightweight decoder, such as ResNet18, is leveraged to classify the degradation type of the input image solely based on the features extracted in the first stage, without utilizing the input image. The encoder is pre-trained with a straightforward yet potent DCPT, which is used to address universal image restoration and achieve outstanding performance. Following DCPT, both convolutional neural networks (CNNs) and transformers demonstrate performance improvements, with gains of up to 2.55 dB in the 10D all-in-one restoration task and 6.53 dB in the mixed degradation scenarios. Moreover, previous self-supervised pretraining methods, such as masked image modeling, discard the decoder after pre-training, while our DCPT utilizes the pre-trained parameters more effectively. This superiority arises from the degradation classifier acquired during DCPT, which facilitates transfer learning between models of identical architecture trained on diverse degradation types. Source code and models are available at \url{https://github.com/MILab-PKU/dcpt}.
-  abstract_embedding: [-0.07373046875, 0.0306396484375, -0.08349609375]... (1536 items)
-  authors: ['JiaKui Hu', 'Lujia Jin', 'Zhengjian Yao']... (4 items)
-  date: 2024-10-04
-  decision: accept
-  executed_on_trn: False
-  ingested_at: 1764804612877
-  novelty: yes
-  reason: Relevance: The paper proposes a novel pre-training method called Degradation Classification Pre-Training (DCPT) that can improve the performance of both CNN and transformer-based image restoration mod...
-  relevance: yes
-  s3_bucket: llm-research-papers
-  s3_key: Universal_Image_Restoration_Pre-training_via_Degradation_Classification.pdf
-  sha_abstract: 0ffa4f4e1c77c9dfa3cd11b517bf448061d610b00c411635b5103a0d6b234c86
-  slack_thread_ts: 1764808991.755929
-  title: Universal Image Restoration Pre-training via Degradation Classification
-  title_normalized: universal_image_restoration_pretraining_via_degradation_classification
-
-================================================================================
-Document #263 (ID: 399c1dd966a90db61f03df2ed685707c89bbbb8d820e1b36535b80fcec9c00d0)
-================================================================================
-  abstract: Measuring biodiversity is crucial for understanding ecosystem health. While prior works have developed machine learning models for taxonomic classification of photographic images and DNA separately, in this work, we introduce a multi-modal approach combining both, using CLIP-style contrastive learning to align images, barcode DNA, and text-based representations of taxonomic labels in a unified embedding space. This allows for accurate classification of both known and unknown insect species without task-specific fine-tuning, leveraging contrastive learning for the first time to fuse DNA and image data. Our method surpasses previous single-modality approaches in accuracy by over 8% on zero-shot learning tasks, showcasing its effectiveness in biodiversity studies.
-  abstract_embedding: [0.34765625, 0.546875, 0.01068115234375]... (1536 items)
-  authors: ['ZeMing Gong', 'Austin Wang', 'Xiaoliang Huo']... (7 items)
-  date: 2024-10-04
-  decision: accept
-  executed_on_trn: False
-  ingested_at: 1764804619871
-  novelty: yes
-  reason: Relevance: The paper proposes a novel multi-modal approach that combines image and DNA data for accurate biodiversity classification, which is relevant for AWS Trainium in 2025. | Novelty: The paper i...
-  relevance: yes
-  s3_bucket: llm-research-papers
-  s3_key: CLIBD__Bridging_Vision_and_Genomics_for_Biodiversity_Monitoring_at_Scale.pdf
-  sha_abstract: 827b9146e8be83e507ae171c4cd2e2da35db0e9c5385cb44164356e60965ea52
-  slack_thread_ts: 1764809023.734919
-  title: CLIBD: Bridging Vision and Genomics for Biodiversity Monitoring at Scale
-  title_normalized: clibd_bridging_vision_and_genomics_for_biodiversity_monitoring_at_scale
-
-================================================================================
-Document #264 (ID: 0b496f4b0c8e8524c53a8b41d77d26550b019d5be9dc1f3adee4621c6816afd5)
-================================================================================
-  abstract: The video-conditioned policy takes prompt videos of the desired tasks as a condition and is regarded for its prospective generalizability. Despite its promise, training a video-conditioned policy is non-trivial due to the need for abundant demonstrations. In some tasks, the expert rollouts are merely available as videos, and costly and time-consuming efforts are required to annotate action labels. To address this, we explore training video-conditioned policy on a mixture of demonstrations and unlabeled expert videos to reduce reliance on extensive manual annotation. We introduce the Joint Embedding Predictive Transformer (JEPT) to learn a video-conditioned policy through sequence modeling. JEPT is designed to jointly learn visual transition prediction and inverse dynamics. The visual transition is captured from both demonstrations and expert videos, on the basis of which the inverse dynamics learned from demonstrations is generalizable to the tasks without action labels. Experiments on a series of simulated visual control tasks evaluate that JEPT can effectively leverage the mixture dataset to learn a generalizable policy. JEPT outperforms baselines in the tasks without action-labeled data and unseen tasks. We also experimentally reveal the potential of JEPT as a simple visual priors injection approach to enhance the video-conditioned policy.
-  abstract_embedding: [0.2392578125, 0.3515625, 0.4609375]... (1536 items)
-  authors: ['Hao Luo', 'Zongqing Lu']
-  date: 2024-10-04
-  decision: accept
-  executed_on_trn: False
-  ingested_at: 1764804615443
-  novelty: yes
-  reason: Relevance: The paper proposes a novel Joint Embedding Predictive Transformer (JEPT) model that can learn a video-conditioned policy from a mixture of demonstrations and unlabeled expert videos, which ...
-  relevance: yes
-  s3_bucket: llm-research-papers
-  s3_key: Learning_Video-Conditioned_Policy_on_Unlabelled_Data_with_Joint_Embedding_Predictive_Transformer.pdf
-  sha_abstract: f1b0ca9e6d8f866b78a820e5cc52d865bbd83b95adbb7e31604e28eed89ac8a3
-  slack_thread_ts: 1764809058.783759
-  title: Learning Video-Conditioned Policy on Unlabelled Data with Joint Embedding Predictive Transformer
-  title_normalized: learning_videoconditioned_policy_on_unlabelled_data_with_joint_embedding_predictive_transformer
-
-================================================================================
-Document #265 (ID: 5c4065371aa218edd77b5ec7f5379f447c916e5e11ba09d1c49e5fb86a53d968)
-================================================================================
-  abstract: Many works have developed no-regret algorithms for contextual bandits with function approximation, where the mean rewards over context-action pairs belong to a function class $\mathcal{F}$. Although there are many approaches to this problem, algorithms based on the principle of optimism, such as optimistic least squares have gained in importance. It can be shown the regret of this algorithm scales as $\widetilde{\mathcal{O}}\left(\sqrt{d_{\mathrm{eluder}}(\mathcal{F}) \log(\mathcal{F}) T }\right)$ where $d_{\mathrm{eluder}}(\mathcal{F})$ is a statistical measure of the complexity of the function class $\mathcal{F}$ known as eluder dimension.  Unfortunately, even if the variance of the measurement noise of the rewards at time $t$ equals $\sigma_t^2$ and these are close to zero, the optimistic least squares algorithm’s regret scales with $\sqrt{T}$. In this work we are the first to develop algorithms that satisfy regret bounds for contextual bandits with function approximation of the form $\widetilde{\mathcal{O}}\left( \sigma \sqrt{\log(\mathcal{F})d_{\mathrm{eluder}}(\mathcal{F}) T } + d_{\mathrm{eluder}}(\mathcal{F}) \cdot \log(|\mathcal{F}|)\right) $ when the variances are unknown and satisfy $\sigma_t^2 = \sigma$ for all $t$ and $\widetilde{\mathcal{O}}\left( d_{\mathrm{eluder}}(\mathcal{F})\sqrt{\log(\mathcal{F})\sum_{t=1}^T \sigma_t^2  } + d_{\mathrm{eluder}}(\mathcal{F}) \cdot \log(|\mathcal{F}|)\right) $  when the variances change every time-step. These bounds generalize existing techniques for deriving second order bounds in contextual linear problems.
-  abstract_embedding: [0.06689453125, 0.33203125, 0.349609375]... (1536 items)
-  authors: ['Aldo Pacchiano']
-  date: 2024-10-04
-  decision: accept
-  executed_on_trn: False
-  ingested_at: 1764804610485
-  novelty: yes
-  reason: Relevance: The paper proposes new algorithms and regret bounds for contextual bandits with function approximation, which is a relevant problem for ML research and applications. | Novelty: The paper pr...
-  relevance: yes
-  s3_bucket: llm-research-papers
-  s3_key: Second_Order_Bounds_for_Contextual_Bandits_with_Function_Approximation.pdf
-  sha_abstract: c7c09ffa87238bf57b8f9d3eeb7283b305dcb7ea8abcf4172f93baf48ba83c41
-  slack_thread_ts: 1764809131.308209
-  title: Second Order Bounds for Contextual Bandits with Function Approximation
-  title_normalized: second_order_bounds_for_contextual_bandits_with_function_approximation
-
-================================================================================
-Document #266 (ID: af6f244a9c6b4f35fe3e93966051c07639ff37bbb9222231dc0170a9fc93e1d7)
+Document #259 (ID: af6f244a9c6b4f35fe3e93966051c07639ff37bbb9222231dc0170a9fc93e1d7)
 ================================================================================
   abstract: Momentum based optimizers are central to a wide range of machine learning applications. These typically rely on an Exponential Moving Average (EMA) of gradients, which decays exponentially the present contribution of older gradients. This accounts for gradients being local linear approximations which lose their relevance as the iterate moves along the loss landscape. This work questions the use of a single EMA to accumulate past gradients and empirically demonstrates how this choice can be sub-optimal: a single EMA cannot simultaneously give a high weight to the immediate past, and a non-negligible weight to older gradients. Building on this observation, we propose AdEMAMix, a simple modification of the Adam optimizer with a mixture of two EMAs to better take advantage of past gradients. Our experiments on language modeling and image classification show---quite surprisingly---that gradients can stay relevant for tens of thousands of steps. They help to converge faster, and often to lower minima: e.g., a $1.3$B parameter AdEMAMix LLM trained on $101$B tokens performs comparably to an AdamW model trained on $197$B tokens ($+95\%$). Moreover, our method significantly slows-down model forgetting during training. Our work motivates further exploration of different types of functions to leverage past gradients, beyond EMAs.
   abstract_embedding: [1.1015625, 0.16796875, 0.134765625]... (1536 items)
@@ -5342,10 +5196,10 @@ Document #266 (ID: af6f244a9c6b4f35fe3e93966051c07639ff37bbb9222231dc0170a9fc93e
   date: 2024-10-04
   decision: accept
   executed_on_trn: False
-  execution_completed_at: 2025-12-04T00:46:31.366693
+  execution_completed_at: 2025-12-04T01:42:24.489294
   execution_return_code: 1
   execution_success: False
-  execution_time_seconds: 280.44
+  execution_time_seconds: 307.79
   ingested_at: 1764804605225
   novelty: yes
   reason: Relevance: The paper proposes a novel optimizer, AdEMAMix, which uses a mixture of two exponential moving averages to better leverage past gradients, leading to faster convergence and better performan...
@@ -5354,37 +5208,12 @@ Document #266 (ID: af6f244a9c6b4f35fe3e93966051c07639ff37bbb9222231dc0170a9fc93e
   s3_bucket: llm-research-papers
   s3_key: The_AdEMAMix_Optimizer__Better__Faster__Older.pdf
   sha_abstract: 721eabf7ce68db7817d060b77be44e0509751c9f60cee971170ebcba5bcda532
-  slack_thread_ts: 1764808437.266569
+  slack_thread_ts: 1764811633.806549
   title: The AdEMAMix Optimizer: Better, Faster, Older
   title_normalized: the_ademamix_optimizer_better_faster_older
 
 ================================================================================
-Document #267 (ID: ba215ce230aa4c3f527a3fe70050ef4267c4beb5a26fd3236e320144e5271a13)
-================================================================================
-  abstract: Consistency models (CMs) offer faster sampling than traditional diffusion models, but their training is resource-intensive. For example, as of 2024, training a state-of-the-art CM on CIFAR-10 takes one week on 8 GPUs. In this work, we propose an effective scheme for training CMs that largely improves the efficiency of building such models. Specifically, by expressing CM trajectories via a particular differential equation, we argue that diffusion models can be viewed as a special case of CMs. We can thus fine-tune a consistency model starting from a pretrained diffusion model and progressively approximate the full consistency condition to stronger degrees over the training process. Our resulting method, which we term Easy Consistency Tuning (ECT), achieves vastly reduced training times while improving upon the quality of previous methods: for example, ECT achieves a 2-step FID of 2.73 on CIFAR10 within 1 hour on a single A100 GPU, matching Consistency Distillation trained for hundreds of GPU hours. Owing to this computational efficiency, we investigate the scaling laws of CMs under ECT, showing that they obey the classic power law scaling, hinting at their ability to improve efficiency and performance at larger scales. Our [code](https://github.com/locuslab/ect) is available.
-  abstract_embedding: [0.466796875, 0.484375, 0.51171875]... (1536 items)
-  authors: ['Zhengyang Geng', 'Ashwini Pokle', 'Weijian Luo']... (5 items)
-  date: 2024-10-04
-  decision: accept
-  executed_on_trn: False
-  execution_completed_at: 2025-12-04T00:46:31.431285
-  execution_return_code: 1
-  execution_success: False
-  execution_time_seconds: 293.75
-  ingested_at: 1764804607566
-  novelty: yes
-  reason: Relevance: The paper proposes a new training algorithm for consistency models, which are a type of innovative diffusion model architecture. The method aims to improve the efficiency of training these ...
-  relevance: yes
-  results_s3_location: s3://trainium-execution-results/results/ba215ce230aa4c3f527a3fe70050ef4267c4beb5a26fd3236e320144e5271a13/execution_result.json
-  s3_bucket: llm-research-papers
-  s3_key: Consistency_Models_Made_Easy.pdf
-  sha_abstract: b978c9f23f73106902eda090ff5d0c4fcbb5debeed4bbbaee7fb1f176ae5fdef
-  slack_thread_ts: 1764808437.419329
-  title: Consistency Models Made Easy
-  title_normalized: consistency_models_made_easy
-
-================================================================================
-Document #268 (ID: a9695efa2156e730300d18a2cd4e51d4e30fd37c565c8a62a3c7353c00d6dd2a)
+Document #260 (ID: a9695efa2156e730300d18a2cd4e51d4e30fd37c565c8a62a3c7353c00d6dd2a)
 ================================================================================
   abstract: Machine unlearning is a critical area of research aimed at safeguarding data privacy by enabling the removal of sensitive information from machine learning models. One unique challenge in this field is catastrophic unlearning, where erasing specific data from a well-trained model unintentionally removes essential knowledge, causing the model to deviate significantly from a retrained one. To address this, we introduce a novel approach that regularizes the unlearning process by utilizing synthesized mixup samples, which simulate the data susceptible to catastrophic effects. At the core of our approach is a generator-unlearner framework, MixUnlearn, where a generator adversarially produces challenging mixup examples, and the unlearner effectively forgets target information based on these synthesized data. Specifically, we first introduce a novel contrastive objective to train the generator in an adversarial direction: generating examples that prompt the unlearner to reveal information that should be forgotten, while losing essential knowledge. Then the unlearner, guided by two other contrastive loss terms, processes the synthesized and real data jointly to ensure accurate unlearning without losing critical knowledge, overcoming catastrophic effects. Extensive evaluations across benchmark datasets demonstrate that our method significantly outperforms state-of-the-art approaches, offering a robust solution to machine unlearning. This work not only deepens understanding of unlearning mechanisms but also lays the foundation for effective machine unlearning with mixup augmentation.
   abstract_embedding: [0.59375, 0.435546875, -0.00180816650390625]... (1536 items)
@@ -5392,10 +5221,10 @@ Document #268 (ID: a9695efa2156e730300d18a2cd4e51d4e30fd37c565c8a62a3c7353c00d6d
   date: 2024-10-04
   decision: accept
   executed_on_trn: False
-  execution_completed_at: 2025-12-04T00:46:46.317782
+  execution_completed_at: 2025-12-04T00:49:17.201501
   execution_return_code: 1
   execution_success: False
-  execution_time_seconds: 14.64
+  execution_time_seconds: 16.09
   ingested_at: 1764804617456
   novelty: yes
   reason: Relevance: The paper proposes a novel adversarial mixup unlearning framework that aims to address the challenge of catastrophic unlearning in machine learning models. | Novelty: The proposed MixUnlear...
@@ -5404,6 +5233,207 @@ Document #268 (ID: a9695efa2156e730300d18a2cd4e51d4e30fd37c565c8a62a3c7353c00d6d
   s3_bucket: llm-research-papers
   s3_key: Adversarial_Mixup_Unlearning.pdf
   sha_abstract: 1b3a949996b7e8156fd9fa98bf390418e538058900fa63c891cfafd66ce49ab7
-  slack_thread_ts: 1764808990.197139
+  slack_thread_ts: 1764815200.851949
   title: Adversarial Mixup Unlearning
   title_normalized: adversarial_mixup_unlearning
+
+================================================================================
+Document #261 (ID: 5c4065371aa218edd77b5ec7f5379f447c916e5e11ba09d1c49e5fb86a53d968)
+================================================================================
+  abstract: Many works have developed no-regret algorithms for contextual bandits with function approximation, where the mean rewards over context-action pairs belong to a function class $\mathcal{F}$. Although there are many approaches to this problem, algorithms based on the principle of optimism, such as optimistic least squares have gained in importance. It can be shown the regret of this algorithm scales as $\widetilde{\mathcal{O}}\left(\sqrt{d_{\mathrm{eluder}}(\mathcal{F}) \log(\mathcal{F}) T }\right)$ where $d_{\mathrm{eluder}}(\mathcal{F})$ is a statistical measure of the complexity of the function class $\mathcal{F}$ known as eluder dimension.  Unfortunately, even if the variance of the measurement noise of the rewards at time $t$ equals $\sigma_t^2$ and these are close to zero, the optimistic least squares algorithm’s regret scales with $\sqrt{T}$. In this work we are the first to develop algorithms that satisfy regret bounds for contextual bandits with function approximation of the form $\widetilde{\mathcal{O}}\left( \sigma \sqrt{\log(\mathcal{F})d_{\mathrm{eluder}}(\mathcal{F}) T } + d_{\mathrm{eluder}}(\mathcal{F}) \cdot \log(|\mathcal{F}|)\right) $ when the variances are unknown and satisfy $\sigma_t^2 = \sigma$ for all $t$ and $\widetilde{\mathcal{O}}\left( d_{\mathrm{eluder}}(\mathcal{F})\sqrt{\log(\mathcal{F})\sum_{t=1}^T \sigma_t^2  } + d_{\mathrm{eluder}}(\mathcal{F}) \cdot \log(|\mathcal{F}|)\right) $  when the variances change every time-step. These bounds generalize existing techniques for deriving second order bounds in contextual linear problems.
+  abstract_embedding: [0.06689453125, 0.33203125, 0.349609375]... (1536 items)
+  authors: ['Aldo Pacchiano']
+  date: 2024-10-04
+  decision: accept
+  executed_on_trn: False
+  execution_completed_at: 2025-12-04T02:26:42.518914
+  execution_return_code: 1
+  execution_success: False
+  execution_time_seconds: 0.03
+  ingested_at: 1764804610485
+  novelty: yes
+  reason: Relevance: The paper proposes new algorithms and regret bounds for contextual bandits with function approximation, which is a relevant problem for ML research and applications. | Novelty: The paper pr...
+  relevance: yes
+  results_s3_location: s3://trainium-execution-results/results/5c4065371aa218edd77b5ec7f5379f447c916e5e11ba09d1c49e5fb86a53d968/execution_result.json
+  s3_bucket: llm-research-papers
+  s3_key: Second_Order_Bounds_for_Contextual_Bandits_with_Function_Approximation.pdf
+  sha_abstract: c7c09ffa87238bf57b8f9d3eeb7283b305dcb7ea8abcf4172f93baf48ba83c41
+  slack_thread_ts: 1764815824.107959
+  title: Second Order Bounds for Contextual Bandits with Function Approximation
+  title_normalized: second_order_bounds_for_contextual_bandits_with_function_approximation
+
+================================================================================
+Document #262 (ID: 0b496f4b0c8e8524c53a8b41d77d26550b019d5be9dc1f3adee4621c6816afd5)
+================================================================================
+  abstract: The video-conditioned policy takes prompt videos of the desired tasks as a condition and is regarded for its prospective generalizability. Despite its promise, training a video-conditioned policy is non-trivial due to the need for abundant demonstrations. In some tasks, the expert rollouts are merely available as videos, and costly and time-consuming efforts are required to annotate action labels. To address this, we explore training video-conditioned policy on a mixture of demonstrations and unlabeled expert videos to reduce reliance on extensive manual annotation. We introduce the Joint Embedding Predictive Transformer (JEPT) to learn a video-conditioned policy through sequence modeling. JEPT is designed to jointly learn visual transition prediction and inverse dynamics. The visual transition is captured from both demonstrations and expert videos, on the basis of which the inverse dynamics learned from demonstrations is generalizable to the tasks without action labels. Experiments on a series of simulated visual control tasks evaluate that JEPT can effectively leverage the mixture dataset to learn a generalizable policy. JEPT outperforms baselines in the tasks without action-labeled data and unseen tasks. We also experimentally reveal the potential of JEPT as a simple visual priors injection approach to enhance the video-conditioned policy.
+  abstract_embedding: [0.2392578125, 0.3515625, 0.4609375]... (1536 items)
+  authors: ['Hao Luo', 'Zongqing Lu']
+  date: 2024-10-04
+  decision: accept
+  executed_on_trn: False
+  execution_completed_at: 2025-12-04T02:42:16.285563
+  execution_return_code: 1
+  execution_success: False
+  execution_time_seconds: 306.83
+  ingested_at: 1764804615443
+  novelty: yes
+  reason: Relevance: The paper proposes a novel Joint Embedding Predictive Transformer (JEPT) model that can learn a video-conditioned policy from a mixture of demonstrations and unlabeled expert videos, which ...
+  relevance: yes
+  results_s3_location: s3://trainium-execution-results/results/0b496f4b0c8e8524c53a8b41d77d26550b019d5be9dc1f3adee4621c6816afd5/execution_result.json
+  s3_bucket: llm-research-papers
+  s3_key: Learning_Video-Conditioned_Policy_on_Unlabelled_Data_with_Joint_Embedding_Predictive_Transformer.pdf
+  sha_abstract: f1b0ca9e6d8f866b78a820e5cc52d865bbd83b95adbb7e31604e28eed89ac8a3
+  slack_thread_ts: 1764815234.031849
+  title: Learning Video-Conditioned Policy on Unlabelled Data with Joint Embedding Predictive Transformer
+  title_normalized: learning_videoconditioned_policy_on_unlabelled_data_with_joint_embedding_predictive_transformer
+
+================================================================================
+Document #263 (ID: 4778d0ada460a0d8b43c999e139be079a99a1839e6d241f645dd4680c1b95294)
+================================================================================
+  abstract: This paper proposes the Degradation Classification Pre-Training (DCPT), which enables models to learn how to classify the degradation type of input images for universal image restoration pre-training. Unlike the existing self-supervised pre-training methods, DCPT utilizes the degradation type of the input image as an extremely weak supervision, which can be effortlessly obtained, even intrinsic in all image restoration datasets. DCPT comprises two primary stages. Initially, image features are extracted from the encoder. Subsequently, a lightweight decoder, such as ResNet18, is leveraged to classify the degradation type of the input image solely based on the features extracted in the first stage, without utilizing the input image. The encoder is pre-trained with a straightforward yet potent DCPT, which is used to address universal image restoration and achieve outstanding performance. Following DCPT, both convolutional neural networks (CNNs) and transformers demonstrate performance improvements, with gains of up to 2.55 dB in the 10D all-in-one restoration task and 6.53 dB in the mixed degradation scenarios. Moreover, previous self-supervised pretraining methods, such as masked image modeling, discard the decoder after pre-training, while our DCPT utilizes the pre-trained parameters more effectively. This superiority arises from the degradation classifier acquired during DCPT, which facilitates transfer learning between models of identical architecture trained on diverse degradation types. Source code and models are available at \url{https://github.com/MILab-PKU/dcpt}.
+  abstract_embedding: [-0.07373046875, 0.0306396484375, -0.08349609375]... (1536 items)
+  authors: ['JiaKui Hu', 'Lujia Jin', 'Zhengjian Yao']... (4 items)
+  date: 2024-10-04
+  decision: accept
+  executed_on_trn: False
+  execution_completed_at: 2025-12-04T02:42:24.377456
+  execution_return_code: 1
+  execution_success: False
+  execution_time_seconds: 11.0
+  ingested_at: 1764804612877
+  novelty: yes
+  reason: Relevance: The paper proposes a novel pre-training method called Degradation Classification Pre-Training (DCPT) that can improve the performance of both CNN and transformer-based image restoration mod...
+  relevance: yes
+  results_s3_location: s3://trainium-execution-results/results/4778d0ada460a0d8b43c999e139be079a99a1839e6d241f645dd4680c1b95294/execution_result.json
+  s3_bucket: llm-research-papers
+  s3_key: Universal_Image_Restoration_Pre-training_via_Degradation_Classification.pdf
+  sha_abstract: 0ffa4f4e1c77c9dfa3cd11b517bf448061d610b00c411635b5103a0d6b234c86
+  slack_thread_ts: 1764815668.053559
+  title: Universal Image Restoration Pre-training via Degradation Classification
+  title_normalized: universal_image_restoration_pretraining_via_degradation_classification
+
+================================================================================
+Document #264 (ID: ba215ce230aa4c3f527a3fe70050ef4267c4beb5a26fd3236e320144e5271a13)
+================================================================================
+  abstract: Consistency models (CMs) offer faster sampling than traditional diffusion models, but their training is resource-intensive. For example, as of 2024, training a state-of-the-art CM on CIFAR-10 takes one week on 8 GPUs. In this work, we propose an effective scheme for training CMs that largely improves the efficiency of building such models. Specifically, by expressing CM trajectories via a particular differential equation, we argue that diffusion models can be viewed as a special case of CMs. We can thus fine-tune a consistency model starting from a pretrained diffusion model and progressively approximate the full consistency condition to stronger degrees over the training process. Our resulting method, which we term Easy Consistency Tuning (ECT), achieves vastly reduced training times while improving upon the quality of previous methods: for example, ECT achieves a 2-step FID of 2.73 on CIFAR10 within 1 hour on a single A100 GPU, matching Consistency Distillation trained for hundreds of GPU hours. Owing to this computational efficiency, we investigate the scaling laws of CMs under ECT, showing that they obey the classic power law scaling, hinting at their ability to improve efficiency and performance at larger scales. Our [code](https://github.com/locuslab/ect) is available.
+  abstract_embedding: [0.466796875, 0.484375, 0.51171875]... (1536 items)
+  authors: ['Zhengyang Geng', 'Ashwini Pokle', 'Weijian Luo']... (5 items)
+  date: 2024-10-04
+  decision: accept
+  executed_on_trn: False
+  execution_completed_at: 2025-12-04T02:43:09.121387
+  execution_return_code: 1
+  execution_success: False
+  execution_time_seconds: 307.95
+  ingested_at: 1764804607566
+  novelty: yes
+  reason: Relevance: The paper proposes a new training algorithm for consistency models, which are a type of innovative diffusion model architecture. The method aims to improve the efficiency of training these ...
+  relevance: yes
+  results_s3_location: s3://trainium-execution-results/results/ba215ce230aa4c3f527a3fe70050ef4267c4beb5a26fd3236e320144e5271a13/execution_result.json
+  s3_bucket: llm-research-papers
+  s3_key: Consistency_Models_Made_Easy.pdf
+  sha_abstract: b978c9f23f73106902eda090ff5d0c4fcbb5debeed4bbbaee7fb1f176ae5fdef
+  slack_thread_ts: 1764811884.920999
+  title: Consistency Models Made Easy
+  title_normalized: consistency_models_made_easy
+
+================================================================================
+Document #265 (ID: 399c1dd966a90db61f03df2ed685707c89bbbb8d820e1b36535b80fcec9c00d0)
+================================================================================
+  abstract: Measuring biodiversity is crucial for understanding ecosystem health. While prior works have developed machine learning models for taxonomic classification of photographic images and DNA separately, in this work, we introduce a multi-modal approach combining both, using CLIP-style contrastive learning to align images, barcode DNA, and text-based representations of taxonomic labels in a unified embedding space. This allows for accurate classification of both known and unknown insect species without task-specific fine-tuning, leveraging contrastive learning for the first time to fuse DNA and image data. Our method surpasses previous single-modality approaches in accuracy by over 8% on zero-shot learning tasks, showcasing its effectiveness in biodiversity studies.
+  abstract_embedding: [0.34765625, 0.546875, 0.01068115234375]... (1536 items)
+  authors: ['ZeMing Gong', 'Austin Wang', 'Xiaoliang Huo']... (7 items)
+  date: 2024-10-04
+  decision: accept
+  executed_on_trn: False
+  execution_completed_at: 2025-12-04T02:39:50.433666
+  execution_return_code: 1
+  execution_success: False
+  execution_time_seconds: 13.58
+  ingested_at: 1764804619871
+  novelty: yes
+  reason: Relevance: The paper proposes a novel multi-modal approach that combines image and DNA data for accurate biodiversity classification, which is relevant for AWS Trainium in 2025. | Novelty: The paper i...
+  relevance: yes
+  results_s3_location: s3://trainium-execution-results/results/399c1dd966a90db61f03df2ed685707c89bbbb8d820e1b36535b80fcec9c00d0/execution_result.json
+  s3_bucket: llm-research-papers
+  s3_key: CLIBD__Bridging_Vision_and_Genomics_for_Biodiversity_Monitoring_at_Scale.pdf
+  sha_abstract: 827b9146e8be83e507ae171c4cd2e2da35db0e9c5385cb44164356e60965ea52
+  slack_thread_ts: 1764815461.049269
+  title: CLIBD: Bridging Vision and Genomics for Biodiversity Monitoring at Scale
+  title_normalized: clibd_bridging_vision_and_genomics_for_biodiversity_monitoring_at_scale
+
+================================================================================
+Document #266 (ID: f94d0e8e9546a1353ebe419f923e877bf8560585ade728fe2fadbfd1e9d9c226)
+================================================================================
+  abstract: Modern language models have demonstrated remarkable reasoning capabilities by using chain-of-thought (CoT). One hypothesis about the inner workings of CoT is that it breaks down originally complex tasks into smaller subtasks that are more amenable to learning. We formalize this notion by showing possibility and impossibility results of learning from in-context demonstrations with and without CoT. In particular, with CoT, we examine a family of learning algorithms that learn a task step-by-step, capable of composing simpler functions from individual reasoning steps to form an overall complex function. This process reduces the difficulty of learning a task to that of the hardest reasoning step in the chain. Moreover, we prove Transformers can express this algorithm and thus they can efficiently in-context learn arbitrary tasks as long as these tasks can be decomposed into a finite number of subtasks, each of which are efficiently learnable. In contrast, without CoT, we demonstrate that there exist tasks that are inherently unlearnable by the same algorithm. Overall, our results suggest several provably effective ways for decomposing target problems to instantiate CoT. Empirically, we demonstrate our proposed CoT construction significantly enhances the reasoning capabilities of real-world LLMs in solving challenging arithmetic reasoning tasks, including learning polynomials and Boolean formulas.
+  abstract_embedding: [0.5703125, -0.150390625, 0.224609375]... (1536 items)
+  authors: ['Chenxiao Yang', 'Zhiyuan Li', 'David Wipf']
+  date: 2024-10-04
+  decision: accept
+  executed_on_trn: False
+  execution_completed_at: 2025-12-04T06:14:53.012718
+  execution_return_code: 1
+  execution_success: False
+  execution_time_seconds: 6.77
+  ingested_at: 1764804601917
+  novelty: yes
+  reason: Relevance: The paper proposes a novel chain-of-thought (CoT) training algorithm that can learn complex tasks by decomposing them into simpler subtasks, which is highly relevant for building efficient ...
+  relevance: yes
+  results_s3_location: s3://trainium-execution-results/results/f94d0e8e9546a1353ebe419f923e877bf8560585ade728fe2fadbfd1e9d9c226/execution_result.json
+  s3_bucket: llm-research-papers
+  s3_key: Chain-of-Thought_Provably_Enables_Learning_the__Otherwise__Unlearnable.pdf
+  sha_abstract: bfd8f4faa8a534eac651d564ba4e8c06e23f674cc628d719487541d41f4e6e89
+  slack_thread_ts: 1764885823.526059
+  title: Chain-of-Thought Provably Enables Learning the (Otherwise) Unlearnable
+  title_normalized: chainofthought_provably_enables_learning_the_otherwise_unlearnable
+
+================================================================================
+Document #267 (ID: caaba49566752a61df60a45aa08436e22606e817d9c98f5fe368890d2e5d1bcf)
+================================================================================
+  abstract: Text-conditioned human motion generation, which allows for user interaction through natural language, has become increasingly popular. Existing methods typically generate short, isolated motions based on a single input sentence. However, human motions are continuous and can extend over long periods, carrying rich semantics. Creating long, complex motions that precisely respond to streams of text descriptions, particularly in an online and real-time setting, remains a significant challenge. Furthermore, incorporating spatial constraints into text-conditioned motion generation presents additional challenges, as it requires aligning the motion semantics specified by text descriptions with geometric information, such as goal locations and 3D scene geometry. To address these limitations, we propose **DartC**ontrol, in short **DART**, a **D**iffusion-based **A**utoregressive motion primitive model for **R**eal-time **T**ext-driven motion **C**ontrol. Our model, DART, effectively learns a compact motion primitive space jointly conditioned on motion history and text inputs using latent diffusion models. By autoregressively generating motion primitives based on the preceding history and current text input, DART enables real-time, sequential motion generation driven by natural language descriptions. Additionally,  the learned motion primitive space allows for precise spatial motion control, which we formulate either as a latent noise optimization problem or as a Markov decision process addressed through reinforcement learning. We present effective algorithms for both approaches, demonstrating our model’s versatility and superior performance in various motion synthesis tasks. Experiments show our method outperforms existing baselines in motion realism, efficiency, and controllability. Video results and code are available at https://zkf1997.github.io/DART/.
+  abstract_embedding: [0.3203125, 0.41015625, 0.279296875]... (1536 items)
+  authors: ['Kaifeng Zhao', 'Gen Li', 'Siyu Tang']
+  date: 2024-10-04
+  decision: accept
+  executed_on_trn: False
+  execution_completed_at: 2025-12-04T22:08:14.945886
+  execution_return_code: 1
+  execution_success: False
+  execution_time_seconds: 6.92
+  ingested_at: 1764804599597
+  novelty: yes
+  reason: Relevance: The paper proposes a novel diffusion-based autoregressive motion model for real-time text-driven motion control, which is an innovative new model architecture. | Novelty: The proposed DART ...
+  relevance: yes
+  results_s3_location: s3://trainium-execution-results/results/caaba49566752a61df60a45aa08436e22606e817d9c98f5fe368890d2e5d1bcf/execution_result.json
+  s3_bucket: llm-research-papers
+  s3_key: DartControl__A_Diffusion-Based_Autoregressive_Motion_Model_for_Real-Time_Text-Driven_Motion_Control.pdf
+  sha_abstract: c5cff511537f9ff25f26e8617c6df3710ba8fe868246632636d9a345b69d63be
+  slack_thread_ts: 1764885823.495749
+  title: DartControl: A Diffusion-Based Autoregressive Motion Model for Real-Time Text-Driven Motion Control
+  title_normalized: dartcontrol_a_diffusionbased_autoregressive_motion_model_for_realtime_textdriven_motion_control
+
+================================================================================
+Document #268 (ID: b5d31df8cb3e2fb4cfebf2ff70ee2f15df924e7371db8e7a81002fa0e9214ca8)
+================================================================================
+  abstract: Feedback data is widely used for fine-tuning and evaluating state-of-the-art AI models. Pairwise text preferences, where human or AI annotators select the “better” of two options, are particularly common. Such preferences are used to train (reward) models or to rank models with aggregate statistics. For many applications it is desirable to understand annotator preferences in addition to modelling them  – not least because extensive prior work has shown various unintended biases in preference datasets. Yet, preference datasets remain challenging to interpret. Neither black-box reward models nor statistics can answer why one text is preferred over another. Manual interpretation of the numerous (long) response pairs is usually equally infeasible. In this paper, we introduce the Inverse Constitutional AI (ICAI) problem, formulating the interpretation of pairwise text preference data as a compression task. In constitutional AI, a set of principles (a constitution) is used to provide feedback and fine-tune AI models. ICAI inverts this process: given a feedback dataset, we aim to extract a constitution that best enables a large language model (LLM) to reconstruct the original annotations. We propose a corresponding ICAI algorithm and validate its generated constitutions quantitatively based on annotation reconstruction accuracy on several datasets: (a) synthetic feedback data with known principles; (b) AlpacaEval cross-annotated human feedback data; (c) crowdsourced Chatbot Arena data; and (d) PRISM data from diverse demographic groups. As an example application, we further demonstrate the detection of biases in human feedback data. As a short and interpretable representation of the original dataset, generated constitutions have many potential use cases: they may help identify undesirable annotator biases, better understand model performance, scale feedback to unseen data, or assist with adapting AI models to individual user or group preferences. We release the source code for our algorithm and experiments at https://github.com/rdnfn/icai.
+  abstract_embedding: [-0.01092529296875, 0.330078125, -0.11669921875]... (1536 items)
+  authors: ['Arduin Findeis', 'Timo Kaufmann', 'Eyke Hüllermeier']... (5 items)
+  date: 2024-10-04
+  decision: accept
+  executed_on_trn: True
+  executed_on_trn_updated_at: 2025-12-04T01:09:11.245725
+  execution_completed_at: 2025-12-04T22:33:19.557633
+  execution_return_code: 1
+  execution_success: False
+  execution_time_seconds: 13.03
+  ingested_at: 1764804597481
+  novelty: yes
+  reason: Relevance: The paper proposes a novel method called Inverse Constitutional AI (ICAI) that aims to extract a set of principles (a constitution) from pairwise text preference data, which can be used to ...
+  relevance: yes
+  results_s3_location: s3://trainium-execution-results/results/b5d31df8cb3e2fb4cfebf2ff70ee2f15df924e7371db8e7a81002fa0e9214ca8/execution_result.json
+  s3_bucket: llm-research-papers
+  s3_key: Inverse_Constitutional_AI__Compressing_Preferences_into_Principles.pdf
+  sha_abstract: 25a816fd95f6c5a39f7fabdbec1f2aa6234d2f164a4bb794c354c6baf254d857
+  slack_thread_ts: 1764887186.197149
+  title: Inverse Constitutional AI: Compressing Preferences into Principles
+  title_normalized: inverse_constitutional_ai_compressing_preferences_into_principles

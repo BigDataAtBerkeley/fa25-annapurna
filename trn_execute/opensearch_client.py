@@ -165,7 +165,7 @@ class OpenSearchClient:
                 index=self.opensearch_index,
                 id=paper_id,
                 body={
-                    "doc": filtered_results
+                    "doc": filtered_results,
                 }
             )
             logger.info(f"Updated OpenSearch document {paper_id} with execution results")
