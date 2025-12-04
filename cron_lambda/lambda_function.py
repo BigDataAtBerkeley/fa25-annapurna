@@ -40,6 +40,7 @@ MAX_TRAINIUM_CONCURRENT = int(os.getenv("MAX_TRAINIUM_CONCURRENT", "1"))  # Max 
 BATCH_SIZE_FOR_EXECUTION = int(os.getenv("BATCH_SIZE_FOR_EXECUTION", "10"))  # DEPRECATED: Not used in new logic (replaced by MAX_PAPERS_PER_RUN)
 MAX_PAPERS_PER_RUN = int(os.getenv("MAX_PAPERS_PER_RUN", "3"))  # Maximum papers to process per cron job run (matches Lambda batch size)
 TRAINIUM_INSTANCE_ID = os.getenv("TRAINIUM_INSTANCE_ID")  # EC2 instance ID for auto start/stop
+TRAINIUM_EXECUTION_QUEUE_URL = os.getenv("TRAINIUM_EXECUTION_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/478852001205/trainium-execution.fifo")  # SQS queue for execution
 
 # AWS Clients
 session = boto3.Session(region_name=AWS_REGION)
@@ -315,14 +316,36 @@ def send_to_trainium(paper_id: str, code_s3_key: str, paper_title: Optional[str]
 
 def get_papers_waiting_for_execution() -> int:
     """
-    Count papers that have code but haven't been executed yet (executed_on_trn != true).
-    This helps determine if Trainium instance should be running.
+    Count papers that are waiting for execution.
+    Checks both:
+    1. SQS queue (papers enqueued but not yet processed) - this is the most important check
+    2. OpenSearch (papers with code but executed_on_trn != true)
     
     Returns:
         Number of papers waiting for execution
     """
+    queue_count = 0
+    opensearch_count = 0
+    
+    # Check SQS queue for papers waiting (most important - if queue has messages, instance should be running)
     try:
-        # Query for papers with code_s3_key but executed_on_trn != true
+        trainium_queue_url = os.getenv("TRAINIUM_EXECUTION_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/478852001205/trainium-execution.fifo")
+        if trainium_queue_url:
+            response = sqs_client.get_queue_attributes(
+                QueueUrl=trainium_queue_url,
+                AttributeNames=['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']
+            )
+            attrs = response.get('Attributes', {})
+            visible = int(attrs.get('ApproximateNumberOfMessages', 0))
+            in_flight = int(attrs.get('ApproximateNumberOfMessagesNotVisible', 0))
+            queue_count = visible + in_flight
+            if queue_count > 0:
+                logger.info(f"Found {queue_count} papers in trainium-execution queue ({visible} visible, {in_flight} in flight)")
+    except Exception as e:
+        logger.warning(f"Error checking trainium-execution queue: {e}")
+    
+    # Check OpenSearch for papers with code but not executed (backup check)
+    try:
         query = {
             "bool": {
                 "must": [
@@ -346,16 +369,18 @@ def get_papers_waiting_for_execution() -> int:
         
         total = response.get('hits', {}).get('total', {})
         if isinstance(total, dict):
-            count = total.get('value', 0)
+            opensearch_count = total.get('value', 0)
         else:
-            count = total
+            opensearch_count = total if total else 0
         
-        logger.info(f"Found {count} papers with code waiting for execution")
-        return count
-        
+        if opensearch_count > 0:
+            logger.info(f"Found {opensearch_count} papers in OpenSearch waiting for execution (have code but not executed)")
     except Exception as e:
-        logger.error(f"Error counting papers waiting for execution: {e}")
-        return 0
+        logger.warning(f"Error counting papers in OpenSearch: {e}")
+    
+    total_waiting = queue_count + opensearch_count
+    logger.info(f"Total papers waiting for execution: {total_waiting} ({queue_count} in queue, {opensearch_count} in OpenSearch)")
+    return total_waiting
 
 
 def get_trainium_instance_state() -> Optional[str]:

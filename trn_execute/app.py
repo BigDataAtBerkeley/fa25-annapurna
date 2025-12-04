@@ -140,6 +140,10 @@ os.makedirs(PROFILER_OUTPUT_DIR, exist_ok=True)
 running_executions = {}
 execution_lock = threading.Lock()
 
+# Track papers that have already sent final execution notifications (prevent duplicates)
+execution_notifications_sent = set()
+notification_lock = threading.Lock()
+
 # SQS client for queue polling
 sqs_client = boto3.client('sqs', region_name=AWS_REGION) if TRAINIUM_EXECUTION_QUEUE_URL else None
 
@@ -951,14 +955,20 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
         exec_result = execute_code_sync(paper_id, code, timeout, paper_title)
         
         # Only send Slack notification for final execution results (not code review tests)
+        # Check if we've already sent notification for this paper to prevent duplicates
         if should_send_slack:
-            logger.info(f"Execution completed for {paper_id}, sending final Slack notification...")
-            try:
-                send_slack_notification(paper_id, exec_result, thread_ts=slack_thread_ts)
-                logger.info(f"Final Slack notification sent for {paper_id}")
-            except Exception as e:
-                logger.error(f"Failed to send final Slack notification for {paper_id}: {e}")
-                logger.error(traceback.format_exc())
+            with notification_lock:
+                if paper_id in execution_notifications_sent:
+                    logger.info(f"Execution notification already sent for {paper_id} - skipping duplicate")
+                else:
+                    logger.info(f"Execution completed for {paper_id}, sending final Slack notification...")
+                    try:
+                        send_slack_notification(paper_id, exec_result, thread_ts=slack_thread_ts)
+                        execution_notifications_sent.add(paper_id)
+                        logger.info(f"Final Slack notification sent for {paper_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to send final Slack notification for {paper_id}: {e}")
+                        logger.error(traceback.format_exc())
         else:
             logger.info(f"Execution completed for {paper_id} (code review test - skipping Slack notification)")
         
@@ -1173,24 +1183,40 @@ def code_review():
             
             # Send final code notification (second follow-up) - even though max iterations reached
             # IMPORTANT: Send this BEFORE triggering final execution to ensure correct order in Slack
-            if SLACK_AVAILABLE and data.get('slack_thread_ts'):
-                try:
-                    slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
-                    final_code_sent = slack_notifier.send_final_code_notification(
-                        paper_id=paper_id,
-                        code_length=len(final_code),
-                        code_review_iterations=error_count,
-                        code_s3_key=code_s3_key,
-                        thread_ts=data.get('slack_thread_ts')
-                    )
-                    if final_code_sent:
-                        logger.info(f"✅ Sent final code notification to Slack (max iterations reached)")
-                        # Small delay to ensure Slack processes the message before execution results
-                        time.sleep(1)
-                    else:
-                        logger.warning(f"⚠️ Final code notification returned False")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to send final code notification: {e}")
+            if SLACK_AVAILABLE:
+                # Get slack_thread_ts from request or OpenSearch
+                slack_thread_ts = data.get('slack_thread_ts')
+                if not slack_thread_ts and OPENSEARCH_AVAILABLE:
+                    try:
+                        opensearch_client = OpenSearchClient()
+                        paper = opensearch_client.get_paper_by_id(paper_id)
+                        if paper:
+                            slack_thread_ts = paper.get('slack_thread_ts')
+                            if slack_thread_ts:
+                                logger.info(f"Retrieved slack_thread_ts from OpenSearch for final code notification: {slack_thread_ts}")
+                    except Exception as e:
+                        logger.warning(f"Could not get slack_thread_ts from OpenSearch: {e}")
+                
+                if slack_thread_ts:
+                    try:
+                        slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
+                        final_code_sent = slack_notifier.send_final_code_notification(
+                            paper_id=paper_id,
+                            code_length=len(final_code),
+                            code_review_iterations=error_count,
+                            code_s3_key=code_s3_key,
+                            thread_ts=slack_thread_ts
+                        )
+                        if final_code_sent:
+                            logger.info(f"✅ Sent final code notification to Slack (max iterations reached)")
+                            # Small delay to ensure Slack processes the message before execution results
+                            time.sleep(1)
+                        else:
+                            logger.warning(f"⚠️ Final code notification returned False")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to send final code notification: {e}")
+                else:
+                    logger.warning(f"⚠️ No slack_thread_ts available - skipping final code notification")
             
             # Trigger final execution with the final code (this will send execution results as third follow-up)
             # This happens AFTER the final code notification is sent to ensure correct order
@@ -1367,41 +1393,57 @@ def code_review():
             
             # Send final code notification (second follow-up) - code after code review
             # IMPORTANT: Send this BEFORE triggering final execution to ensure correct order in Slack
-            if SLACK_AVAILABLE and data.get('slack_thread_ts'):
-                try:
-                    # Get the final code from S3
-                    final_code = get_code(paper_id)
-                    if not final_code:
-                        final_code = code
-                    
-                    # Get code S3 key (use standard format: code/{paper_id}.py)
-                    code_s3_key = f"code/{paper_id}.py"
-                    # Try to get from OpenSearch if available (might have different format)
-                    if OPENSEARCH_AVAILABLE:
-                        try:
-                            opensearch_client = OpenSearchClient()
-                            paper = opensearch_client.get_paper_by_id(paper_id)
-                            if paper and paper.get('code_s3_key'):
-                                code_s3_key = paper.get('code_s3_key')
-                        except Exception as e:
-                            logger.warning(f"Could not get code S3 key from OpenSearch, using default: {e}")
-                    
-                    slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
-                    final_code_sent = slack_notifier.send_final_code_notification(
-                        paper_id=paper_id,
-                        code_length=len(final_code),
-                        code_review_iterations=error_count,
-                        code_s3_key=code_s3_key,
-                        thread_ts=data.get('slack_thread_ts')
-                    )
-                    if final_code_sent:
-                        logger.info(f"✅ Sent final code notification to Slack")
-                        # Small delay to ensure Slack processes the message before execution results
-                        time.sleep(1)
-                    else:
-                        logger.warning(f"⚠️ Final code notification returned False")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to send final code notification: {e}")
+            if SLACK_AVAILABLE:
+                # Get slack_thread_ts from request or OpenSearch
+                slack_thread_ts = data.get('slack_thread_ts')
+                if not slack_thread_ts and OPENSEARCH_AVAILABLE:
+                    try:
+                        opensearch_client = OpenSearchClient()
+                        paper = opensearch_client.get_paper_by_id(paper_id)
+                        if paper:
+                            slack_thread_ts = paper.get('slack_thread_ts')
+                            if slack_thread_ts:
+                                logger.info(f"Retrieved slack_thread_ts from OpenSearch for final code notification: {slack_thread_ts}")
+                    except Exception as e:
+                        logger.warning(f"Could not get slack_thread_ts from OpenSearch: {e}")
+                
+                if slack_thread_ts:
+                    try:
+                        # Get the final code from S3
+                        final_code = get_code(paper_id)
+                        if not final_code:
+                            final_code = code
+                        
+                        # Get code S3 key (use standard format: code/{paper_id}.py)
+                        code_s3_key = f"code/{paper_id}.py"
+                        # Try to get from OpenSearch if available (might have different format)
+                        if OPENSEARCH_AVAILABLE:
+                            try:
+                                opensearch_client = OpenSearchClient()
+                                paper = opensearch_client.get_paper_by_id(paper_id)
+                                if paper and paper.get('code_s3_key'):
+                                    code_s3_key = paper.get('code_s3_key')
+                            except Exception as e:
+                                logger.warning(f"Could not get code S3 key from OpenSearch, using default: {e}")
+                        
+                        slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
+                        final_code_sent = slack_notifier.send_final_code_notification(
+                            paper_id=paper_id,
+                            code_length=len(final_code),
+                            code_review_iterations=error_count,
+                            code_s3_key=code_s3_key,
+                            thread_ts=slack_thread_ts
+                        )
+                        if final_code_sent:
+                            logger.info(f"✅ Sent final code notification to Slack")
+                            # Small delay to ensure Slack processes the message before execution results
+                            time.sleep(1)
+                        else:
+                            logger.warning(f"⚠️ Final code notification returned False")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to send final code notification: {e}")
+                else:
+                    logger.warning(f"⚠️ No slack_thread_ts available - skipping final code notification")
             
             # Trigger full execution with the fixed code (this is the FINAL execution - send Slack notification)
             # This happens AFTER the final code notification is sent to ensure correct order
