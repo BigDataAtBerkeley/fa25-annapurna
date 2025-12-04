@@ -261,11 +261,20 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
         stored_execution_completed_at = paper.get('execution_completed_at')
         
         # If OpenSearch has execution results with same execution time and completion timestamp,
-        # this notification was likely already sent (duplicate from previous run)
+        # check if it was completed recently. Only skip if it was completed more than 5 minutes ago
+        # (allows retries for recent notification failures)
         if stored_execution_completed_at and abs(current_execution_time - stored_execution_time) < 0.1:
-            # Check if this is the same execution (within 0.1s tolerance)
-            logger.info(f"Skipping duplicate notification for {paper_id} - execution results already in OpenSearch (execution_time: {current_execution_time}s, completed_at: {stored_execution_completed_at})")
-            return
+            try:
+                completed_time = datetime.fromisoformat(stored_execution_completed_at.replace('Z', '+00:00'))
+                time_since_completion = (datetime.now(completed_time.tzinfo) - completed_time).total_seconds()
+                # Only skip if completed more than 5 minutes ago
+                if time_since_completion > 300:
+                    logger.info(f"Skipping duplicate notification for {paper_id} - execution results already in OpenSearch (execution_time: {current_execution_time}s, completed {time_since_completion:.0f}s ago)")
+                    return
+                else:
+                    logger.info(f"Execution results found in OpenSearch but completed recently ({time_since_completion:.0f}s ago) - sending notification anyway (may be retry)")
+            except Exception as e:
+                logger.warning(f"Could not parse completion time, sending notification anyway: {e}")
         
         # If thread_ts not provided, try to get it from OpenSearch
         if not thread_ts:
@@ -1336,11 +1345,22 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
                             stored_execution_completed_at = paper.get('execution_completed_at')
                             current_execution_time = exec_result.get('execution_time', 0)
                             
-                            # If OpenSearch has execution results with same execution time, this was already sent
+                            # If OpenSearch has execution results with same execution time AND it was completed recently (within last hour),
+                            # this notification was likely already sent. But be less aggressive - only skip if execution time matches exactly
+                            # and it was completed more than 5 minutes ago (to allow retries for recent failures)
                             if stored_execution_completed_at and abs(current_execution_time - stored_execution_time) < 0.1:
-                                logger.info(f"Execution notification already sent for {paper_id} (OpenSearch check - execution_time: {current_execution_time}s) - skipping duplicate")
-                                execution_notifications_sent.add(paper_id)  # Add to set to prevent future checks
-                                return
+                                try:
+                                    completed_time = datetime.fromisoformat(stored_execution_completed_at.replace('Z', '+00:00'))
+                                    time_since_completion = (datetime.now(completed_time.tzinfo) - completed_time).total_seconds()
+                                    # Only skip if completed more than 5 minutes ago (allows retries for recent failures)
+                                    if time_since_completion > 300:
+                                        logger.info(f"Execution notification likely already sent for {paper_id} (OpenSearch check - execution_time: {current_execution_time}s, completed {time_since_completion:.0f}s ago) - skipping duplicate")
+                                        execution_notifications_sent.add(paper_id)  # Add to set to prevent future checks
+                                        return
+                                    else:
+                                        logger.info(f"Execution results found in OpenSearch but completed recently ({time_since_completion:.0f}s ago) - sending notification anyway (may be retry)")
+                                except Exception as e:
+                                    logger.warning(f"Could not parse completion time, sending notification anyway: {e}")
                     except Exception as e:
                         logger.warning(f"Could not check OpenSearch for duplicate notification: {e}")
                         # Continue anyway - send_slack_notification will also check
@@ -2127,7 +2147,8 @@ def poll_and_process_queue():
                 )
                 
                 # Delete message from queue after successful processing
-                if result.get('status') == 'accepted':
+                # execute_internal returns status: "running" when execution starts successfully
+                if result.get('success') and result.get('status') == 'running':
                     sqs_client.delete_message(
                         QueueUrl=TRAINIUM_EXECUTION_QUEUE_URL,
                         ReceiptHandle=message['ReceiptHandle']
