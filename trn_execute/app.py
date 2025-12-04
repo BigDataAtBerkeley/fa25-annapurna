@@ -171,6 +171,7 @@ def upload_execution_results(paper_id: str, result: Dict[str, Any]):
                 # Prepare execution results for OpenSearch
                 execution_data = {
                     "execution_success": result.get('success', False),
+                    "executed_on_trn": result.get('success', False),  # Set executed_on_trn = true if execution succeeded
                     "execution_time_seconds": round(result.get('execution_time', 0), 2),
                     "execution_return_code": result.get('return_code', -1),
                     "execution_error": result.get('error_message') if not result.get('success') else None,

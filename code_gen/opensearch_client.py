@@ -21,7 +21,7 @@ class OpenSearchClient:
         """Initializes OpenSearch client with AWS auth"""
         self.aws_region = os.getenv("AWS_REGION", "us-east-1")
         self.opensearch_endpoint = os.getenv("OPENSEARCH_ENDPOINT")
-        self.opensearch_index = os.getenv("OPENSEARCH_INDEX", "research-papers")
+        self.opensearch_index = os.getenv("OPENSEARCH_INDEX", "research-papers-v3")
         
         if not self.opensearch_endpoint:
             raise ValueError("OPENSEARCH_ENDPOINT environment variable is required")
