@@ -251,6 +251,19 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
             logger.error(traceback.format_exc())
             return
         
+        # Check if this execution result was already sent (prevent duplicates after Flask restart)
+        # Compare execution result timestamp with what's stored in OpenSearch
+        current_execution_time = execution_result.get('execution_time', 0)
+        stored_execution_time = paper.get('execution_time_seconds', 0)
+        stored_execution_completed_at = paper.get('execution_completed_at')
+        
+        # If OpenSearch has execution results with same execution time and completion timestamp,
+        # this notification was likely already sent (duplicate from previous run)
+        if stored_execution_completed_at and abs(current_execution_time - stored_execution_time) < 0.1:
+            # Check if this is the same execution (within 0.1s tolerance)
+            logger.info(f"Skipping duplicate notification for {paper_id} - execution results already in OpenSearch (execution_time: {current_execution_time}s, completed_at: {stored_execution_completed_at})")
+            return
+        
         # If thread_ts not provided, try to get it from OpenSearch
         if not thread_ts:
             thread_ts = paper.get('slack_thread_ts')
@@ -956,11 +969,32 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
         
         # Only send Slack notification for final execution results (not code review tests)
         # Check if we've already sent notification for this paper to prevent duplicates
+        # Also check OpenSearch to prevent duplicates after Flask app restart
         if should_send_slack:
             with notification_lock:
+                # Check in-memory set first (fast check)
                 if paper_id in execution_notifications_sent:
-                    logger.info(f"Execution notification already sent for {paper_id} - skipping duplicate")
+                    logger.info(f"Execution notification already sent for {paper_id} (in-memory check) - skipping duplicate")
                 else:
+                    # Double-check OpenSearch to prevent duplicates after Flask restart
+                    # The send_slack_notification function will also check, but we check here too for early exit
+                    try:
+                        opensearch_client = OpenSearchClient()
+                        paper = opensearch_client.get_paper_by_id(paper_id)
+                        if paper:
+                            stored_execution_time = paper.get('execution_time_seconds', 0)
+                            stored_execution_completed_at = paper.get('execution_completed_at')
+                            current_execution_time = exec_result.get('execution_time', 0)
+                            
+                            # If OpenSearch has execution results with same execution time, this was already sent
+                            if stored_execution_completed_at and abs(current_execution_time - stored_execution_time) < 0.1:
+                                logger.info(f"Execution notification already sent for {paper_id} (OpenSearch check - execution_time: {current_execution_time}s) - skipping duplicate")
+                                execution_notifications_sent.add(paper_id)  # Add to set to prevent future checks
+                                return
+                    except Exception as e:
+                        logger.warning(f"Could not check OpenSearch for duplicate notification: {e}")
+                        # Continue anyway - send_slack_notification will also check
+                    
                     logger.info(f"Execution completed for {paper_id}, sending final Slack notification...")
                     try:
                         send_slack_notification(paper_id, exec_result, thread_ts=slack_thread_ts)
