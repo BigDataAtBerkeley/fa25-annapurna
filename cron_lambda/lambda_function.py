@@ -38,7 +38,7 @@ TRAINIUM_ENDPOINT = os.getenv("TRAINIUM_ENDPOINT")  # Flask app endpoint for exe
 MAX_CODE_GEN_CONCURRENT = int(os.getenv("MAX_CODE_GEN_CONCURRENT", "5"))  # Max concurrent code gen requests
 MAX_TRAINIUM_CONCURRENT = int(os.getenv("MAX_TRAINIUM_CONCURRENT", "1"))  # Max concurrent trainium executions (how many papers can run simultaneously)
 BATCH_SIZE_FOR_EXECUTION = int(os.getenv("BATCH_SIZE_FOR_EXECUTION", "10"))  # DEPRECATED: Not used in new logic (replaced by MAX_PAPERS_PER_RUN)
-MAX_PAPERS_PER_RUN = int(os.getenv("MAX_PAPERS_PER_RUN", "10"))  # Maximum papers to process per cron job run
+MAX_PAPERS_PER_RUN = int(os.getenv("MAX_PAPERS_PER_RUN", "3"))  # Maximum papers to process per cron job run (matches Lambda batch size)
 TRAINIUM_INSTANCE_ID = os.getenv("TRAINIUM_INSTANCE_ID")  # EC2 instance ID for auto start/stop
 
 # AWS Clients

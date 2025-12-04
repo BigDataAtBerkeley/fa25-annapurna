@@ -116,6 +116,11 @@ AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
 BEDROCK_MODEL_ID = os.getenv('BEDROCK_MODEL_ID', 'anthropic.claude-3-sonnet-20240229-v1:0')
 SLACK_BOT_TOKEN = os.getenv('SLACK_BOT_TOKEN', 'xoxb-552112250854-10031003801584-OFAzmiCTvAsECqlzIKmy9Ck1')
 SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', 'apl-research-papers')
+TRAINIUM_EXECUTION_QUEUE_URL = os.getenv('TRAINIUM_EXECUTION_QUEUE_URL', 'https://sqs.us-east-1.amazonaws.com/478852001205/trainium-execution.fifo')
+MAX_TRAINIUM_CONCURRENT = int(os.getenv('MAX_TRAINIUM_CONCURRENT', '1'))  # Max concurrent executions
+BATCH_SIZE_FOR_EXECUTION = int(os.getenv('BATCH_SIZE_FOR_EXECUTION', '3'))  # Papers to process per batch
+QUEUE_POLL_INTERVAL = int(os.getenv('QUEUE_POLL_INTERVAL', '30'))  # Seconds between queue polls
+ENABLE_AUTO_QUEUE_POLLING = os.getenv('ENABLE_AUTO_QUEUE_POLLING', 'true').lower() == 'true'  # Enable automatic queue polling
 
 # Initialize Bedrock client for code review
 bedrock_client = None
@@ -134,6 +139,9 @@ os.makedirs(PROFILER_OUTPUT_DIR, exist_ok=True)
 # Track running executions (for 5-minute success assumption)
 running_executions = {}
 execution_lock = threading.Lock()
+
+# SQS client for queue polling
+sqs_client = boto3.client('sqs', region_name=AWS_REGION) if TRAINIUM_EXECUTION_QUEUE_URL else None
 
 def collect_profiler_artifacts(paper_id: str, profiler_path: str):
     if not os.path.exists(profiler_path):
@@ -171,7 +179,7 @@ def upload_execution_results(paper_id: str, result: Dict[str, Any]):
                 # Prepare execution results for OpenSearch
                 execution_data = {
                     "execution_success": result.get('success', False),
-                    "executed_on_trn": result.get('success', False),  # Set executed_on_trn = true if execution succeeded
+                    "executed_on_trn": result.get('success', False),
                     "execution_time_seconds": round(result.get('execution_time', 0), 2),
                     "execution_return_code": result.get('return_code', -1),
                     "execution_error": result.get('error_message') if not result.get('success') else None,
@@ -238,6 +246,12 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
             logger.error(f"Error retrieving paper {paper_id} from OpenSearch: {e}")
             logger.error(traceback.format_exc())
             return
+        
+        # If thread_ts not provided, try to get it from OpenSearch
+        if not thread_ts:
+            thread_ts = paper.get('slack_thread_ts')
+            if thread_ts:
+                logger.info(f"Retrieved slack_thread_ts from OpenSearch for {paper_id}: {thread_ts}")
         
         # Filter out embeddings and other large binary fields
         fields_to_exclude = {
@@ -1573,6 +1587,170 @@ def trigger_slack_notification(paper_id: str):
         }), 500
 
 
+def is_trainium_available() -> bool:
+    """
+    Check if Trainium is available (not currently executing papers).
+    
+    Returns:
+        True if Trainium is available (no running executions), False otherwise
+    """
+    with execution_lock:
+        current_executions = len(running_executions)
+        is_available = current_executions < MAX_TRAINIUM_CONCURRENT
+        logger.info(f"Trainium availability check: {current_executions} running, max {MAX_TRAINIUM_CONCURRENT}, available: {is_available}")
+        return is_available
+
+
+def poll_and_process_queue():
+    """
+    Poll the trainium-execution queue and process papers in batches.
+    Only processes if Trainium is available.
+    """
+    if not sqs_client or not TRAINIUM_EXECUTION_QUEUE_URL:
+        logger.warning("SQS client or queue URL not configured - queue polling disabled")
+        return
+    
+    try:
+        # Check if Trainium is available
+        if not is_trainium_available():
+            logger.info("Trainium is busy - skipping queue poll")
+            return
+        
+        # Receive up to 3 messages (batch size)
+        logger.info(f"Polling queue for up to {BATCH_SIZE_FOR_EXECUTION} papers...")
+        response = sqs_client.receive_message(
+            QueueUrl=TRAINIUM_EXECUTION_QUEUE_URL,
+            MaxNumberOfMessages=BATCH_SIZE_FOR_EXECUTION,
+            WaitTimeSeconds=0,  # Short polling (no long polling to avoid blocking)
+            VisibilityTimeout=900  # 15 minutes (messages become visible again if not deleted)
+        )
+        
+        messages = response.get('Messages', [])
+        if not messages:
+            logger.info("No messages in queue")
+            return
+        
+        logger.info(f"Received {len(messages)} papers from queue")
+        
+        # Process each paper sequentially
+        for message in messages:
+            try:
+                # Parse message body
+                body = json.loads(message['Body'])
+                paper_id = body.get('paper_id')
+                code = body.get('code')
+                paper_title = body.get('paper_title')
+                slack_thread_ts = body.get('slack_thread_ts')
+                
+                if not paper_id or not code:
+                    logger.warning(f"Invalid message: missing paper_id or code")
+                    # Delete invalid message
+                    sqs_client.delete_message(
+                        QueueUrl=TRAINIUM_EXECUTION_QUEUE_URL,
+                        ReceiptHandle=message['ReceiptHandle']
+                    )
+                    continue
+                
+                # Check Trainium availability before processing
+                if not is_trainium_available():
+                    logger.info(f"Trainium became busy - stopping batch processing. Will retry {paper_id} later.")
+                    # Don't delete message - let it become visible again for retry
+                    break  # Stop processing remaining papers in this batch
+                
+                logger.info(f"Processing paper {paper_id} from queue")
+                
+                # Execute paper (this will handle code review internally if needed)
+                result = execute_internal(
+                    paper_id=paper_id,
+                    code=code,
+                    timeout=MAX_EXECUTION_TIME,
+                    paper_title=paper_title,
+                    slack_thread_ts=slack_thread_ts,
+                    should_send_slack=False,  # Initial execution - code review will handle final notification
+                    should_trigger_review=True
+                )
+                
+                # Delete message from queue after successful processing
+                if result.get('status') == 'accepted':
+                    sqs_client.delete_message(
+                        QueueUrl=TRAINIUM_EXECUTION_QUEUE_URL,
+                        ReceiptHandle=message['ReceiptHandle']
+                    )
+                    logger.info(f"✅ Paper {paper_id} accepted for execution, message deleted from queue")
+                else:
+                    logger.warning(f"Paper {paper_id} execution not accepted: {result}")
+                    # Don't delete message - let it retry
+                    
+            except Exception as e:
+                logger.error(f"Error processing message from queue: {e}")
+                logger.error(traceback.format_exc())
+                # Don't delete message on error - let it retry
+        
+    except ClientError as e:
+        logger.error(f"AWS error polling queue: {e}")
+    except Exception as e:
+        logger.error(f"Error polling queue: {e}")
+        logger.error(traceback.format_exc())
+
+
+@app.route('/poll-queue', methods=['POST'])
+def poll_queue_endpoint():
+    """
+    Endpoint to manually trigger queue polling.
+    Useful for testing or external triggers.
+    """
+    try:
+        poll_and_process_queue()
+        return jsonify({
+            "success": True,
+            "message": "Queue polled successfully"
+        })
+    except Exception as e:
+        logger.error(f"Error in poll-queue endpoint: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route('/queue-status', methods=['GET'])
+def queue_status():
+    """
+    Get status of the execution queue.
+    """
+    if not sqs_client or not TRAINIUM_EXECUTION_QUEUE_URL:
+        return jsonify({
+            "success": False,
+            "error": "Queue not configured"
+        }), 503
+    
+    try:
+        response = sqs_client.get_queue_attributes(
+            QueueUrl=TRAINIUM_EXECUTION_QUEUE_URL,
+            AttributeNames=['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']
+        )
+        attrs = response['Attributes']
+        
+        with execution_lock:
+            current_executions = len(running_executions)
+        
+        return jsonify({
+            "success": True,
+            "queue_url": TRAINIUM_EXECUTION_QUEUE_URL,
+            "messages_available": int(attrs.get('ApproximateNumberOfMessages', 0)),
+            "messages_in_flight": int(attrs.get('ApproximateNumberOfMessagesNotVisible', 0)),
+            "current_executions": current_executions,
+            "max_concurrent": MAX_TRAINIUM_CONCURRENT,
+            "trainium_available": is_trainium_available()
+        })
+    except Exception as e:
+        logger.error(f"Error getting queue status: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 if __name__ == '__main__':
     try:
         logger.info("Starting Trainium Executor Service v2")
@@ -1637,6 +1815,32 @@ if __name__ == '__main__':
         logger.info("=" * 80)
         logger.info("Starting Flask server on 0.0.0.0:8000")
         logger.info("=" * 80)
+        
+        # Start background thread for automatic queue polling
+        if ENABLE_AUTO_QUEUE_POLLING and sqs_client and TRAINIUM_EXECUTION_QUEUE_URL:
+            def queue_polling_worker():
+                """Background worker that polls the queue periodically."""
+                logger.info(f"Starting queue polling worker (interval: {QUEUE_POLL_INTERVAL}s)")
+                while True:
+                    try:
+                        poll_and_process_queue()
+                    except Exception as e:
+                        logger.error(f"Error in queue polling worker: {e}")
+                        logger.error(traceback.format_exc())
+                    finally:
+                        # Sleep before next poll
+                        time.sleep(QUEUE_POLL_INTERVAL)
+            
+            polling_thread = threading.Thread(target=queue_polling_worker, daemon=True)
+            polling_thread.start()
+            logger.info("✅ Automatic queue polling enabled")
+        else:
+            if not ENABLE_AUTO_QUEUE_POLLING:
+                logger.info("⚠️ Automatic queue polling disabled (ENABLE_AUTO_QUEUE_POLLING=false)")
+            elif not sqs_client:
+                logger.warning("⚠️ SQS client not available - automatic queue polling disabled")
+            elif not TRAINIUM_EXECUTION_QUEUE_URL:
+                logger.warning("⚠️ Queue URL not configured - automatic queue polling disabled")
         
         app.run(host='0.0.0.0', port=8000, threaded=True)
     except Exception as e:
