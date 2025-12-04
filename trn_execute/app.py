@@ -143,6 +143,8 @@ execution_lock = threading.Lock()
 
 # Track papers that have already sent final execution notifications (prevent duplicates)
 execution_notifications_sent = set()
+# Track papers that have already sent final code review notifications (prevent duplicates)
+final_code_notifications_sent = set()
 notification_lock = threading.Lock()
 
 # SQS client for queue polling
@@ -1580,23 +1582,29 @@ def code_review():
                         logger.warning(f"Could not get slack_thread_ts from OpenSearch: {e}")
                 
                 if slack_thread_ts:
-                    try:
-                        slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
-                        final_code_sent = slack_notifier.send_final_code_notification(
-                            paper_id=paper_id,
-                            code_length=len(final_code),
-                            code_review_iterations=error_count,
-                            code_s3_key=code_s3_key,
-                            thread_ts=slack_thread_ts
-                        )
-                        if final_code_sent:
-                            logger.info(f"✅ Sent final code notification to Slack (max iterations reached)")
-                            # Small delay to ensure Slack processes the message before execution results
-                            time.sleep(1)
+                    # Check if we've already sent a final code notification for this paper (prevent duplicates)
+                    with notification_lock:
+                        if paper_id in final_code_notifications_sent:
+                            logger.info(f"Skipping duplicate final code notification for {paper_id} (max iterations) - already sent")
                         else:
-                            logger.warning(f"⚠️ Final code notification returned False")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Failed to send final code notification: {e}")
+                            try:
+                                slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
+                                final_code_sent = slack_notifier.send_final_code_notification(
+                                    paper_id=paper_id,
+                                    code_length=len(final_code),
+                                    code_review_iterations=error_count,
+                                    code_s3_key=code_s3_key,
+                                    thread_ts=slack_thread_ts
+                                )
+                                if final_code_sent:
+                                    logger.info(f"✅ Sent final code notification to Slack (max iterations reached)")
+                                    final_code_notifications_sent.add(paper_id)
+                                    # Small delay to ensure Slack processes the message before execution results
+                                    time.sleep(1)
+                                else:
+                                    logger.warning(f"⚠️ Final code notification returned False")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Failed to send final code notification: {e}")
                 else:
                     logger.warning(f"⚠️ No slack_thread_ts available - skipping final code notification")
             
@@ -1791,40 +1799,63 @@ def code_review():
                         logger.warning(f"Could not get slack_thread_ts from OpenSearch: {e}")
                 
                 if slack_thread_ts:
-                    try:
-                        # Get the final code from S3
-                        final_code = get_code(paper_id)
-                        if not final_code:
-                            final_code = code
-                        
-                        # Get code S3 key (use standard format: code/{paper_id}.py)
-                        code_s3_key = f"code/{paper_id}.py"
-                        # Try to get from OpenSearch if available (might have different format)
-                        if OPENSEARCH_AVAILABLE:
-                            try:
-                                opensearch_client = OpenSearchClient()
-                                paper = opensearch_client.get_paper_by_id(paper_id)
-                                if paper and paper.get('code_s3_key'):
-                                    code_s3_key = paper.get('code_s3_key')
-                            except Exception as e:
-                                logger.warning(f"Could not get code S3 key from OpenSearch, using default: {e}")
-                        
-                        slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
-                        final_code_sent = slack_notifier.send_final_code_notification(
-                            paper_id=paper_id,
-                            code_length=len(final_code),
-                            code_review_iterations=error_count,
-                            code_s3_key=code_s3_key,
-                            thread_ts=slack_thread_ts
-                        )
-                        if final_code_sent:
-                            logger.info(f"✅ Sent final code notification to Slack")
-                            # Small delay to ensure Slack processes the message before execution results
-                            time.sleep(1)
+                    # Check if we've already sent a final code notification for this paper (prevent duplicates)
+                    with notification_lock:
+                        if paper_id in final_code_notifications_sent:
+                            logger.info(f"Skipping duplicate final code notification for {paper_id} - already sent")
                         else:
-                            logger.warning(f"⚠️ Final code notification returned False")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Failed to send final code notification: {e}")
+                            # Check OpenSearch to see if notification was already sent (persistent check across restarts)
+                            already_sent = False
+                            if OPENSEARCH_AVAILABLE:
+                                try:
+                                    opensearch_client = OpenSearchClient()
+                                    paper = opensearch_client.get_paper_by_id(paper_id)
+                                    if paper:
+                                        # If execution was already completed, final code notification was likely already sent
+                                        # This prevents duplicates after Flask restarts
+                                        if paper.get('execution_completed_at'):
+                                            logger.info(f"Final code notification likely already sent for {paper_id} (execution already completed)")
+                                            already_sent = True
+                                            final_code_notifications_sent.add(paper_id)  # Add to set to prevent future checks
+                                except Exception as e:
+                                    logger.warning(f"Could not check OpenSearch for duplicate notification: {e}")
+                            
+                            if not already_sent:
+                                try:
+                                    # Get the final code from S3
+                                    final_code = get_code(paper_id)
+                                    if not final_code:
+                                        final_code = code
+                                    
+                                    # Get code S3 key (use standard format: code/{paper_id}.py)
+                                    code_s3_key = f"code/{paper_id}.py"
+                                    # Try to get from OpenSearch if available (might have different format)
+                                    if OPENSEARCH_AVAILABLE:
+                                        try:
+                                            opensearch_client = OpenSearchClient()
+                                            paper = opensearch_client.get_paper_by_id(paper_id)
+                                            if paper and paper.get('code_s3_key'):
+                                                code_s3_key = paper.get('code_s3_key')
+                                        except Exception as e:
+                                            logger.warning(f"Could not get code S3 key from OpenSearch, using default: {e}")
+                                    
+                                    slack_notifier = SlackNotifier(SLACK_BOT_TOKEN, SLACK_CHANNEL)
+                                    final_code_sent = slack_notifier.send_final_code_notification(
+                                        paper_id=paper_id,
+                                        code_length=len(final_code),
+                                        code_review_iterations=error_count,
+                                        code_s3_key=code_s3_key,
+                                        thread_ts=slack_thread_ts
+                                    )
+                                    if final_code_sent:
+                                        logger.info(f"✅ Sent final code notification to Slack")
+                                        final_code_notifications_sent.add(paper_id)
+                                        # Small delay to ensure Slack processes the message before execution results
+                                        time.sleep(1)
+                                    else:
+                                        logger.warning(f"⚠️ Final code notification returned False")
+                                except Exception as e:
+                                    logger.warning(f"⚠️ Failed to send final code notification: {e}")
                 else:
                     logger.warning(f"⚠️ No slack_thread_ts available - skipping final code notification")
             
