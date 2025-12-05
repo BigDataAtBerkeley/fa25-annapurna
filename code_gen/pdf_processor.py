@@ -1,7 +1,7 @@
 """
-PDF processing utilities for extracting page chunks and converting to images.
-Supports extracting formulas and diagrams from PDF pages for Bedrock vision analysis.
-Includes smart chunking that prioritizes relevant sections (abstract, formulas, diagrams, key terms).
+PDF processing utilities for extracting page chunks and converting to PDF bytes.
+Supports extracting formulas and diagrams from PDF pages for Bedrock analysis.
+Uses a trained classifier to determine which pages are relevant for code generation.
 """
 
 import os
@@ -16,6 +16,13 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 try:
+    from page_classifier import PageRelevanceClassifier
+    CLASSIFIER_AVAILABLE = True
+except ImportError:
+    CLASSIFIER_AVAILABLE = False
+    logger.warning("Page classifier not available. Install required dependencies.")
+
+try:
     import fitz  # PyMuPDF
     PYMUPDF_AVAILABLE = True
     logger.info(f"✅ PyMuPDF imported successfully (version: {getattr(fitz, 'version', 'unknown')})")
@@ -26,31 +33,26 @@ except Exception as e:
     PYMUPDF_AVAILABLE = False
     logger.error(f"PyMuPDF import failed with exception: {type(e).__name__}: {e}")
 
-try:
-    from PIL import Image
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
-    logger.warning("Pillow not available. Install with: pip install Pillow")
 
 
 class PDFProcessor:
-    """Process PDF files to extract page chunks and convert to images for vision analysis."""
+    """Process PDF files to extract page chunks and convert to PDF bytes for analysis."""
     
-    def __init__(self, aws_region: str = "us-east-1"):
+    def __init__(self, aws_region: str = "us-east-1", use_classifier: bool = True):
         """
         Initialize PDF processor.
         
         Args:
             aws_region: AWS region for S3 access
+            use_classifier: Whether to use the page relevance classifier (default: True)
         """
         self.aws_region = aws_region
         self.s3_client = boto3.client('s3', region_name=aws_region)
+        self.use_classifier = use_classifier
         
         if not PYMUPDF_AVAILABLE:
             raise ImportError("PyMuPDF (fitz) is required for PDF processing. Install with: pip install pymupdf")
-        if not PIL_AVAILABLE:
-            raise ImportError("Pillow is required for image processing. Install with: pip install Pillow")
+        self.classifier = PageRelevanceClassifier()
         
         logger.info("PDF processor initialized")
     
@@ -105,72 +107,10 @@ class PDFProcessor:
             logger.error(f"Error getting PDF page count: {e}")
             return 0
     
-    def extract_pdf_pages_as_images(self, pdf_bytes: bytes, page_start: int, page_end: int, 
-                                     dpi: int = 150) -> List[bytes]:
-        """
-        Extract a range of PDF pages and convert them to PNG images.
-        
-        Args:
-            pdf_bytes: PDF file as bytes
-            page_start: Starting page number (0-indexed)
-            page_end: Ending page number (exclusive, 0-indexed)
-            dpi: Resolution for rendering (default: 150)
-            
-        Returns:
-            List of PNG image bytes (one per page)
-        """
-        images = []
-        try:
-            pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
-            total_pages = len(pdf_document)
-            
-            # Clamp page range to valid pages
-            page_start = max(0, min(page_start, total_pages - 1))
-            page_end = max(page_start + 1, min(page_end, total_pages))
-            
-            for page_num in range(page_start, page_end):
-                page = pdf_document[page_num]
-                
-                # Render page to image (pixmap)
-                # Use zoom factor to control DPI: zoom = dpi / 72 (default PDF DPI)
-                zoom = dpi / 72.0
-                mat = fitz.Matrix(zoom, zoom)
-                pix = page.get_pixmap(matrix=mat)
-                
-                # Convert to PNG bytes
-                img_bytes = pix.tobytes("png")
-                images.append(img_bytes)
-                
-                logger.debug(f"Extracted page {page_num + 1} as image ({len(img_bytes)} bytes)")
-            
-            pdf_document.close()
-            logger.info(f"Extracted {len(images)} pages ({page_start + 1}-{page_end}) as images")
-            return images
-            
-        except Exception as e:
-            logger.error(f"Error extracting PDF pages as images: {e}")
-            return []
-    
-    def images_to_base64(self, image_bytes_list: List[bytes]) -> List[str]:
-        """
-        Convert image bytes to base64-encoded strings for Bedrock API.
-        
-        Args:
-            image_bytes_list: List of image bytes (PNG format)
-            
-        Returns:
-            List of base64-encoded image strings
-        """
-        base64_images = []
-        for img_bytes in image_bytes_list:
-            base64_str = base64.b64encode(img_bytes).decode('utf-8')
-            base64_images.append(base64_str)
-        return base64_images
-    
     def analyze_page_relevance(self, pdf_bytes: bytes, page_num: int) -> Dict[str, Any]:
         """
         Analyze a single page to determine its relevance for code generation.
-        Scores pages based on presence of formulas, diagrams, key terms, and section headers.
+        Uses trained classifier if available, otherwise falls back to heuristic scoring.
         
         Args:
             pdf_bytes: PDF file as bytes
@@ -183,10 +123,34 @@ class PDFProcessor:
             pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
             if page_num >= len(pdf_document):
                 pdf_document.close()
-                return {"score": 0, "features": {}}
+                return {"score": 0, "features": {}, "is_relevant": False}
             
             page = pdf_document[page_num]
-            text = page.get_text().lower()
+            text = page.get_text()
+            
+            # Use classifier if available
+            if self.classifier and self.classifier.is_trained:
+                try:
+                    prediction = self.classifier.predict(text)
+                    is_relevant = prediction['is_relevant']
+                    confidence = prediction['confidence']
+                    
+                    # Convert to score (0-100 scale for compatibility)
+                    score = confidence * 100.0 if is_relevant else (1 - confidence) * 100.0
+                    
+                    pdf_document.close()
+                    return {
+                        "score": score,
+                        "is_relevant": is_relevant,
+                        "confidence": confidence,
+                        "features": {"classifier_used": True},
+                        "method": "classifier"
+                    }
+                except Exception as e:
+                    logger.warning(f"Classifier prediction failed for page {page_num}: {e}. Using fallback.")
+            
+            # Fallback to heuristic scoring
+            text_lower = text.lower()
             
             # Extract images/drawings (diagrams, figures)
             image_list = page.get_images()
@@ -205,12 +169,13 @@ class PDFProcessor:
                 "has_results": False,
                 "section_type": None,
                 "formula_density": 0.0,
-                "image_count": len(image_list) + len(drawing_list)
+                "image_count": len(image_list) + len(drawing_list),
+                "classifier_used": False
             }
             
             # 1. Check for abstract (usually first 2-3 pages)
             abstract_keywords = ['abstract', 'summary']
-            if page_num < 3 and any(kw in text for kw in abstract_keywords):
+            if page_num < 3 and any(kw in text_lower for kw in abstract_keywords):
                 score += 10.0
                 features["has_abstract"] = True
                 features["section_type"] = "abstract"
@@ -243,7 +208,7 @@ class PDFProcessor:
             
             # Check for figure captions
             figure_keywords = ['figure', 'fig.', 'diagram', 'architecture', 'network structure']
-            if any(kw in text for kw in figure_keywords):
+            if any(kw in text_lower for kw in figure_keywords):
                 score += 5.0
                 features["has_diagrams"] = True
             
@@ -255,20 +220,20 @@ class PDFProcessor:
                 'pytorch', 'tensorflow', 'implementation', 'code', 'pseudocode'
             ]
             
-            term_count = sum(1 for term in key_terms if term in text)
+            term_count = sum(1 for term in key_terms if term in text_lower)
             if term_count > 0:
                 score += min(term_count * 1.5, 10.0)  # Cap at 10 points
                 features["has_key_terms"] = True
             
             # 5. Algorithm descriptions
             algorithm_keywords = ['algorithm', 'pseudocode', 'procedure', 'method', 'approach']
-            if any(kw in text for kw in algorithm_keywords):
+            if any(kw in text_lower for kw in algorithm_keywords):
                 score += 6.0
                 features["has_algorithms"] = True
             
             # 6. Architecture descriptions
             architecture_keywords = ['architecture', 'network structure', 'model structure', 'layer', 'neural network']
-            if any(kw in text for kw in architecture_keywords):
+            if any(kw in text_lower for kw in architecture_keywords):
                 score += 7.0
                 features["has_architecture"] = True
             
@@ -292,14 +257,14 @@ class PDFProcessor:
             for section, section_score in section_headers.items():
                 # Look for section headers (usually at start of line, possibly numbered)
                 pattern = rf'^\s*\d*\.?\s*{section}'
-                if re.search(pattern, text, re.MULTILINE | re.IGNORECASE):
+                if re.search(pattern, text_lower, re.MULTILINE | re.IGNORECASE):
                     score += section_score
                     if not features["section_type"]:
                         features["section_type"] = section
                     break
             
             # 8. Results/tables
-            if 'table' in text or 'result' in text or 'accuracy' in text or 'loss' in text:
+            if 'table' in text_lower or 'result' in text_lower or 'accuracy' in text_lower or 'loss' in text_lower:
                 score += 3.0
                 features["has_results"] = True
             
@@ -307,10 +272,18 @@ class PDFProcessor:
             if page_num < 5:
                 score += 2.0
             
+            # Determine if relevant (threshold: score >= 10)
+            is_relevant = score >= 10.0
+            
             features["score"] = score
             pdf_document.close()
             
-            return {"score": score, "features": features}
+            return {
+                "score": score,
+                "is_relevant": is_relevant,
+                "features": features,
+                "method": "heuristic"
+            }
             
         except Exception as e:
             logger.error(f"Error analyzing page {page_num} relevance: {e}")
@@ -337,13 +310,21 @@ class PDFProcessor:
             page_scores = []
             for page_num in range(total_pages):
                 analysis = self.analyze_page_relevance(pdf_bytes, page_num)
-                page_scores.append((page_num, analysis["score"], analysis["features"]))
+                is_relevant = analysis.get("is_relevant", False)
+                score = analysis.get("score", 0.0)
+                page_scores.append((page_num, score, is_relevant, analysis.get("features", {})))
             
-            # Sort by score (descending)
-            page_scores.sort(key=lambda x: x[1], reverse=True)
+            # Filter to only relevant pages first, then sort by score
+            relevant_pages_with_scores = [(p, s, f) for p, s, is_rel, f in page_scores if is_rel]
             
-            # Get top N pages
-            relevant_pages = [page_num for page_num, score, features in page_scores[:max_pages]]
+            # If we have enough relevant pages, use those; otherwise use top N by score
+            if len(relevant_pages_with_scores) >= max_pages:
+                relevant_pages_with_scores.sort(key=lambda x: x[1], reverse=True)
+                relevant_pages = [p for p, s, f in relevant_pages_with_scores[:max_pages]]
+            else:
+                # Not enough relevant pages, use top N by score regardless
+                page_scores.sort(key=lambda x: x[1], reverse=True)
+                relevant_pages = [page_num for page_num, score, is_rel, features in page_scores[:max_pages]]
             
             # Always include first 2 pages (abstract/intro) if not already included
             for page_num in range(min(2, total_pages)):
@@ -356,7 +337,7 @@ class PDFProcessor:
             logger.info(f"Identified {len(relevant_pages)} relevant pages out of {total_pages} total pages")
             if page_scores:
                 top_pages = page_scores[:5]
-                logger.info(f"Top 5 pages by relevance: {[(p, f'{s:.1f}') for p, s, _ in top_pages]}")
+                logger.info(f"Top 5 pages by relevance: {[(p, f'{s:.1f}') for p, s, _, _ in top_pages]}")
             
             return relevant_pages
             
@@ -426,24 +407,76 @@ class PDFProcessor:
             logger.error(f"Error splitting PDF into chunks: {e}")
             return []
     
-    def process_pdf_chunk(self, pdf_bytes: bytes, page_start: int, page_end: int, 
-                         dpi: int = 150) -> Optional[List[str]]:
+    def extract_pdf_pages_as_bytes(self, pdf_bytes: bytes, page_start: int, page_end: int) -> Optional[bytes]:
         """
-        Process a PDF chunk: extract pages and convert to base64-encoded images.
+        Extract a range of PDF pages and return as a new PDF containing only those pages.
+        
+        Args:
+            pdf_bytes: Original PDF file as bytes
+            page_start: Starting page number (0-indexed)
+            page_end: Ending page number (exclusive, 0-indexed)
+            
+        Returns:
+            PDF bytes containing only the specified pages, or None if extraction fails
+        """
+        try:
+            # Open original PDF
+            original_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            total_pages = len(original_doc)
+            
+            # Clamp page range to valid pages
+            page_start = max(0, min(page_start, total_pages - 1))
+            page_end = max(page_start + 1, min(page_end, total_pages))
+            
+            # Create new PDF with selected pages
+            new_doc = fitz.open()  # Create empty PDF
+            
+            for page_num in range(page_start, page_end):
+                new_doc.insert_pdf(original_doc, from_page=page_num, to_page=page_num)
+            
+            # Convert to bytes
+            pdf_bytes_out = new_doc.tobytes()
+            
+            original_doc.close()
+            new_doc.close()
+            
+            logger.debug(f"Extracted pages {page_start + 1}-{page_end} as PDF ({len(pdf_bytes_out)} bytes)")
+            return pdf_bytes_out
+            
+        except Exception as e:
+            logger.error(f"Error extracting PDF pages as bytes: {e}")
+            return None
+    
+    def pdf_to_base64(self, pdf_bytes: bytes) -> str:
+        """
+        Convert PDF bytes to base64-encoded string for Bedrock API.
+        
+        Args:
+            pdf_bytes: PDF file as bytes
+            
+        Returns:
+            Base64-encoded PDF string
+        """
+        return base64.b64encode(pdf_bytes).decode('utf-8')
+    
+    def process_pdf_chunk(self, pdf_bytes: bytes, page_start: int, page_end: int) -> Optional[str]:
+        """
+        Process a PDF chunk: extract pages and convert to base64-encoded PDF.
         
         Args:
             pdf_bytes: PDF file as bytes
             page_start: Starting page number (0-indexed)
             page_end: Ending page number (exclusive, 0-indexed)
-            dpi: Resolution for rendering (default: 150)
             
         Returns:
-            List of base64-encoded image strings, or None if processing fails
+            Base64-encoded PDF string, or None if processing fails
         """
-        images = self.extract_pdf_pages_as_images(pdf_bytes, page_start, page_end, dpi)
-        if not images:
+        # Extract pages as PDF bytes
+        pdf_chunk_bytes = self.extract_pdf_pages_as_bytes(pdf_bytes, page_start, page_end)
+        if not pdf_chunk_bytes:
             return None
         
-        base64_images = self.images_to_base64(images)
-        return base64_images
+        # Convert to base64
+        base64_pdf = self.pdf_to_base64(pdf_chunk_bytes)
+        return base64_pdf
 

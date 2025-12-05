@@ -50,9 +50,12 @@ class ChunkedPyTorchGenerator:
         self.use_smart_pdf_chunking = use_smart_pdf_chunking
         self.max_pdf_chunks = max_pdf_chunks
 
-        # Initialize PDF processor
-        self.pdf_processor = PDFProcessor(aws_region=self.opensearch_client.aws_region)
-        logger.info("PDF processor initialized - PDF vision processing enabled")
+        # Initialize PDF processor with classifier
+        self.pdf_processor = PDFProcessor(
+            aws_region=self.opensearch_client.aws_region,
+            use_classifier=True
+        )
+        logger.info("PDF processor initialized - PDF document processing with classifier enabled")
 
         # Results directory for saving chunk results locally (gitignored)
         self.results_base_dir = Path(__file__).parent.parent / "results"
@@ -74,7 +77,7 @@ class ChunkedPyTorchGenerator:
         paper_summary: str,
     ) -> Dict[str, Any]:
         """
-        Process a single PDF chunk using vision capabilities.
+        Process a single PDF chunk using PDF document input.
 
         Args:
             pdf_bytes: PDF file as bytes
@@ -89,22 +92,22 @@ class ChunkedPyTorchGenerator:
         """
         chunk_start = time.time()
         try:
-            # Extract PDF pages as images
-            base64_images = self.pdf_processor.process_pdf_chunk(
-                pdf_bytes, page_start, page_end, dpi=150
+            # Extract PDF pages as a new PDF (containing only relevant pages)
+            base64_pdf = self.pdf_processor.process_pdf_chunk(
+                pdf_bytes, page_start, page_end
             )
 
-            if not base64_images:
+            if not base64_pdf:
                 return {
                     "chunk_number": chunk_number,
                     "success": False,
-                    "error": "Failed to extract images from PDF pages",
+                    "error": "Failed to extract PDF pages",
                     "processing_time": time.time() - chunk_start,
                 }
 
-            # Summarize using vision
-            result = self.chunked_bedrock_client.summarize_pdf_chunk_with_vision(
-                base64_images=base64_images,
+            # Summarize using PDF document input
+            result = self.chunked_bedrock_client.summarize_pdf_chunk(
+                base64_pdf=base64_pdf,
                 chunk_number=chunk_number,
                 total_chunks=total_chunks,
                 paper_summary=paper_summary,
@@ -120,8 +123,8 @@ class ChunkedPyTorchGenerator:
                     "summary_length": len(result["summary"]),
                     "processing_time": time.time() - chunk_start,
                     "pages": result.get("pages", f"{page_start + 1}-{page_end}"),
-                    "num_images": result.get("num_images", len(base64_images)),
-                    "chunk_type": "pdf_vision",
+                    "num_pages": result.get("num_pages", page_end - page_start),
+                    "chunk_type": "pdf_document",
                 }
             else:
                 return {

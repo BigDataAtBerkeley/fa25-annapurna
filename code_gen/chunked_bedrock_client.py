@@ -15,6 +15,8 @@ import boto3
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
+MODEL_ID = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -28,12 +30,9 @@ class ChunkedBedrockClient:
         Initialize Bedrock client for chunked generation.
         """
         self.aws_region = os.getenv("AWS_REGION", "us-east-1")
-
-        # Currently using haiku for its fast processing
-        model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
-        self.chunk_model_id = model_id
-        self.final_model_id = model_id
-        self.model_id = model_id  # Alias for compatibility with CodeReviewAgent
+        self.chunk_model_id = MODEL_ID
+        self.final_model_id = MODEL_ID
+        self.model_id = MODEL_ID
 
         from botocore.config import Config
 
@@ -50,9 +49,9 @@ class ChunkedBedrockClient:
         logger.info(f"  - Final model: {self.final_model_id}")
         logger.info(f"  - Chunk delay: {self.chunk_delay}s")
 
-    def summarize_pdf_chunk_with_vision(
+    def summarize_pdf_chunk(
         self,
-        base64_images: List[str],
+        base64_pdf: str,
         chunk_number: int,
         total_chunks: int,
         paper_summary: str,
@@ -60,11 +59,11 @@ class ChunkedBedrockClient:
         page_end: int,
     ) -> Dict[str, Any]:
         """
-        Generate a detailed summary of a PDF chunk using vision capabilities.
+        Generate a detailed summary of a PDF chunk using PDF document input.
         Extracts formulas and diagrams from PDF pages.
 
         Args:
-            base64_images: List of base64-encoded PNG images (one per page)
+            base64_pdf: Base64-encoded PDF string (containing the relevant pages)
             chunk_number: Current chunk number (1-indexed)
             total_chunks: Total number of chunks
             paper_summary: Overall paper summary (title, authors, abstract)
@@ -109,40 +108,43 @@ This summary will be combined with summaries from other chunks to generate compl
 Format your response as a structured summary with clear sections.
 """
 
-        # Build multimodal content: images + text
-        content: List[Dict[str, Any]] = []
-
-        # Add each image with its description
-        for base64_image in base64_images:
-            content.append(
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": base64_image,
-                    },
-                }
-            )
-
-        # Add text prompt after images
-        content.append(
-            {
-                "type": "text",
-                "text": prompt,
-            }
-        )
-
+        import base64 as b64
+        pdf_bytes = b64.b64decode(base64_pdf)
+        
+        try:
+            import fitz
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            clean_pdf_bytes = doc.tobytes(garbage=4, deflate=True)
+            doc.close()
+        except Exception as e:
+            logger.warning(f"Could not clean PDF, using original: {e}")
+            clean_pdf_bytes = pdf_bytes
+        
+        pdf_b64 = b64.b64encode(clean_pdf_bytes).decode("utf-8")
+        
         body = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096,
-            "temperature": 0.2,
             "messages": [
                 {
                     "role": "user",
-                    "content": content,
+                    "content": [
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": pdf_b64
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
                 }
             ],
+            "max_tokens": 4096,
+            "temperature": 0.2
         }
 
         max_retries = 8
@@ -150,10 +152,11 @@ Format your response as a structured summary with clear sections.
 
         for attempt in range(max_retries):
             try:
+                # Messages API 
                 response = self.client.invoke_model(
                     modelId=self.chunk_model_id,
                     body=json.dumps(body),
-                    contentType="application/json",
+                    contentType="application/json"
                 )
                 break
             except ClientError as e:
@@ -195,6 +198,7 @@ Format your response as a structured summary with clear sections.
                         )
                     raise
 
+        # Extract text from Messages API response
         response_body = json.loads(response["body"].read())
         summary_text = response_body["content"][0]["text"]
 
@@ -204,7 +208,7 @@ Format your response as a structured summary with clear sections.
             "summary": summary_text,
             "model_used": self.chunk_model_id,
             "pages": f"{page_start + 1}-{page_end}",
-            "num_images": len(base64_images),
+            "num_pages": page_end - page_start,
         }
 
     def summarize_batch(
