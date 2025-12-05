@@ -27,6 +27,15 @@ mkdir -p $DEPLOY_DIR
 echo "📥 Copying code_gen files..."
 cp code_gen/*.py $DEPLOY_DIR/
 
+# Copy classifier model file (required for page relevance classification)
+echo "📥 Copying classifier model..."
+if [ -f code_gen/page_classifier_model.pkl ]; then
+    cp code_gen/page_classifier_model.pkl $DEPLOY_DIR/
+    echo "✅ Classifier model copied"
+else
+    echo "⚠️  Warning: page_classifier_model.pkl not found - classifier will not work!"
+fi
+
 # Install dependencies for Linux (Lambda runs on Amazon Linux)
 echo "📥 Installing dependencies for Linux (Lambda environment)..."
 echo "Note: Installing all dependencies including pymupdf (using pre-built x86_64 wheel)"
@@ -46,7 +55,7 @@ fi
 
 # Install other dependencies
 pip install -r code_gen/requirements.txt -t $DEPLOY_DIR/ --no-deps || true
-pip install boto3 opensearch-py python-dotenv requests "urllib3>=1.26.0,<2.0.0" Pillow -t $DEPLOY_DIR/
+pip install boto3 opensearch-py python-dotenv requests "urllib3>=1.26.0,<2.0.0" -t $DEPLOY_DIR/
 
 echo "✅ Dependencies installed"
 
@@ -101,8 +110,8 @@ CURRENT_ENV=$(aws lambda get-function-configuration \
   --output json 2>/dev/null || echo "{}")
 
 if [ "$CURRENT_ENV" != "{}" ] && [ "$CURRENT_ENV" != "null" ]; then
-  # Use Claude 3 Haiku (as configured in the code)
-  NEW_MODEL_ID="anthropic.claude-3-haiku-20240307-v1:0"
+  # Use Claude 3.5 Sonnet (required for PDF document support in Messages API)
+  NEW_MODEL_ID="anthropic.claude-3-5-sonnet-20240620-v1:0"
   
   # Use Python to update the JSON (more reliable than requiring jq)
   ENV_STRING=$(python3 << EOF
@@ -121,7 +130,7 @@ EOF
 )
   
   if [ -n "$ENV_STRING" ]; then
-    echo "🔄 Updating BEDROCK_MODEL_ID to Claude 3 Haiku..."
+    echo "🔄 Updating BEDROCK_MODEL_ID to Claude 3.5 Sonnet (required for PDF support)..."
     aws lambda update-function-configuration \
       --function-name $FUNCTION_NAME \
       --environment "Variables={$ENV_STRING}" > /dev/null
@@ -149,4 +158,4 @@ echo "   - AWS_REGION (e.g., us-east-1)"
 echo "   - OPENSEARCH_ENDPOINT (your OpenSearch domain endpoint)"
 echo "   - OPENSEARCH_INDEX (e.g., research-papers-v2)"
 echo "   - FLASK_EXECUTE_ENDPOINT (e.g., http://1.2.3.4:8000/execute)"
-echo "   - BEDROCK_MODEL_ID (optional, defaults to Claude 3 Haiku)"
+echo "   - BEDROCK_MODEL_ID (optional, defaults to Claude 3.5 Sonnet for PDF support)"
