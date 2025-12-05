@@ -1421,7 +1421,7 @@ def code_review():
             
             # Update most recent error with fixes_applied
             fixes_applied = {
-                'iteration': error_count,
+                'iteration': iteration_num,  # Use iteration_num, not error_count
                 'issues_found': [error_message[:200]],
                 'fixes': fixes_summary if isinstance(fixes_summary, list) else [fixes_summary],
                 'code_length_before': len(code),
@@ -1629,10 +1629,8 @@ def poll_and_process_queue():
                 
                 logger.info(f"Processing paper {paper_id} from queue")
                 
-                # Remove once done debugging.
-                clear_errors(paper_id)
-                
                 # Execute paper (this will handle code review internally if needed)
+                # NOTE: Do NOT clear errors here - we need to preserve iteration history
                 result = execute_internal(
                     paper_id=paper_id,
                     code=code,

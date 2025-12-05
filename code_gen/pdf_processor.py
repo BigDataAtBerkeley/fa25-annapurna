@@ -52,9 +52,25 @@ class PDFProcessor:
         
         if not PYMUPDF_AVAILABLE:
             raise ImportError("PyMuPDF (fitz) is required for PDF processing. Install with: pip install pymupdf")
-        self.classifier = PageRelevanceClassifier()
         
-        logger.info("PDF processor initialized")
+        # Lazy-load classifier to avoid hanging during initialization
+        self._classifier = None
+        self.use_classifier = use_classifier
+        
+        logger.info("PDF processor initialized (classifier will be loaded on first use)")
+    
+    @property
+    def classifier(self):
+        """Lazy-load classifier only when needed."""
+        if self._classifier is None and self.use_classifier:
+            try:
+                logger.info("Loading page relevance classifier (lazy load)...")
+                self._classifier = PageRelevanceClassifier()
+                logger.info("Classifier loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load classifier: {e}")
+                self._classifier = None
+        return self._classifier
     
     def download_pdf_from_s3(self, s3_bucket: str, s3_key: str) -> Optional[bytes]:
         """
@@ -137,6 +153,8 @@ class PDFProcessor:
                     
                     # Convert to score (0-100 scale for compatibility)
                     score = confidence * 100.0 if is_relevant else (1 - confidence) * 100.0
+                    
+                    logger.info(f"Page {page_num + 1}: Classifier prediction - relevant={is_relevant}, confidence={confidence:.3f}, score={score:.1f}")
                     
                     pdf_document.close()
                     return {
@@ -306,13 +324,34 @@ class PDFProcessor:
             total_pages = len(pdf_document)
             pdf_document.close()
             
-            # Analyze all pages
-            page_scores = []
+            logger.info(f"🔍 Using trained classifier to analyze {total_pages} pages for relevance")
+            
+            pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
+            page_texts = []
             for page_num in range(total_pages):
-                analysis = self.analyze_page_relevance(pdf_bytes, page_num)
-                is_relevant = analysis.get("is_relevant", False)
-                score = analysis.get("score", 0.0)
-                page_scores.append((page_num, score, is_relevant, analysis.get("features", {})))
+                page = pdf_document[page_num]
+                page_texts.append(page.get_text())
+            pdf_document.close()
+            
+            logger.info(f"Running batch classifier prediction on {len(page_texts)} pages...")
+            predictions = self.classifier.predict_batch(page_texts)
+            
+            page_scores = []
+            relevant_count = 0
+            for page_num, pred in enumerate(predictions):
+                is_relevant = pred["is_relevant"]
+                confidence = pred["confidence"]
+                score = confidence * 100.0 if is_relevant else (1 - confidence) * 100.0
+                page_scores.append((page_num, score, is_relevant, {
+                    "classifier_used": True,
+                    "confidence": confidence,
+                    "method": "classifier"
+                }))
+                if is_relevant:
+                    relevant_count += 1
+                    logger.info(f"Page {page_num + 1}: Classifier - relevant=True, confidence={confidence:.3f}, score={score:.1f}")
+            
+            logger.info(f"✅ Batch classifier analysis complete: {relevant_count}/{total_pages} pages marked as relevant")
             
             # Filter to only relevant pages first, then sort by score
             relevant_pages_with_scores = [(p, s, f) for p, s, is_rel, f in page_scores if is_rel]
@@ -334,10 +373,28 @@ class PDFProcessor:
             # Sort by page number to maintain order
             relevant_pages = sorted(set(relevant_pages))
             
+            # Sort by score for display
+            sorted_scores = sorted(page_scores, key=lambda x: x[1], reverse=True)
+            
             logger.info(f"Identified {len(relevant_pages)} relevant pages out of {total_pages} total pages")
-            if page_scores:
-                top_pages = page_scores[:5]
-                logger.info(f"Top 5 pages by relevance: {[(p, f'{s:.1f}') for p, s, _, _ in top_pages]}")
+            if sorted_scores:
+                top_10 = sorted_scores[:10]
+                top_pages_str = ", ".join([f"p{p+1}({s:.1f})" for p, s, _, _ in top_10])
+                logger.info(f"Top 10 pages by relevance score: {top_pages_str}")
+                
+                # Show which pages were selected
+                selected_pages_str = ", ".join([f"p{p+1}" for p in sorted(relevant_pages)])
+                logger.info(f"Selected pages for processing: {selected_pages_str}")
+                
+                # Show classifier vs heuristic breakdown for selected pages
+                selected_methods = {}
+                for p in relevant_pages:
+                    _, _, _, features = page_scores[p]
+                    method = features.get('method', 'heuristic')
+                    selected_methods[method] = selected_methods.get(method, 0) + 1
+                if selected_methods:
+                    method_str = ", ".join([f"{method}: {count}" for method, count in selected_methods.items()])
+                    logger.info(f"Selected pages by method: {method_str}")
             
             return relevant_pages
             
