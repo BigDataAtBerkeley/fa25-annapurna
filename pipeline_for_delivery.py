@@ -494,67 +494,59 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
         initial_code = code_gen_result["code"]
         reviewed_code = initial_code
         
-        if TRAINIUM_ENDPOINT:
-            try:
-                review_endpoint = f"{TRAINIUM_ENDPOINT}/code_review_0"
-                review_payload = {
-                    "paper_id": paper_id,
-                    "code": initial_code,
-                    "paper_summary": paper_summary
-                }
+        # Code Reviewer 0: Proactive TRN compatibility fixer (runs locally)
+        try:
+            # Import from code_gen module
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code_gen'))
+            from code_reviewer_0 import code_reviewer_0
+            
+            logger.info(f"Code Reviewer 0: Reviewing code for {paper_id}")
+            review_result = code_reviewer_0(initial_code, paper_id, paper_summary)
+            
+            if review_result and review_result.get("code"):
+                reviewed_code = review_result["code"]
+                fixes_summary = review_result.get("fixes_summary", [])
+                code_changed = review_result.get("code_changed", False)
                 
-                logger.info(f"Sending code to Code Reviewer 0 at {review_endpoint}")
-                review_response = requests.post(
-                    review_endpoint,
-                    json=review_payload,
-                    timeout=300  # 5 minute timeout for review
-                )
-                review_response.raise_for_status()
-                review_result = review_response.json()
-                
-                if review_result.get("success") and review_result.get("code"):
-                    reviewed_code = review_result["code"]
-                    fixes_summary = review_result.get("fixes_summary", [])
-                    code_changed = review_result.get("code_changed", False)
-                    
-                    if code_changed:
-                        logger.info(f"✅ Code Reviewer 0: Fixed TRN compatibility issues")
-                        logger.info(f"   Fixes: {', '.join(fixes_summary) if isinstance(fixes_summary, list) else fixes_summary}")
-                    else:
-                        logger.info(f"ℹ️ Code Reviewer 0: No changes needed - code is already TRN compatible")
-                    
-                    step2_5_result = {
-                        "success": True,
-                        "code_changed": code_changed,
-                        "fixes_summary": fixes_summary,
-                        "review_time": time.time() - step2_5_start
-                    }
+                if code_changed:
+                    logger.info(f"✅ Code Reviewer 0: Fixed TRN compatibility issues")
+                    logger.info(f"   Fixes: {', '.join(fixes_summary) if isinstance(fixes_summary, list) else fixes_summary}")
                 else:
-                    logger.warning(f"⚠️ Code Reviewer 0 failed: {review_result.get('error', 'Unknown error')}")
-                    logger.warning(f"   Using original code without TRN compatibility fixes")
-                    step2_5_result = {
-                        "success": False,
-                        "error": review_result.get("error", "Code review failed"),
-                        "code_changed": False,
-                        "review_time": time.time() - step2_5_start
-                    }
-            except Exception as e:
-                logger.warning(f"⚠️ Code Reviewer 0 error: {e}")
+                    logger.info(f"ℹ️ Code Reviewer 0: No changes needed - code is already TRN compatible")
+                
+                step2_5_result = {
+                    "success": True,
+                    "code_changed": code_changed,
+                    "fixes_summary": fixes_summary,
+                    "review_time": time.time() - step2_5_start
+                }
+            else:
+                logger.warning(f"⚠️ Code Reviewer 0 failed: No code returned")
                 logger.warning(f"   Using original code without TRN compatibility fixes")
                 step2_5_result = {
                     "success": False,
-                    "error": str(e),
+                    "error": "Code review failed - no code returned",
                     "code_changed": False,
                     "review_time": time.time() - step2_5_start
                 }
-        else:
-            logger.warning("⚠️ TRAINIUM_ENDPOINT not set - skipping Code Reviewer 0")
+        except ImportError as e:
+            logger.warning(f"⚠️ Code Reviewer 0 module not available: {e}")
+            logger.warning(f"   Using original code without TRN compatibility fixes")
             step2_5_result = {
                 "success": False,
-                "error": "TRAINIUM_ENDPOINT not set",
+                "error": f"Code Reviewer 0 module not available: {str(e)}",
                 "code_changed": False,
                 "review_time": 0,
                 "skipped": True
+            }
+        except Exception as e:
+            logger.warning(f"⚠️ Code Reviewer 0 error: {e}")
+            logger.warning(f"   Using original code without TRN compatibility fixes")
+            step2_5_result = {
+                "success": False,
+                "error": str(e),
+                "code_changed": False,
+                "review_time": time.time() - step2_5_start
             }
         
         save_step_result('code-review-0', paper_id, {

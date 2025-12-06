@@ -4,7 +4,6 @@ Splits papers into chunks, generates summaries, then combines for final code gen
 Coordinates the code gen process (uses `chunked_bedrock_client.py` to make Bedrock calls)
 """
 
-import logging
 import os
 import time
 import json
@@ -17,7 +16,16 @@ from dataset_recommender import DatasetRecommender
 from pdf_processor import PDFProcessor
 from chunked_bedrock_client import ChunkedBedrockClient
 
-logger = logging.getLogger(__name__)
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
+)
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
 
 
 class ChunkedPyTorchGenerator:

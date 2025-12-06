@@ -358,73 +358,62 @@ class PipelineHandler:
             initial_code = code_gen_result["code"]
             reviewed_code = initial_code
             
-            if FLASK_EXECUTE_ENDPOINT:
-                try:
-                    # Extract base URL from FLASK_EXECUTE_ENDPOINT (remove /execute if present)
-                    base_endpoint = FLASK_EXECUTE_ENDPOINT.rstrip('/execute').rstrip('/')
-                    review_endpoint = f"{base_endpoint}/code_review_0"
+            # Code Reviewer 0: Proactive TRN compatibility fixer (runs locally in code_gen)
+            try:
+                from code_reviewer_0 import code_reviewer_0
+                
+                # Get paper summary for context
+                paper_summary = None
+                if hasattr(self.generator, 'opensearch_client'):
+                    paper = self.generator.opensearch_client.get_paper_by_id(paper_id)
+                    if paper:
+                        paper_summary = self.generator.opensearch_client.get_paper_summary(paper)
+                
+                logger.info(f"Code Reviewer 0: Reviewing code for {paper_id}")
+                review_result = code_reviewer_0(initial_code, paper_id, paper_summary)
+                
+                if review_result and review_result.get("code"):
+                    reviewed_code = review_result["code"]
+                    fixes_summary = review_result.get("fixes_summary", [])
+                    code_changed = review_result.get("code_changed", False)
                     
-                    # Get paper summary for context
-                    paper_summary = None
-                    if hasattr(self.generator, 'opensearch_client'):
-                        paper = self.generator.opensearch_client.get_paper_by_id(paper_id)
-                        if paper:
-                            paper_summary = self.generator.opensearch_client.get_paper_summary(paper)
-                    
-                    review_payload = {
-                        "paper_id": paper_id,
-                        "code": initial_code,
-                        "paper_summary": paper_summary
-                    }
-                    
-                    logger.info(f"Code Reviewer 0: Reviewing code for {paper_id}")
-                    review_response = requests.post(
-                        review_endpoint,
-                        json=review_payload,
-                        timeout=300  # 5 minute timeout for review
-                    )
-                    review_response.raise_for_status()
-                    review_result = review_response.json()
-                    
-                    if review_result.get("success") and review_result.get("code"):
-                        reviewed_code = review_result["code"]
-                        fixes_summary = review_result.get("fixes_summary", [])
-                        code_changed = review_result.get("code_changed", False)
-                        
-                        if code_changed:
-                            logger.info(f"✅ Code Reviewer 0: Fixed TRN compatibility issues")
-                            logger.info(f"   Fixes: {', '.join(fixes_summary) if isinstance(fixes_summary, list) else fixes_summary}")
-                        else:
-                            logger.info(f"ℹ️ Code Reviewer 0: No changes needed - code is already TRN compatible")
-                        
-                        result["code_review_0"] = {
-                            "success": True,
-                            "code_changed": code_changed,
-                            "fixes_summary": fixes_summary
-                        }
+                    if code_changed:
+                        logger.info(f"✅ Code Reviewer 0: Fixed TRN compatibility issues")
+                        logger.info(f"   Fixes: {', '.join(fixes_summary) if isinstance(fixes_summary, list) else fixes_summary}")
                     else:
-                        logger.warning(f"⚠️ Code Reviewer 0 failed: {review_result.get('error', 'Unknown error')}")
-                        logger.warning(f"   Using original code without TRN compatibility fixes")
-                        result["code_review_0"] = {
-                            "success": False,
-                            "error": review_result.get("error", "Code review failed"),
-                            "code_changed": False
-                        }
-                except Exception as e:
-                    logger.warning(f"⚠️ Code Reviewer 0 error: {e}")
+                        logger.info(f"ℹ️ Code Reviewer 0: No changes needed - code is already TRN compatible")
+                    
+                    result["code_review_0"] = {
+                        "success": True,
+                        "code_changed": code_changed,
+                        "fixes_summary": fixes_summary
+                    }
+                else:
+                    logger.warning(f"⚠️ Code Reviewer 0 failed: No code returned")
                     logger.warning(f"   Using original code without TRN compatibility fixes")
                     result["code_review_0"] = {
                         "success": False,
-                        "error": str(e),
+                        "error": "Code review failed - no code returned",
                         "code_changed": False
                     }
-            else:
-                logger.warning("⚠️ FLASK_EXECUTE_ENDPOINT not set - skipping Code Reviewer 0")
+            except ImportError as e:
+                logger.warning(f"⚠️ Code Reviewer 0 module not available: {e}")
+                logger.warning(f"   Using original code without TRN compatibility fixes")
                 result["code_review_0"] = {
                     "success": False,
-                    "error": "FLASK_EXECUTE_ENDPOINT not set",
+                    "error": f"Code Reviewer 0 module not available: {str(e)}",
                     "code_changed": False,
                     "skipped": True
+                }
+            except Exception as e:
+                logger.warning(f"⚠️ Code Reviewer 0 error: {e}")
+                logger.warning(f"   Using original code without TRN compatibility fixes")
+                import traceback
+                logger.debug(f"Code Reviewer 0 traceback: {traceback.format_exc()}")
+                result["code_review_0"] = {
+                    "success": False,
+                    "error": str(e),
+                    "code_changed": False
                 }
             
             # Update code to use reviewed version

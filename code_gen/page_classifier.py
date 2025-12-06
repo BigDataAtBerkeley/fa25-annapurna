@@ -17,7 +17,16 @@ from sklearn.preprocessing import StandardScaler
 from scipy.sparse import hstack, csr_matrix
 import pandas as pd
 
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
+
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 
 
 class PageRelevanceClassifier:

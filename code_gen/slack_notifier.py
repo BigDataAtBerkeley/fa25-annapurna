@@ -14,7 +14,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-logger = logging.getLogger(__name__)
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
+)
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 
 class SlackNotifier:

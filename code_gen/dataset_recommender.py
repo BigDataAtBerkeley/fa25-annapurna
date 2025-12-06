@@ -7,13 +7,21 @@ for training models described in the papers.
 
 import os
 import json
-import logging
 import re
 from typing import Dict, Any, List, Optional, Set
 import boto3
 from botocore.exceptions import ClientError
 
-logger = logging.getLogger(__name__)
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
+)
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
 
 DATASET_KNOWLEDGE_BASE = {
     # Computer Vision - Image Classification

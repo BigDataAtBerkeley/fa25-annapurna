@@ -494,29 +494,108 @@ class SlackNotifier:
                     }
                 })
             
-            # Results S3 link (if available)
-            if paper.get('results_s3_location'):
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*📊 Results Location:*\n`{paper['results_s3_location']}`"
-                    }
-                })
+            # Execution metrics (if available) - check both paper (from OpenSearch) and execution_result
+            execution_metrics = paper.get('execution_metrics', {})
+            # Also check execution_result for metrics (in case OpenSearch hasn't been updated yet)
+            if not execution_metrics and execution_result:
+                # Check for metrics in various possible locations
+                execution_metrics = execution_result.get('metrics', {}) or execution_result.get('detailed_metrics', {})
+                # Also check if metrics are directly in execution_result (from **metrics spread)
+                if not execution_metrics:
+                    # Extract common metric keys from execution_result
+                    metric_keys = ['epoch', 'epochs', 'loss', 'training_loss', 'accuracy', 'val_accuracy', 'learning_rate', 'lr']
+                    execution_metrics = {k: execution_result.get(k) for k in metric_keys if execution_result.get(k) is not None}
             
-            # Profiler information (if available)
-            if paper.get('profiler_enabled'):
-                profiler_files = paper.get('profiler_files', [])
-                profiler_s3 = paper.get('profiler_s3_location', '')
-                perfetto_file = paper.get('profiler_perfetto_file', '')
+            if execution_metrics:
+                metrics_text = "*📈 Training Metrics:*\n"
+                # Extract common metrics
+                metrics_to_show = []
+                if 'epoch' in execution_metrics or 'epochs' in execution_metrics:
+                    epochs = execution_metrics.get('epoch') or execution_metrics.get('epochs')
+                    metrics_to_show.append(f"Epochs: {epochs}")
+                if 'loss' in execution_metrics or 'training_loss' in execution_metrics:
+                    loss = execution_metrics.get('loss') or execution_metrics.get('training_loss')
+                    metrics_to_show.append(f"Loss: {loss:.4f}" if isinstance(loss, (int, float)) else f"Loss: {loss}")
+                if 'accuracy' in execution_metrics or 'val_accuracy' in execution_metrics:
+                    acc = execution_metrics.get('accuracy') or execution_metrics.get('val_accuracy')
+                    metrics_to_show.append(f"Accuracy: {acc:.4f}" if isinstance(acc, (int, float)) else f"Accuracy: {acc}")
+                if 'learning_rate' in execution_metrics or 'lr' in execution_metrics:
+                    lr = execution_metrics.get('learning_rate') or execution_metrics.get('lr')
+                    metrics_to_show.append(f"LR: {lr}")
                 
-                profiler_text = f"*🔬 Profiler Enabled*\n"
+                if metrics_to_show:
+                    metrics_text += " • ".join(metrics_to_show)
+                    blocks.append({
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": metrics_text
+                        }
+                    })
+            
+            # Results S3 link (if available) - make it clickable
+            # Check both paper (from OpenSearch) and execution_result
+            results_s3_location = paper.get('results_s3_location', '') or execution_result.get('s3_results_key', '')
+            if not results_s3_location and execution_result:
+                # Construct from known bucket and paper_id
+                results_bucket = os.getenv('RESULTS_BUCKET', 'trainium-execution-results')
+                paper_id = paper.get('_id', '')
+                if paper_id:
+                    results_s3_location = f"s3://{results_bucket}/results/{paper_id}/execution_result.json"
+            
+            if results_s3_location:
+                # Parse S3 location to create console URL
+                if results_s3_location.startswith('s3://'):
+                    s3_path = results_s3_location[5:]  # Remove 's3://'
+                    bucket, key = s3_path.split('/', 1) if '/' in s3_path else (s3_path, '')
+                    aws_region = os.getenv('AWS_REGION', 'us-east-1')
+                    s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{bucket}?prefix={key}"
+                    blocks.append({
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*📊 Execution Results:*\n<{s3_console_url}|View in S3 Console>\n`{results_s3_location}`\n*Contains:* Metrics, epochs, loss, stdout/stderr, and execution details"
+                        }
+                    })
+                else:
+                    # Fallback if not in s3:// format
+                    blocks.append({
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*📊 Execution Results:*\n`{results_s3_location}`"
+                        }
+                    })
+            
+            # Profiler information (if available) - make it clickable
+            profiler_info = execution_result.get('profiler', {}) if execution_result else {}
+            if paper.get('profiler_enabled') or profiler_info.get('profiler_enabled'):
+                profiler_files = paper.get('profiler_files', []) or profiler_info.get('profiler_files', [])
+                profiler_s3 = paper.get('profiler_s3_location', '')
+                perfetto_file = paper.get('profiler_perfetto_file', '') or profiler_info.get('perfetto_file', '')
+                
+                # Construct profiler S3 location if not available
+                if not profiler_s3:
+                    results_bucket = os.getenv('RESULTS_BUCKET', 'trainium-execution-results')
+                    paper_id = paper.get('_id', '')
+                    if paper_id:
+                        profiler_s3 = f"s3://{results_bucket}/profiler/{paper_id}/"
+                
+                profiler_text = f"*🔬 Profiler Artifacts*\n"
                 if profiler_s3:
-                    profiler_text += f"S3 Location: `{profiler_s3}`\n"
+                    # Parse S3 location to create console URL
+                    if profiler_s3.startswith('s3://'):
+                        s3_path = profiler_s3[5:]  # Remove 's3://'
+                        bucket, key_prefix = s3_path.split('/', 1) if '/' in s3_path else (s3_path, '')
+                        aws_region = os.getenv('AWS_REGION', 'us-east-1')
+                        s3_console_url = f"https://s3.console.aws.amazon.com/s3/buckets/{bucket}?prefix={key_prefix}"
+                        profiler_text += f"<{s3_console_url}|View in S3 Console>\n`{profiler_s3}`\n"
+                    else:
+                        profiler_text += f"S3 Location: `{profiler_s3}`\n"
                 if perfetto_file:
                     profiler_text += f"Perfetto File: `{perfetto_file}`\n"
                 if profiler_files:
-                    profiler_text += f"Files: {len(profiler_files)} profiler files generated"
+                    profiler_text += f"*Files:* {len(profiler_files)} profiler files (including .ptrace files)"
                 
                 blocks.append({
                     "type": "section",
