@@ -591,6 +591,47 @@ python debugging/check_error.py <paper_id>
 # check if its disabled or enabled
 `aws events describe-rule --name papers-cron-job-1hour --region us-east-1 --query 'State' --output text`
 
+### Manually invoking cron job
+`aws lambda invoke --function-name PapersCronJob --region us-east-1 --payload '{}' /tmp/cron_response.json && cat /tmp/cron_response.json | python3 -m json.tool`
+
+# Step 1: Reduce visibility timeout to make in-flight messages visible quickly
+aws sqs set-queue-attributes \
+  --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/code-evaluation.fifo \
+  --attributes VisibilityTimeout=60 \
+  --region us-east-1
+
+# Step 2: Wait for in-flight messages to become visible
+echo "⏳ Waiting 65 seconds for in-flight messages to become visible..."
+sleep 65
+
+# Step 3: Purge the queue
+aws sqs purge-queue \
+  --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/code-evaluation.fifo \
+  --region us-east-1
+
+# Step 4: Restore visibility timeout
+aws sqs set-queue-attributes \
+  --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/code-evaluation.fifo \
+  --attributes VisibilityTimeout=900 \
+  --region us-east-1
+
+# Step 5: Verify queue is empty
+aws sqs get-queue-attributes \
+  --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/code-evaluation.fifo \
+  --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
+  --region us-east-1
+
+# Step 6: Test the cron job
+aws lambda invoke \
+  --function-name PapersCronJob \
+  --region us-east-1 \
+  --payload '{}' \
+  /tmp/cron_response.json && \
+cat /tmp/cron_response.json | python3 -m json.tool
+
+# Cron job for a specific paper
+aws lambda invoke --function-name PapersCronJob --region us-east-1 --cli-binary-format raw-in-base64-out --payload '{"paper_id": "PAPER ID HERE"}' /tmp/cron_response.json && cat /tmp/cron_response.json | python3 -m json.tool
+
 ### Directory Structure
 
 ```

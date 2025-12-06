@@ -61,6 +61,31 @@ os_client = OpenSearch(
 )
 
 
+def get_paper_by_id(paper_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Get a specific paper by ID from OpenSearch.
+    
+    Args:
+        paper_id: The paper ID to retrieve
+        
+    Returns:
+        Paper data if found, None otherwise
+    """
+    try:
+        response = os_client.get(index=OPENSEARCH_INDEX, id=paper_id)
+        if response and response.get('found'):
+            paper = response['_source']
+            paper['_id'] = response['_id']
+            logger.info(f"Found paper {paper_id}: {paper.get('title', 'Unknown title')}")
+            return paper
+        else:
+            logger.warning(f"Paper {paper_id} not found in OpenSearch")
+            return None
+    except Exception as e:
+        logger.error(f"Error getting paper {paper_id} from OpenSearch: {e}")
+        return None
+
+
 def get_papers_without_execution(size: int = 3) -> List[Dict[str, Any]]:
     """
     Query OpenSearch for papers that don't have executed_on_trn = true.
@@ -542,10 +567,25 @@ def lambda_handler(event, context):
        - Papers without code: sends to code-evaluation.fifo
        - Papers with code: batches and sends to trainium
     3. Respects concurrency limits
+    
+    Event parameters:
+    - paper_id (optional): If provided, process only this specific paper
     """
     logger.info("Starting cron job execution")
     
     try:
+        # Check if a specific paper_id was provided in the event
+        paper_id = None
+        if isinstance(event, dict):
+            paper_id = event.get('paper_id')
+        elif isinstance(event, str):
+            # Try to parse as JSON if it's a string
+            try:
+                event_dict = json.loads(event)
+                paper_id = event_dict.get('paper_id')
+            except:
+                pass
+        
         # Step 0: Manage Trainium instance based on queue status
         papers_waiting = get_papers_waiting_for_execution()
         
@@ -561,8 +601,23 @@ def lambda_handler(event, context):
                 logger.info("No papers waiting and no running executions - stopping Trainium instance to save costs")
                 stop_trainium_instance()
         
-        # Step 1: Get papers without execution
-        papers_to_process = get_papers_without_execution(size=MAX_PAPERS_PER_RUN)
+        # Step 1: Get papers to process
+        if paper_id:
+            # Process specific paper
+            logger.info(f"Processing specific paper: {paper_id}")
+            paper = get_paper_by_id(paper_id)
+            if not paper:
+                return {
+                    "statusCode": 404,
+                    "body": json.dumps({
+                        "message": f"Paper {paper_id} not found",
+                        "paper_id": paper_id
+                    })
+                }
+            papers_to_process = [paper]
+        else:
+            # Get papers without execution (normal cron behavior)
+            papers_to_process = get_papers_without_execution(size=MAX_PAPERS_PER_RUN)
         
         if not papers_to_process:
             logger.info("No papers found without executed_on_trn = true")
@@ -613,6 +668,7 @@ def lambda_handler(event, context):
             "statusCode": 200,
             "body": json.dumps({
                 "message": "Cron job completed",
+                "paper_id": paper_id if paper_id else None,
                 "papers_processed": len(papers_to_process),
                 "code_gen_sent": code_gen_sent,
                 "trainium_sent": trainium_sent,

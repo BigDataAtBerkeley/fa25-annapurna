@@ -167,6 +167,44 @@ if [ -z "$POLICY_ARN" ]; then
     echo "✅ Created IAM policy: $POLICY_ARN"
 else
     echo "📝 Updating existing IAM policy: $POLICY_NAME"
+    
+    # Check how many policy versions exist
+    VERSION_COUNT=$(aws iam list-policy-versions \
+        --policy-arn "$POLICY_ARN" \
+        --query 'length(Versions)' \
+        --output text 2>/dev/null || echo "0")
+    
+    # If we have 5 versions (the limit), delete the oldest non-default version
+    if [ "$VERSION_COUNT" -ge 5 ]; then
+        echo "⚠️  Policy has 5 versions (limit reached). Deleting oldest non-default version..."
+        
+        # Get the default version ID
+        DEFAULT_VERSION=$(aws iam get-policy \
+            --policy-arn "$POLICY_ARN" \
+            --query 'Policy.DefaultVersionId' \
+            --output text 2>/dev/null)
+        
+        # Try to delete versions in order (v1, v2, etc.) until we find one that's not default and can be deleted
+        DELETED=false
+        for v in v1 v2 v3 v4 v5; do
+            if [ "$v" != "$DEFAULT_VERSION" ]; then
+                echo "🗑️  Attempting to delete policy version: $v"
+                if aws iam delete-policy-version \
+                    --policy-arn "$POLICY_ARN" \
+                    --version-id "$v" > /dev/null 2>&1; then
+                    echo "✅ Deleted policy version: $v"
+                    DELETED=true
+                    break
+                fi
+            fi
+        done
+        
+        if [ "$DELETED" = false ]; then
+            echo "⚠️  Warning: Could not delete any non-default policy version. You may need to manually delete a version."
+        fi
+    fi
+    
+    # Now create the new policy version
     aws iam create-policy-version \
         --policy-arn "$POLICY_ARN" \
         --policy-document file:///tmp/lambda-policy.json \

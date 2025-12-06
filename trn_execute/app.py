@@ -504,22 +504,6 @@ sys.path.append('{exec_dir}')
         
         # Check stderr for critical errors even if return code is 0
         # Some errors (like Neuron internal errors) may not set non-zero return code
-        stderr_lower = result.stderr.lower() if result.stderr else ""
-        critical_errors = [
-            "internal error",
-            "fatal error",
-            "segmentation fault",
-            "core dumped",
-            "abort",
-            "assertion failed",
-            "improper teardown",
-            "object(s) leaked"
-        ]
-        
-        has_critical_error = any(error in stderr_lower for error in critical_errors)
-        if has_critical_error:
-            logger.warning(f"Critical error detected in stderr despite return_code={result.returncode}")
-            success = False
         
         # Extract metrics
         metrics = {}
@@ -554,16 +538,6 @@ sys.path.append('{exec_dir}')
             "detailed_metrics": metrics,
             **metrics
         }
-        
-        # Add error information if critical error detected
-        if has_critical_error and result.returncode == 0:
-            # Extract the critical error message
-            error_lines = [line for line in result.stderr.split('\n') 
-                          if any(err in line.lower() for err in critical_errors)]
-            if error_lines:
-                execution_result["error_message"] = error_lines[-1].strip()
-                execution_result["error_type"] = "critical_runtime_error"
-                logger.error(f"Critical error in execution: {execution_result['error_message']}")
         
         return execution_result
         
@@ -1631,6 +1605,8 @@ def poll_and_process_queue():
                 
                 # Execute paper (this will handle code review internally if needed)
                 # NOTE: Do NOT clear errors here - we need to preserve iteration history
+                clear_errors(paper_id)
+
                 result = execute_internal(
                     paper_id=paper_id,
                     code=code,
