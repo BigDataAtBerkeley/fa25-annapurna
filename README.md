@@ -1,164 +1,401 @@
 # Annapurna - Research Paper Pipeline
 
-Automated pipeline for scraping, evaluating, and generating code from ML research papers.
+Automated pipeline for scraping, evaluating, generating code, and executing novel ML research papers on AWS Trainium.
+
+---
+
+## Table of Contents
+
+1. [Architecture Overview](#architecture-overview)
+2. [Complete Pipeline Flow](#complete-pipeline-flow)
+3. [Components](#components)
+4. [Initial Setup](#initial-setup)
+5. [Deployment](#deployment)
+6. [Lambda Invocation](#lambda-invocation)
+7. [Cron Job Management](#cron-job-management)
+8. [Trainium Setup](#trainium-setup)
+9. [Environment Variables](#environment-variables)
+10. [Monitoring & Debugging](#monitoring--debugging)
+11. [Local Development](#local-development)
+12. [Cost Estimates](#cost-estimates)
 
 ---
 
 ## Architecture Overview
 
 ```
-Papers Scrapers (separate lambda functions for ICLR, ICML, arXiv,NEURIPS)
-    ↓
-S3 (llm-research-papers) --> all raw papers stored here (literally every single paper scraped. no papers ever deleted from this bucket)
-    ↓
-SQS (researchQueue.fifo) --> every paper from S3 thats initially scraped gets sent here. should be empty 99% of the time bc papersJudge Lambda is invoked every time a paper hits the front of this queue
-    ↓
-PapersJudge Lambda (filters relevant papers) --> every paper in researchQueue.fifo gets sent here, where a call to Claude via Bedrock determines if it should be indexed in OpenSearch (based on relevance and novelty)
-    ↓
-OpenSearch (research-papers-v2) --> intially, filtered papers and their metadata stored here (based on what Claude determined relevant and novel)
-    ↓
-PapersCodeGenerator Lambda (generates PyTorch code) --> every paper from OpenSearch gets sent here where a call to Clauda via Bedrock generates its code & grabs any dataset mentioned
-    ↓
-S3 (papers-code-artifacts) + OpenSearch (code metadata) --> code files from generated code gets stored here in S3 (PyTorch code)
-    ↓
-SQS (code-evaluation.fifo) --> every code file from papers-code-artifacts S3 gets sent here (accumulates in batches of 10)
-    ↓
-PapersCodeTester Lambda (batch dispatcher) --> triggered when 10 papers accumulate in SQS, downloads code from S3, batches them together, and sends to Trainium instance
-    ↓
-Trainium Instance (trn1.2xlarge) --> executes PyTorch code with AWS Neuron SDK and hardware acceleration, returns results to Lambda
-    ↓
-S3 (papers-test-outputs) + OpenSearch (test results) --> execution results from Trainium get stored in S3, then attached to the original paper in OpenSearch
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         RESEARCH PAPER PIPELINE                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────┐
+│ Conference      │  ICLR, ICML, NeurIPS, MLSys, ArXiv
+│ Scrapers        │  (Lambda Functions)
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ S3 Bucket       │  llm-research-papers
+│ (Raw Papers)    │  All scraped PDFs stored permanently
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ SQS Queue       │  researchQueue.fifo
+│ (Paper Queue)   │  FIFO queue, one paper at a time
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ PapersJudge     │  Lambda Function
+│ Lambda          │  - Filters papers via Claude/Bedrock
+│                 │  - Checks relevance & novelty (if both true, send to OpenSearch)
+└────────┬────────┘
+         │
+         ├─────────────────┐
+         │                 │
+         ▼                 ▼
+┌─────────────────┐  ┌─────────────────┐
+│ OpenSearch       │  │ SQS Queue        │
+│ research-papers  │  │ code-evaluation  │
+│ -v2 or -v3      │  │ .fifo            │
+│ (Metadata)       │  │ (Code Gen Queue) │
+└────────┬────────┘  └────────┬─────────┘
+         │                     │
+         │                     │
+         │                     ▼
+         │            ┌─────────────────┐
+         │            │ PapersCode       │
+         │            │ Generator        │
+         │            │ Lambda           │
+         │            │ - Generates      │
+         │            │   PyTorch code   │
+         │            │ - Uses Claude    │
+         │            │   via Bedrock    │
+         │            └────────┬─────────┘
+         │                     │
+         │                     ├─────────────────┐
+         │                     │                 │
+         │                     ▼                 ▼
+         │            ┌─────────────────┐  ┌─────────────────┐
+         │            │ S3 Bucket        │  │ SQS Queue        │
+         │            │ papers-code-     │  │ trainium-        │
+         │            │ artifacts        │  │ execution.fifo   │
+         │            │ (Generated Code) │  │ (Execution Queue)│
+         │            └─────────────────┘  └────────┬─────────┘
+         │                                          │
+         │                                          ▼
+         │                                 ┌─────────────────┐
+         │                                 │ Trainium        │
+         │                                 │ Executor        │
+         │                                 │ (Flask App)     │
+         │                                 │ - Executes code  │
+         │                                 │ - Code review    │
+         │                                 │ - Retries        │
+         │                                 └────────┬────────┘
+         │                                          │
+         │                                          ▼
+         │                                 ┌─────────────────┐
+         │                                 │ Trainium        │
+         │                                 │ Instance        │
+         │                                 │ (trn1.2xlarge)  │
+         │                                 │ - AWS Neuron    │
+         │                                 │ - Hardware      │
+         │                                 │   Acceleration  │
+         │                                 └────────┬────────┘
+         │                                          │
+         │                                          ▼
+         │                                 ┌─────────────────┐
+         │                                 │ S3 Bucket       │
+         │                                 │ papers-test-    │
+         │                                 │ outputs         │
+         │                                 │ (Results)       │
+         │                                 └────────┬────────┘
+         │                                          │
+         └──────────────────────────────────────────┘
+                          │
+                          ▼
+                 ┌─────────────────┐
+                 │ OpenSearch      │
+                 │ (Updated with   │
+                 │  results)       │
+                 └─────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         AUTOMATION LAYER                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────┐
+│ PapersCronJob   │  Lambda Function (runs every 1 hour)
+│ Lambda          │  - Queries OpenSearch for papers without execution
+│                 │  - Sends papers to code-evaluation queue
+│                 │  - Manages Trainium instance (start/stop)
+│                 │  - Respects concurrency limits
+└─────────────────┘
 ```
+
+---
+
+## Complete Pipeline Flow
+
+### Step-by-Step Process
+
+1. **Paper Scraping**
+   - Conference scrapers (ICLR, ICML, NeurIPS, MLSys, ArXiv) run via Step Functions every day via cron job
+   - Papers are downloaded and stored in S3 (`llm-research-papers` bucket)
+   - Each paper is sent to `researchQueue.fifo` SQS queue
+
+2. **Paper Filtering (Judge)**
+   - `PapersJudge` Lambda is triggered by `researchQueue.fifo` (1 message at a time)
+   - Uses Claude via Bedrock to evaluate paper relevance and novelty
+   - Relevant & novel papers are indexed in OpenSearch (`research-papers-v3`)
+
+3. **Code Generation**
+   - `PapersCodeGenerator` Lambda is triggered by `code-evaluation.fifo` (batches of 10 or after 24 hours)
+   - First step is running a trained logisitic classifier in the background to score pages by their relevance. Pages above a certain relevance threshold 
+     are then sent as raw PDF bytes to Claude via Bedrock in chunks. 
+   - Generates PyTorch code compatible with AWS Neuron SDK
+   - `code_reviewer_0.py` is invoked, which makes sure initial code generated is actually compatible with Trn. 
+   - Code is saved to S3 (`papers-code-artifacts` bucket) and sent to Slack in that paper's thread
+   - Paper metadata is updated in OpenSearch
+   - Code is sent to `trainium-execution.fifo` queue
+
+4. **Code Execution (Trainium)**
+   - Trainium executor (Flask app) processes messages from `trainium-execution.fifo`
+   - The code is sent to an async Flask app (`app.py`) to avoid Lambda timeouts, which sits on the same EC2 instance as Trn. All execution occurs here. 
+   - Code goes through a cycle of "code reviewers" where each reviewer tests the code on Trn, gets back errors, fixes them, and sends the updated code to the next code
+     reviewer. Once no errors appear from the code (or after max 6 iterations), the final code is saved to `papers-code-artifacts`, sent to that 
+     paper's thread in Slack, and tested on Trn. 
+   - Code reviewers also pull past common execution errors from a DynamoDB database using `error_db.py`
+   - After code finishes executing (succesfuly or otherwise), we update OpenSearch with execution results and metrics, as well as send results to that paper's Slack thread.
+
+5. **Automation (Cron Job)**
+   - `PapersCronJob` Lambda runs every 1 hour via EventBridge
+   - Queries OpenSearch for papers without `executed_on_trn = true`
+   - Sends papers to code generation queue (regenerates code for failed papers)
+   - Manages Trainium instance lifecycle (starts when papers waiting, stops when idle)
 
 ---
 
 ## Components
 
-### **Lambda Functions**
-1. **PaperScraper_ICLR** - Scrapes ICLR papers
-2. **PaperScraper_ICML** - Scrapes ICML papers
+### Lambda Functions
+
+1. **PaperScraper_ICLR** - Scrapes ICLR conference papers
+2. **PaperScraper_ICML** - Scrapes ICML conference papers
 3. **PaperScraper_arxiv** - Scrapes ArXiv papers
-4. **PaperScraper_NEURIPS** - Scrapes NeurIPS papers
-5. **PaperScraper_MLSYS** - Scrapes MLSys papers
-6. **PapersJudge** - Evaluates paper relevance
-7. **PapersCodeGenerator** - Generates PyTorch code from papers
-8. **PapersCodeTester** - Batches code (10 at a time) and dispatches to Trainium instance for execution
-9. **LogCleanupLambda** - Cleans up Lambda logs (optional)
+4. **PaperScraper_NEURIPS** - Scrapes NeurIPS conference papers
+5. **PaperScraper_MLSYS** - Scrapes MLSys conference papers
+6. **conferenceWrapper** - Helper Lambda for Step Functions (retrieves batch sizes)
+7. **PapersJudge** - Evaluates paper relevance using Claude/Bedrock
+8. **PapersCodeGenerator** - Generates PyTorch code from papers (container-based recommended)
+9. **PapersCodeTester** - Legacy batch dispatcher (deprecated - replaced by Trainium executor)
+10. **PapersCronJob** - Automated pipeline management (runs every 1 hour)
+11. **LogCleanupLambda** - Cleans up Lambda logs (optional)
 
-### **Compute Resources**
-- **Trainium Instance (trn1.2xlarge)** - AWS Neuron-powered instance for executing PyTorch code with hardware acceleration
+### Compute Resources
 
-### **S3 Buckets**
-- `llm-research-papers` - Scraped papers (PDFs)
-- `papers-code-artifacts` - Generated PyTorch code
-- `papers-test-outputs` - Code execution logs & results
+- **Trainium Instance (trn1.2xlarge)** - AWS Neuron-powered instance for executing PyTorch code
+  - Flask app runs on port 8000
+  - Auto-starts/stops based on queue status
+  - Hardware acceleration via AWS Neuron SDK
 
-### **SQS Queues**
-- `researchQueue.fifo` - Papers pending evaluation
-- `code-evaluation.fifo` - Code pending testing
-- `code-testing.fifo` - testing on trn instances (10 )
+### S3 Buckets
 
-### **OpenSearch Index**
-- `research-papers-v2` - All papers with metadata, code status, and test results
+- `llm-research-papers` - All scraped papers (PDFs) - permanent storage
+- `papers-code-artifacts` - Generated PyTorch code files
+- `papers-test-outputs` - Code execution logs, results, and metrics
+
+### SQS Queues
+
+- `researchQueue.fifo` - Papers pending evaluation (scraper → judge)
+  - Batch size: 1 (process one at a time)
+  - Visibility timeout: 900 seconds
+  
+- `code-evaluation.fifo` - Papers pending code generation (judge → code generator)
+  - Batch size: 10 messages OR 24 hours (whichever comes first)
+  - Visibility timeout: 900 seconds
+  
+- `trainium-execution.fifo` - Code pending execution (code generator → Trainium)
+  - Processed by Trainium executor Flask app
+  - FIFO queue for ordered processing
+
+### OpenSearch Indexes
+
+- `research-papers-v3` - Current index (used by cron job)
+  - Stores paper metadata, code status, execution results, and metrics
+
+### Step Functions
+
+- `conferenceScraper` - State machine for parallel conference scraping
+  - Uses MapState for concurrent batch processing
+  - Invokes `conferenceWrapper` and `PaperScraper_ICLR` (unified scraper)
 
 ---
 
-## Quick Start
+## Initial Setup
 
-### Initial Setup (First Time)
+### Prerequisites
+
+- AWS CLI configured with appropriate credentials
+- Python 3.9+ installed
+- Access to AWS services: Lambda, S3, SQS, OpenSearch, Bedrock, EC2, EventBridge
+- SSH key for Trainium instance access
+
+### First-Time Setup
+
 ```bash
 # Make all scripts executable
 chmod +x deployment/*.sh
 
-# 1. Setup infrastructure (SQS queues, S3 buckets, IAM policies)
+# 1. Setup SQS queues and Lambda triggers
 ./deployment/setup_sqs_queues.sh
+
+# 2. Setup pipeline infrastructure (S3 buckets, IAM policies)
 ./deployment/setup_pipeline.sh
 
-# 2. Deploy all Lambda functions
+# 3. Deploy all Lambda functions
 ./deployment/deploy_all.sh
+
+# 4. Deploy conference wrapper (for Step Functions)
+./deployment/build_conference_wrapper.sh
+
+# 5. Deploy cron job Lambda
+./deployment/build_cron_lambda.sh
+./deployment/setup_cron_job.sh
+
+# 6. Setup Trainium instance (see Trainium Setup section)
+./deployment/deploy_trainium.sh /path/to/your-key.pem
 ```
 
-### Deploy All Functions (After Initial Setup)
+---
+
+## Deployment
+
+### Deploy All Functions
+
 ```bash
 ./deployment/deploy_all.sh
 ```
+
+This deploys:
+- PapersJudge
+- All scraper Lambdas (ICLR, ICML, ArXiv, NeurIPS, MLSys)
 
 ### Deploy Individual Components
+
+#### Scrapers
+
 ```bash
-# Scrapers
+# Deploy individual scraper
 ./deployment/build_scraper.sh PaperScraper_ICLR
 ./deployment/build_scraper.sh PaperScraper_ICML
 ./deployment/build_scraper.sh PaperScraper_arxiv
 ./deployment/build_scraper.sh PaperScraper_NEURIPS
 ./deployment/build_scraper.sh PaperScraper_MLSYS
+```
 
-# Judge
+#### Judge Lambda
+
+```bash
 ./deployment/build_judge.sh
+```
 
-# Code Generator
+#### Code Generator Lambda
+
+```bash
+# Recommended: Container-based (fixes pymupdf issues)
 ./deployment/build_code_gen_lambda.sh
 
-# Code Tester
-./deployment/build_test_lambda.sh
+# Or: Docker-based deployment
+./deployment/build_lambda_container.sh
+```
 
-# Cleanup Lambda (optional)
+#### Conference Wrapper
+
+```bash
+./deployment/build_conference_wrapper.sh
+```
+
+#### Cron Job Lambda
+
+```bash
+./deployment/build_cron_lambda.sh
+./deployment/setup_cron_job.sh
+```
+
+#### Cleanup Lambda (Optional)
+
+```bash
 ./deployment/build_cleanup.sh
 ```
 
 ---
 
-## Testing & Usage
+## Lambda Invocation
 
-### Trigger Scrapers Manually
+### Trigger Scrapers
+
+#### Using Step Functions (Recommended for Production)
 
 ```bash
-
-# Execute Scraping of Conference Papers via MapState. This should be used in production.
-# If it's failing above 10 batches, check concurenncy limit. It's currently set to 10 but can be maxed at 1000.
-aws stepfunctions start-execution \                            
+# Execute scraping via Step Functions MapState
+# This handles batching and concurrency automatically
+aws stepfunctions start-execution \
   --state-machine-arn arn:aws:states:us-east-1:478852001205:stateMachine:conferenceScraper \
   --name "test-60-papers-$(date +%s)" \
-  --input '{"source": "iclr", "year": 2025, "search_term": "LLM", "batch_size": 30, "test_count": 300}'
+  --input '{
+    "source": "iclr",
+    "year": 2025,
+    "search_term": "LLM",
+    "batch_size": 30,
+    "test_count": 300
+  }'
+```
 
-# Retrive Batch Sizes for conferences
+**Parameters:**
+- `source`: Conference source (`iclr`, `icml`, `neurips`, `mlsys`)
+- `year`: Conference year (ex., `2025`)
+- `search_term`: Search term for filtering papers (ex., `"LLM"`)
+- `batch_size`: Number of papers per batch (ex., `30`)
+- `test_count`: Total number of papers to scrape (optional, for testing)
+
+#### Get Batch Sizes (Helper)
+
+```bash
+# Retrieve batch sizes for a conference
 aws lambda invoke \
   --function-name conferenceWrapper \
-  --payload '{"source": "iclr", "year": "2025", "batch_size": "30", "search_term": "LLM"}' \
+  --payload '{
+    "source": "iclr",
+    "year": "2025",
+    "batch_size": "30",
+    "search_term": "LLM"
+  }' \
   --cli-binary-format raw-in-base64-out \
   scraper_output.json
 
-# Scrape conference papers - replace "iclr" with "neurips", "mlsys", or "icml". 
-# DO NOT CHANGE "PaperScraper_ICLR" - this is scraper lambda for all conferences, the naming convention just hasn't been updated.
+cat scraper_output.json | python3 -m json.tool
+```
+
+#### Direct Lambda Invocation (Legacy)
+
+```bash
+# Scrape conference papers directly
+# Note: PaperScraper_ICLR is the unified scraper for all conferences
+# Replace "iclr" with "neurips", "mlsys", or "icml" as needed
 aws lambda invoke \
   --function-name PaperScraper_ICLR \
-  --payload '{"source": "iclr", "year": "2025", "batch_size": "5", "start_index": "100", "end_index": "105"}' \
+  --payload '{
+    "source": "iclr",
+    "year": "2025",
+    "batch_size": "5",
+    "start_index": "100",
+    "end_index": "105"
+  }' \
   --cli-binary-format raw-in-base64-out \
   scraper_output.json
 
-# OLD INVOCATION FUNCTIONS - these are still deployed, but we highley reccomend using the command above.
-aws lambda invoke \
-  --function-name PaperScraper_ICML \
-  --payload '{"MAX_PAPERS": "5"}' \
-  --cli-binary-format raw-in-base64-out \
-  scraper_output.json
-
-aws lambda invoke \
-  --function-name PaperScraper_arxiv \
-  --payload '{"MAX_PAPERS": "5"}' \
-  --cli-binary-format raw-in-base64-out \
-  scraper_output.json
-
-aws lambda invoke \
-  --function-name PaperScraper_NEURIPS \
-  --payload '{"MAX_PAPERS": "5"}' \
-  --cli-binary-format raw-in-base64-out \
-  scraper_output.json
-
-aws lambda invoke \
-  --function-name PaperScraper_MLSYS \
-  --payload '{"MAX_PAPERS": "5"}' \
-  --cli-binary-format raw-in-base64-out \
-  scraper_output.json
 ```
 
 ### Generate Code for Papers
@@ -167,129 +404,222 @@ aws lambda invoke \
 # Generate code by paper title
 aws lambda invoke \
   --function-name PapersCodeGenerator \
-  --payload '{"action":"generate_by_title","title":"{{INSERT TITLE}}","max_papers":1}' \
+  --payload '{
+    "action": "generate_by_title",
+    "title": "ResNet",
+    "max_papers": 1
+  }' \
   --cli-binary-format raw-in-base64-out \
   response.json
 
 # Generate code by paper ID
 aws lambda invoke \
   --function-name PapersCodeGenerator \
-  --payload '{"action":"generate_by_id","paper_id":"{{INSERT PAPERID}}"}' \
+  --payload '{
+    "action": "generate_by_id",
+    "paper_id": "YOUR_PAPER_ID"
+  }' \
   --cli-binary-format raw-in-base64-out \
   response.json
 
-# Generate code for recent papers (recency defined by days)
+# Generate code for recent papers
 aws lambda invoke \
   --function-name PapersCodeGenerator \
-  --payload '{"action":"generate_recent","max_papers":5}' \
+  --payload '{
+    "action": "generate_recent",
+    "max_papers": 5
+  }' \
   --cli-binary-format raw-in-base64-out \
   response.json
-
 ```
 
-### Test Generated Code on Trainium
-
-Test a specific paper's generated code directly on Trainium (bypasses full pipeline):
+### Invoke Cron Job Manually
 
 ```bash
-# Test by paper ID (downloads code from S3)
-python test_code_on_trainium.py --paper-id <PAPER_ID>
+# Invoke cron job for a random paper (sorts by ingest date, only runs for papers where executed_on_trn = False)
+aws lambda invoke \
+  --function-name PapersCronJob \
+  --region us-east-1 \
+  --payload '{}' \
+  /tmp/cron_response.json && \
+cat /tmp/cron_response.json | python3 -m json.tool
 
-# Test local code file
-python test_code_on_trainium.py --file generated_code/my_code.py --paper-id <PAPER_ID>
-
-# Test with custom timeout (default is 600s)
-python test_code_on_trainium.py --paper-id <PAPER_ID> --timeout 900
-
-# Test without saving results (for debugging)
-python test_code_on_trainium.py --paper-id <PAPER_ID> --no-save
-
-# Example with actual paper ID:
-python test_code_on_trainium.py --paper-id 6-j63JkBP8oloYi_8CJH
-```
-
-**What it does:**
-- Downloads code from S3 (or uses local file)
-- Sends to Trainium for execution
-- Saves stdout/stderr/metrics to S3
-- Updates OpenSearch with test results
-- Displays execution results and metrics
-
-**Requirements:**
-- Trainium instance running (script will auto-start if stopped)
-- Flask app deployed on Trainium (`./deployment/deploy_trainium.sh`)
-- `TRAINIUM_ENDPOINT` in `.env` (and optionally `TRAINIUM_INSTANCE_ID` for auto-start)
-
-### Test Code and View SageMaker Metrics
-
-Test code on Trainium and automatically view metrics logged to CloudWatch:
-
-```bash
-# Test code and view metrics (by paper ID from S3)
-python test_and_view_metrics.py --paper-id 6-j63JkBP8oloYi_8CJH
-
-# Test local code file and view metrics
-python test_and_view_metrics.py --file generated_code/TurboAttention_MODIFIED_with_dataset_loader.py --paper-id 6-j63JkBP8oloYi_8CJH
-
-# View existing metrics without re-running (skip execution)
-python test_and_view_metrics.py --paper-id 6-j63JkBP8oloYi_8CJH --skip-execution
-```
-
-**What it does:**
-- Executes code on Trainium (same as `test_code_on_trainium.py`)
-- Automatically logs training metrics to CloudWatch (namespace: `Trainium/Training`)
-- Waits for metrics to appear and displays summary
-- Shows CloudWatch console link and CLI commands
-
-**View metrics in CloudWatch:**
-```bash
-# List all metrics for a paper
-aws cloudwatch list-metrics --namespace "Trainium/Training" --dimensions Name=PaperId,Value=<PAPER_ID>
-
-# Get statistics for a metric
-aws cloudwatch get-metric-statistics \
-  --namespace "Trainium/Training" \
-  --metric-name training_loss \
-  --dimensions Name=PaperId,Value=<PAPER_ID> \
-  --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S) \
-  --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
-  --period 300 \
-  --statistics Average,Maximum,Minimum
-```
-
-**CloudWatch Console:** Navigate to Metrics → `Trainium/Training` → Filter by PaperId
-
-### Grabbing code locally from S3
-
-```bash
-1. python download_s3_code.py
---> this will ask you which code files to download from S3 (choose which you want)
-2. Check generated_code/
----> this should contain (a) pyTorch code that was generated and (b) metadata about the paper & its code 
-
-```
-
-### CLI Usage (Local)
-
-```bash
-# Generate code by paper ID (local)
-python -m code_gen.main_handler generate_by_id \
-  --paper-id "paper-id" \
-  --save \
-  --output-dir "code_gen/generated_code"
-
-# Generate code by title (local)
-python -m code_gen.main_handler generate_by_title \
-  --title "ResNet" \
-  --save
-
-# Generate code for 5 most recent papers
-python -m code_gen.main_handler generate_recent --max-papers 5
+# Invoke cron job for specific paper
+aws lambda invoke \
+  --function-name PapersCronJob \
+  --region us-east-1 \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"paper_id": "YOUR_PAPER_ID"}' \
+  /tmp/cron_response.json && \
+cat /tmp/cron_response.json | python3 -m json.tool
 ```
 
 ---
 
-## Monitoring (looking at logs after running scrapers/code_gen/etc locally)
+## Cron Job Management
+
+### Setup Cron Job
+
+```bash
+# Deploy cron Lambda
+./deployment/build_cron_lambda.sh
+
+# Setup EventBridge rule (runs every 1 hour)
+./deployment/setup_cron_job.sh
+```
+
+### Control Cron Job
+
+```bash
+# Pause cron job
+aws events disable-rule \
+  --name papers-cron-job-1hour \
+  --region us-east-1
+
+# Resume cron job
+aws events enable-rule \
+  --name papers-cron-job-1hour \
+  --region us-east-1
+
+# Check cron job status
+aws events describe-rule \
+  --name papers-cron-job-1hour \
+  --region us-east-1 \
+  --query 'State' \
+  --output text
+```
+
+### Cron Job Behavior
+
+- Runs every 1 hour via EventBridge
+- Queries OpenSearch for papers without `executed_on_trn = true`
+- Processes up to `MAX_PAPERS_PER_RUN` papers per execution (default: 1)
+- Sends papers to `code-evaluation.fifo` queue for code generation
+- Manages Trainium instance lifecycle (auto-start/stop)
+- Respects concurrency limits for code generation and Trainium execution
+
+---
+
+## Trainium Setup
+
+### Deploy Trainium Executor
+
+```bash
+# Deploy Flask app to Trainium instance
+./deployment/deploy_trainium.sh /path/to/your-key.pem
+
+```
+
+### Find Trainium Instance
+
+```bash
+# List Trainium instances
+aws ec2 describe-instances \
+  --region us-east-2 \
+  --filters "Name=instance-type,Values=trn1.2xlarge" \
+  --query 'Reservations[*].Instances[*].[InstanceId,State.Name,PublicIpAddress]' \
+  --output table
+```
+
+### Manage Trainium Instance
+
+```bash
+# Start instance
+aws ec2 start-instances \
+  --region us-east-2 \
+  --instance-ids i-0f0bf0de25aa4fd57
+
+# Stop instance
+aws ec2 stop-instances \
+  --region us-east-2 \
+  --instance-ids i-0f0bf0de25aa4fd57
+
+# Check instance status
+aws ec2 describe-instances \
+  --region us-east-2 \
+  --instance-ids i-0f0bf0de25aa4fd57 \
+  --query 'Reservations[0].Instances[0].State.Name' \
+  --output text
+```
+
+**Note:** The cron job automatically manages Trainium instance lifecycle based on queue status.
+
+### Trainium Executor Endpoints
+
+- `GET /health` - Health check endpoint
+- `POST /execute` - Execute code asynchronously
+- `GET /status` - Get execution status
+- `POST /code_review` - Code review endpoint (internal)
+
+---
+
+## Environment Variables
+
+### Scraper Lambdas (PaperScraper_*)
+
+```bash
+CONFERENCE=ICLR                    # Conference to scrape
+CONFERENCE_YEAR=2025               # Year
+MAX_PAPERS=3                       # Max papers to process
+BUCKET_NAME=llm-research-papers    # S3 bucket for PDFs
+QUEUE_URL=https://sqs.us-east-1.amazonaws.com/478852001205/researchQueue.fifo
+```
+
+### PapersJudge Lambda
+
+```bash
+AWS_REGION=us-east-1
+OPENSEARCH_ENDPOINT=https://your-opensearch-endpoint.us-east-1.es.amazonaws.com
+OPENSEARCH_INDEX=research-papers-v2
+CODE_EVAL_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/478852001205/code-evaluation.fifo
+BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20240620-v1:0
+```
+
+### PapersCodeGenerator Lambda
+
+```bash
+AWS_REGION=us-east-1
+OPENSEARCH_ENDPOINT=https://your-opensearch-endpoint.us-east-1.es.amazonaws.com
+OPENSEARCH_INDEX=research-papers-v2
+BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20240620-v1:0  # Only 3-5 and 4-5 support direct PDF sends (Haiku won't work) 
+CODE_BUCKET=papers-code-artifacts
+TRAINIUM_EXECUTION_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/478852001205/trainium-execution.fifo
+USE_QUEUE_FOR_EXECUTION=true
+ENABLE_EXECUTION_TESTING=false
+TRAINIUM_EXECUTION_TIMEOUT=3600
+```
+
+### PapersCronJob Lambda
+
+```bash
+AWS_REGION=us-east-1
+OPENSEARCH_ENDPOINT=https://your-opensearch-endpoint.us-east-1.es.amazonaws.com
+OPENSEARCH_INDEX=research-papers-v3
+CODE_EVAL_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/478852001205/code-evaluation.fifo
+TRAINIUM_ENDPOINT=http://YOUR_TRAINIUM_IP:8000
+TRAINIUM_INSTANCE_ID=i-0f0bf0de25aa4fd57
+TRAINIUM_EXECUTION_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/478852001205/trainium-execution.fifo
+MAX_CODE_GEN_CONCURRENT=5
+MAX_TRAINIUM_CONCURRENT=1
+MAX_PAPERS_PER_RUN=1
+```
+
+### Trainium Executor (Flask App)
+
+```bash
+# Set in .env file on Trainium instance
+AWS_REGION=us-east-1
+OPENSEARCH_ENDPOINT=https://your-opensearch-endpoint.us-east-1.es.amazonaws.com
+OPENSEARCH_INDEX=research-papers-v3
+CODE_BUCKET=papers-code-artifacts
+OUTPUTS_BUCKET=papers-test-outputs
+SAGEMAKER_METRICS_ENABLED=true
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+```
+
+---
+
+## Monitoring & Debugging
 
 ### View Lambda Logs
 
@@ -303,63 +633,31 @@ aws logs tail /aws/lambda/PaperScraper_MLSYS --since 5m --follow
 
 # Judge logs
 aws logs tail /aws/lambda/PapersJudge --since 15m --follow
-a
+
 # Code Generator logs
 aws logs tail /aws/lambda/PapersCodeGenerator --since 5m --follow
 
-# Code Tester logs
-aws logs tail /aws/lambda/PapersCodeTester --since 5m --follow
+# Cron Job logs
+aws logs tail /aws/lambda/PapersCronJob --since 5m --follow
 ```
 
 ### Check SQS Queues
 
 ```bash
-# Papers queue (scraper → judge)
+# Research queue (scraper → judge)
 aws sqs get-queue-attributes \
   --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/researchQueue.fifo \
-  --attribute-names ApproximateNumberOfMessages
+  --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible
 
-# Code testing queue (generator → tester)
+# Code evaluation queue (judge → code generator)
 aws sqs get-queue-attributes \
   --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/code-evaluation.fifo \
-  --attribute-names ApproximateNumberOfMessages
-```
+  --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible
 
-### Check OpenSearch 
-
-```bash
-# View all papers and their status
-python debugging/check_opensearch.py
-
-# Clear OpenSearch (DO NOT RUN UNLESS ASKING DAN FIRST (anyways this file is gitignored))
-python clear_opensearch.py
-```
-
-### Setup Queues (First Time Only)
-
-```bash
-# Create all SQS queues and configure Lambda triggers
-chmod +x deployment/setup_sqs_queues.sh
-./deployment/setup_sqs_queues.sh
-```
-
-### Initial Setup
-
-```bash
-# 1. Setup SQS queues and infrastructure
-./deployment/setup_sqs_queues.sh
-
-# 2. Setup pipeline (S3 buckets, IAM policies)
-./deployment/setup_pipeline.sh
-
-# 3. Deploy all Lambda functions
-./deployment/deploy_all.sh
-
-#4. Deploy indiviudal lambda
-./deployment/build_judge.sh
-
-# 4. Setup Trainium instance (if needed)
-./deployment/deploy_trainium.sh /path/to/your-key.pem
+# Trainium execution queue (code generator → Trainium)
+aws sqs get-queue-attributes \
+  --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/trainium-execution.fifo \
+  --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible
 ```
 
 ### Check Pipeline Status
@@ -377,139 +675,114 @@ aws sqs get-queue-attributes --queue-url $CODE_EVAL \
   --attribute-names ApproximateNumberOfMessages \
   --query 'Attributes.ApproximateNumberOfMessages' --output text | xargs -I {} echo "code-evaluation: {} messages"
 
-CODE_TEST=$(aws sqs get-queue-url --queue-name code-testing.fifo --query 'QueueUrl' --output text)
-aws sqs get-queue-attributes --queue-url $CODE_TEST \
+TRAINIUM_QUEUE=$(aws sqs get-queue-url --queue-name trainium-execution.fifo --query 'QueueUrl' --output text)
+aws sqs get-queue-attributes --queue-url $TRAINIUM_QUEUE \
   --attribute-names ApproximateNumberOfMessages \
-  --query 'Attributes.ApproximateNumberOfMessages' --output text | xargs -I {} echo "code-testing: {} messages"
+  --query 'Attributes.ApproximateNumberOfMessages' --output text | xargs -I {} echo "trainium-execution: {} messages"
 ```
 
-### Check OpenSearch Field Mapping
+### Check OpenSearch
 
 ```bash
-# View all fields in OpenSearch index (should show 66 fields)
+# View all papers and their status
+python debugging/check_opensearch.py
+
+# Check OpenSearch field mapping
 python debugging/check_opensearch_mapping.py
+
+# Check specific paper
+python debugging/check_error.py <paper_id>
+```
+
+### View Trainium Execution Logs
+
+```bash
+# SSH into Trainium instance
+ssh -i /path/to/key.pem ec2-user@<TRAINIUM_IP>
+
+# View Flask app logs
+tail -f ~/trainium-executor/logs/trainium-executor.log
+
+# View systemd service logs
+sudo journalctl -u trainium-executor -f
+```
+
+### Purge SQS Queue (Emergency)
+
+```bash
+
+# Purge queue
+aws sqs purge-queue \
+  --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/code-evaluation.fifo \
+  --region us-east-1
+
+# Verify queue is empty
+aws sqs get-queue-attributes \
+  --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/code-evaluation.fifo \
+  --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
+  --region us-east-1
+```
+
+### CloudWatch Metrics
+
+Training metrics from Trainium executions are automatically logged to CloudWatch:
+
+```bash
+# List all metrics for a paper
+aws cloudwatch list-metrics \
+  --namespace "Trainium/Training" \
+  --dimensions Name=PaperId,Value=<PAPER_ID>
+
+# Get statistics for a metric
+aws cloudwatch get-metric-statistics \
+  --namespace "Trainium/Training" \
+  --metric-name training_loss \
+  --dimensions Name=PaperId,Value=<PAPER_ID> \
+  --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
+  --period 300 \
+  --statistics Average,Maximum,Minimum
+```
+
+**CloudWatch Console:** Navigate to Metrics → `Trainium/Training` → Filter by PaperId
+
+---
+
+## Local Development
+
+### Generate Code Locally
+
+```bash
+# Generate code by paper ID
+python -m code_gen.main_handler generate_by_id \
+  --paper-id "paper-id" \
+  --save \
+  --output-dir "code_gen/generated_code"
+
+# Generate code by title
+python -m code_gen.main_handler generate_by_title \
+  --title "ResNet" \
+  --save
+
+# Generate code for recent papers
+python -m code_gen.main_handler generate_recent --max-papers 5
+```
+
+### Download Code/Results from S3
+
+```bash
+# Download generated code from S3
+python download_s3_code.py
+
+# Download test results from S3
+python download_test_results.py
 ```
 
 ---
 
-## Environment Variables
+## Cost Estimates
 
-### Scraper Lambda
-- `CONFERENCE` - Conference to scrape ("ICLR", "ICML", "BOTH")
-- `CONFERENCE_YEAR` - Year (default: "2025")
-- `MAX_PAPERS` - Max papers to process (default: "3")
-- `BUCKET_NAME` - S3 bucket for PDFs
-- `QUEUE_URL` - SQS queue URL
-
-### Judge Lambda
-- `OPENSEARCH_ENDPOINT` - OpenSearch cluster endpoint
-- `OPENSEARCH_INDEX` - Index name (default: "research-papers-v2")
-
-### Code Generator Lambda
-- `OPENSEARCH_ENDPOINT` - OpenSearch cluster endpoint
-- `OPENSEARCH_INDEX` - Index name (default: "research-papers-v2")
-- `BEDROCK_MODEL_ID` - Claude model ID
-- `CODE_BUCKET` - S3 bucket for code (default: "papers-code-artifacts")
-- `CODE_QUEUE_URL` - SQS queue URL for testing
-
-### Code Tester Lambda
-- `OPENSEARCH_ENDPOINT` - OpenSearch cluster endpoint
-- `OPENSEARCH_INDEX` - Index name (default: "research-papers-v2")
-- `OUTPUTS_BUCKET` - S3 bucket for test results (default: "papers-test-outputs")
-- `TRAINIUM_ENDPOINT` - HTTP endpoint for Trainium instance (e.g., "http://10.0.1.50:8000")
-- `TRAINIUM_INSTANCE_ID` - EC2 instance ID for auto-start (optional)
-- `BATCH_SIZE` - Number of papers to batch together (default: 10)
-- `TRAINIUM_TIMEOUT` - Execution timeout in seconds (default: 600)
-
----
-
-## Trainium Instance Setup
-
-### Launch Trainium Instance
-
-```bash
-# Launch trn1.2xlarge instance with Deep Learning AMI
-aws ec2 run-instances \
-  --image-id <DEEP_LEARNING_AMI_ID> \
-  --instance-type trn1.2xlarge \
-  --key-name <YOUR_KEY_NAME> \
-  --security-group-ids <YOUR_SG_ID> \
-  --subnet-id <YOUR_SUBNET_ID> \
-  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=PapersCodeTester-Trainium},{Key=Purpose,Value=PapersCodeTester}]'
-```
-
-### Deploy Trainium Executor (Ask Dan how to do this)
-
-```bash
-# Deploy Flask app to Trainium instance (from local machine)
-./deployment/deploy_trainium.sh /path/to/your-key.pem
-
-# OR setup on the Trainium instance directly (SSH into instance first)
-./deployment/setup_trainium_remote.sh
-```
-
-### Trainium Instance Configuration
-
-**Required `.env` variables:**
-```bash
-ASK DAN 
-```
-
-**To find our instance ID (can also just check console or ask Dan, but if needed...):**
-```bash
-aws ec2 describe-instances \
-  --region us-east-2 \
-  --filters "Name=instance-type,Values=trn1.2xlarge" \
-  --query 'Reservations[*].Instances[*].[InstanceId,State.Name,PublicIpAddress]' \
-  --output table
-
-# via AWS Console: EC2 → Select your region → Instances → Find your Trainium instance → Copy Instance ID
-```
-
-### View Trainium Execution Logs (Real-time)
-
-**Quick helper script** (automatically finds SSH key):
-```bash
-# Tail all logs (auto-detects SSH key from instance)
-./tail_trainium_logs.sh
-
-# Tail logs filtered for specific paper
-./tail_trainium_logs.sh 6-j63JkBP8oloYi_8CJH
-```
-
-**What to look for in logs:**
-- `"Executing code for paper <paper_id>"` - Execution started
-- `"Paper <paper_id> executed successfully"` - Execution completed
-- `"Logged metrics to CloudWatch"` - Metrics were sent
-- `"Failed to"` or `"Error"` - Issues to investigate
-- `METRICS:` lines - Training metrics being extracted
-
-### SageMaker Metrics Tracking
-
-Training metrics from Trainium executions are automatically logged to **CloudWatch Metrics** (SageMaker-compatible). This enables:
-
-- Viewing training metrics in CloudWatch Console
-- Visualizing metrics in SageMaker Studio
-- Setting up CloudWatch alarms
-- Tracking training progress across papers
-
-**How it works:**
-1. Generated code outputs metrics in format: `print(f"METRICS: {json.dumps({'training_loss': 0.023})}")`
-2. Trainium executor automatically extracts and logs metrics to CloudWatch
-3. Metrics are stored in namespace `Trainium/Training` with dimensions (PaperId, TrainingJobName, InstanceType)
-
-**Viewing Metrics:**
-- **CloudWatch Console**: Navigate to Metrics → Trainium/Training
-- **SageMaker Studio**: Metrics appear in Experiments/Training Jobs dashboard
-- **AWS CLI**: Use `aws cloudwatch list-metrics --namespace "Trainium/Training"`
-
-**Configuration:**
-- Enable/disable: Set `SAGEMAKER_METRICS_ENABLED=true` (default: enabled)
-- IAM required: Trainium instance needs `cloudwatch:PutMetricData` permission
-
----
-
-## Cost Estimate (per 100 papers)
+### Per 100 Papers
 
 - **Scraping**: ~$0.10 (Lambda + S3)
 - **Judging**: ~$0.05 (Lambda + Claude API)
@@ -519,61 +792,30 @@ Training metrics from Trainium executions are automatically logged to **CloudWat
 
 **Total**: ~$4.46 per 100 papers
 
-**Note**: Trainium costs assume batching of 10 papers reduces total execution time. On-demand pricing: trn1.2xlarge = $1.34/hour.
-
-```bash
-# Stop instance (can be restarted later)
-aws ec2 stop-instances --region us-east-2 --instance-ids i-0f0bf0de25aa4fd57
-
-# Start instance when needed
-aws ec2 start-instances --region us-east-2 --instance-ids i-0f0bf0de25aa4fd57
-
-**Download Code/Results:**
-```bash
-# Download generated code from S3
-python download_s3_code.py
-
-# Download test results from S3
-python download_test_results.py
-```
-
-### Setup Scripts
-
-```bash
-# Setup SQS queues and Lambda triggers (first time only)
-./deployment/setup_sqs_queues.sh
-
-# Setup pipeline infrastructure (S3 buckets, IAM policies) FIRST TIME ONLY
-./deployment/setup_pipeline.sh
-
-# Deploy Trainium executor (Ask Dan for SSH key)
-./deployment/deploy_trainium.sh /path/to/your-key.pem
-
-```
-
-### Code gen --> test on trn
-```bash
-python grab_papers_for_code_gen.py ## this grabs 3 random papers from opensearch and then sends them to code eval SQS
-python monitor_pipeline.py --paper-ids <Paper ID> <Paper ID> <Paper ID> --watch --interval 15
-```
+**Note**: Trainium costs assume batching reduces total execution time. On-demand pricing: trn1.2xlarge = $1.34/hour. The cron job automatically stops the instance when idle to minimize costs.
 
 ---
 
-## Midpoint Deliverable Pipeline
+## Additional Resources
 
-Grabs a single random paper from opensearch, generates its code, sends it to the code reviewer, then the flask app executes it on trn & stores neuron profiler results + overall trn results.
+### Directory Structure
 
-### Quick Start
-
-```bash
-# Process a specific paper
-python pipeline_for_delivery.py --paper-id <paper_id>
-
-# Process recent papers
-python pipeline_for_delivery.py --recent-days 30 --max-papers 5
-
-# Check results for a paper
-python debugging/check_error.py <paper_id>
+```
+├── code_gen/                # Code generation module
+│   ├── lambda_handler.py    # Lambda entry point
+│   ├── chunked_generator.py # Chunked code generator
+│   └── ...
+├── trn_execute/             # Trainium execution module
+│   ├── app.py              # Flask executor app
+│   └── ...
+├── judge_lambda/            # Judge Lambda function
+├── scraper_lambda/          # Scraper Lambda functions
+├── cron_lambda/             # Cron job Lambda
+├── conference_wrapper/      # Conference wrapper Lambda
+├── deployment/              # Deployment scripts
+├── debugging/               # Debugging utilities
+├── pipeline_for_delivery.py # Local pipeline script
+└── storage_utils.py         # Storage utilities
 ```
 
 ### Key Features
@@ -581,66 +823,28 @@ python debugging/check_error.py <paper_id>
 - **Neuron SDK Integration**: Generated code uses `torch_xla` for Trainium compatibility
 - **Hardware-Level Profiling**: Neuron Profiler captures hardware execution traces
 - **CloudWatch Metrics**: Automatic logging of training and execution metrics
+- **Slack Notifications**: Real-time updates on paper processing status
+- **Automatic Retries**: Code review and automatic fixes for TRN compatibility
+- **Cost Optimization**: Auto-start/stop Trainium instance based on queue status
 
+---
 
-### Starting and stoping the cron job 
-# pause cron job
-`aws events disable-rule --name papers-cron-job-1hour --region us-east-1`
-# resume cron job
-`aws events enable-rule --name papers-cron-job-1hour --region us-east-1`
-# check if its disabled or enabled
-`aws events describe-rule --name papers-cron-job-1hour --region us-east-1 --query 'State' --output text`
+## Troubleshooting
 
-### Manually invoking cron job
-`aws lambda invoke --function-name PapersCronJob --region us-east-1 --payload '{}' /tmp/cron_response.json && cat /tmp/cron_response.json | python3 -m json.tool`
+### Common Issues
 
-# Step 1: Reduce visibility timeout to make in-flight messages visible quickly
-aws sqs set-queue-attributes \
-  --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/code-evaluation.fifo \
-  --attributes VisibilityTimeout=60 \
-  --region us-east-1
+1. **Lambda timeout errors**: Increase Lambda timeout (max 15 minutes for code generation)
+2. **OpenSearch connection errors**: Check security groups and VPC configuration
+3. **Trainium instance not starting**: Verify IAM permissions and instance tags
+4. **Code generation failures**: Check Bedrock model ID and API permissions
+5. **Queue messages stuck**: Check visibility timeout and Lambda concurrency limits
 
-# Step 2: Wait for in-flight messages to become visible
-echo "⏳ Waiting 65 seconds for in-flight messages to become visible..."
-sleep 65
+### Getting Help
 
-# Step 3: Purge the queue
-aws sqs purge-queue \
-  --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/code-evaluation.fifo \
-  --region us-east-1
-
-# Step 4: Restore visibility timeout
-aws sqs set-queue-attributes \
-  --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/code-evaluation.fifo \
-  --attributes VisibilityTimeout=900 \
-  --region us-east-1
-
-# Step 5: Verify queue is empty
-aws sqs get-queue-attributes \
-  --queue-url https://sqs.us-east-1.amazonaws.com/478852001205/code-evaluation.fifo \
-  --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
-  --region us-east-1
-
-# Step 6: Test the cron job
-aws lambda invoke \
-  --function-name PapersCronJob \
-  --region us-east-1 \
-  --payload '{}' \
-  /tmp/cron_response.json && \
-cat /tmp/cron_response.json | python3 -m json.tool
-
-# Cron job for a specific paper
-aws lambda invoke --function-name PapersCronJob --region us-east-1 --cli-binary-format raw-in-base64-out --payload '{"paper_id": "PAPER ID HERE"}' /tmp/cron_response.json && cat /tmp/cron_response.json | python3 -m json.tool
-
-### Directory Structure
-
-```
-├── code_gen/                # Code generation module
-├── trn_execute/             # Trainium execution module
-├── results/                 # Results (per-paper folders)
-├── debugging/               # Debugging and utility scripts
-├── pipeline_for_delivery.py # Main pipeline script
-└── storage_utils.py         # Storage utilities
-```
+- Check Lambda CloudWatch logs for detailed error messages
+- Verify environment variables are set correctly
+- Check SQS queue status and message visibility
+- Review OpenSearch index mapping and field types
+- Check Trainium executor logs for execution errors
 
 ---
