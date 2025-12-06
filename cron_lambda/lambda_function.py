@@ -614,6 +614,12 @@ def lambda_handler(event, context):
                         "paper_id": paper_id
                     })
                 }
+            # Log the paper details to verify it's the correct one
+            found_id = paper.get('_id', 'NO_ID')
+            found_title = paper.get('title', 'NO_TITLE')
+            logger.info(f"✅ Found paper - ID: {found_id}, Title: {found_title}")
+            if found_id != paper_id:
+                logger.warning(f"⚠️ WARNING: Requested paper_id ({paper_id}) != Found paper _id ({found_id})")
             papers_to_process = [paper]
         else:
             # Get papers without execution (normal cron behavior)

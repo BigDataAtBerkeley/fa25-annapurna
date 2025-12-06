@@ -354,7 +354,83 @@ class PipelineHandler:
                 "recommended_dataset": code_gen_result.get("recommended_dataset")
             }
 
-            # Step 1.5: Send code generation notification to Slack (first follow-up)
+            # Step 1.5: Code Reviewer 0 - Proactive TRN compatibility fixes
+            initial_code = code_gen_result["code"]
+            reviewed_code = initial_code
+            
+            if FLASK_EXECUTE_ENDPOINT:
+                try:
+                    # Extract base URL from FLASK_EXECUTE_ENDPOINT (remove /execute if present)
+                    base_endpoint = FLASK_EXECUTE_ENDPOINT.rstrip('/execute').rstrip('/')
+                    review_endpoint = f"{base_endpoint}/code_review_0"
+                    
+                    # Get paper summary for context
+                    paper_summary = None
+                    if hasattr(self.generator, 'opensearch_client'):
+                        paper = self.generator.opensearch_client.get_paper_by_id(paper_id)
+                        if paper:
+                            paper_summary = self.generator.opensearch_client.get_paper_summary(paper)
+                    
+                    review_payload = {
+                        "paper_id": paper_id,
+                        "code": initial_code,
+                        "paper_summary": paper_summary
+                    }
+                    
+                    logger.info(f"Code Reviewer 0: Reviewing code for {paper_id}")
+                    review_response = requests.post(
+                        review_endpoint,
+                        json=review_payload,
+                        timeout=300  # 5 minute timeout for review
+                    )
+                    review_response.raise_for_status()
+                    review_result = review_response.json()
+                    
+                    if review_result.get("success") and review_result.get("code"):
+                        reviewed_code = review_result["code"]
+                        fixes_summary = review_result.get("fixes_summary", [])
+                        code_changed = review_result.get("code_changed", False)
+                        
+                        if code_changed:
+                            logger.info(f"✅ Code Reviewer 0: Fixed TRN compatibility issues")
+                            logger.info(f"   Fixes: {', '.join(fixes_summary) if isinstance(fixes_summary, list) else fixes_summary}")
+                        else:
+                            logger.info(f"ℹ️ Code Reviewer 0: No changes needed - code is already TRN compatible")
+                        
+                        result["code_review_0"] = {
+                            "success": True,
+                            "code_changed": code_changed,
+                            "fixes_summary": fixes_summary
+                        }
+                    else:
+                        logger.warning(f"⚠️ Code Reviewer 0 failed: {review_result.get('error', 'Unknown error')}")
+                        logger.warning(f"   Using original code without TRN compatibility fixes")
+                        result["code_review_0"] = {
+                            "success": False,
+                            "error": review_result.get("error", "Code review failed"),
+                            "code_changed": False
+                        }
+                except Exception as e:
+                    logger.warning(f"⚠️ Code Reviewer 0 error: {e}")
+                    logger.warning(f"   Using original code without TRN compatibility fixes")
+                    result["code_review_0"] = {
+                        "success": False,
+                        "error": str(e),
+                        "code_changed": False
+                    }
+            else:
+                logger.warning("⚠️ FLASK_EXECUTE_ENDPOINT not set - skipping Code Reviewer 0")
+                result["code_review_0"] = {
+                    "success": False,
+                    "error": "FLASK_EXECUTE_ENDPOINT not set",
+                    "code_changed": False,
+                    "skipped": True
+                }
+            
+            # Update code to use reviewed version
+            code_gen_result["code"] = reviewed_code
+
+            # Step 1.6: Send code generation notification to Slack (first follow-up)
             if SLACK_AVAILABLE and slack_thread_ts:
                 try:
                     slack_notifier = SlackNotifier()
@@ -377,9 +453,9 @@ class PipelineHandler:
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to send code generation notification: {e}")
 
-            # Step 2: Store code for batch sending to Trainium (don't send immediately)
+            # Step 2: Store reviewed code for batch sending to Trainium (don't send immediately)
             # Code will be sent in batches after all papers in the batch are processed
-            result["code"] = code_gen_result["code"]  # Store code for batch sending
+            result["code"] = code_gen_result["code"]  # Store reviewed code for batch sending
             result["paper_title"] = code_gen_result.get("paper_title")
             result["success"] = True  # Code generation succeeded
             result["pipeline_end"] = datetime.now().isoformat()

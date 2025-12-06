@@ -353,22 +353,25 @@ class PDFProcessor:
             
             logger.info(f"✅ Batch classifier analysis complete: {relevant_count}/{total_pages} pages marked as relevant")
             
-            # Filter to only relevant pages first, then sort by score
+            # Filter to only relevant pages, then sort by score
             relevant_pages_with_scores = [(p, s, f) for p, s, is_rel, f in page_scores if is_rel]
             
-            # If we have enough relevant pages, use those; otherwise use top N by score
-            if len(relevant_pages_with_scores) >= max_pages:
+            # Only use pages marked as relevant (no fallback to score-based selection)
+            if relevant_pages_with_scores:
                 relevant_pages_with_scores.sort(key=lambda x: x[1], reverse=True)
+                # Take up to max_pages of the relevant pages
                 relevant_pages = [p for p, s, f in relevant_pages_with_scores[:max_pages]]
+                logger.info(f"Using {len(relevant_pages)} pages that were marked as relevant (out of {len(relevant_pages_with_scores)} total relevant pages, max_pages={max_pages})")
             else:
-                # Not enough relevant pages, use top N by score regardless
-                page_scores.sort(key=lambda x: x[1], reverse=True)
-                relevant_pages = [page_num for page_num, score, is_rel, features in page_scores[:max_pages]]
+                # No pages marked as relevant - fallback to first 2 pages (abstract/intro)
+                logger.warning(f"⚠️ No pages marked as relevant by classifier, falling back to first 2 pages")
+                relevant_pages = list(range(min(2, total_pages)))
             
             # Always include first 2 pages (abstract/intro) if not already included
             for page_num in range(min(2, total_pages)):
                 if page_num not in relevant_pages:
                     relevant_pages.append(page_num)
+                    logger.info(f"Added page {page_num + 1} (abstract/intro) to relevant pages")
             
             # Sort by page number to maintain order
             relevant_pages = sorted(set(relevant_pages))

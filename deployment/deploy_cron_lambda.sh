@@ -5,11 +5,15 @@
 
 set -e
 
+# Get script directory and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 AWS_REGION="${AWS_REGION:-us-east-1}"
 FUNCTION_NAME="${FUNCTION_NAME:-PapersCronJob}"
 ROLE_NAME="${ROLE_NAME:-PapersCronJobRole}"
 POLICY_NAME="${POLICY_NAME:-PapersCronJobPolicy}"
-ZIP_FILE="${ZIP_FILE:-cron_lambda/build/cron_lambda.zip}"
+ZIP_FILE="${ZIP_FILE:-$PROJECT_ROOT/cron_lambda/build/cron_lambda.zip}"
 
 echo "========================================="
 echo "Deploying Cron Lambda Function"

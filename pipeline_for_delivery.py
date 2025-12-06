@@ -487,6 +487,87 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
         pipeline_results["steps"]["code_generation"] = step2_result
         logger.info(f"✅ Code generated ({len(code_gen_result['code'])} chars)")
         
+        # Step 2.5: Code Reviewer 0 - Proactive TRN compatibility fixes
+        logger.info(f"Step 2.5: Code Reviewer 0 - Proactively fixing TRN compatibility issues...")
+        step2_5_start = time.time()
+        
+        initial_code = code_gen_result["code"]
+        reviewed_code = initial_code
+        
+        if TRAINIUM_ENDPOINT:
+            try:
+                review_endpoint = f"{TRAINIUM_ENDPOINT}/code_review_0"
+                review_payload = {
+                    "paper_id": paper_id,
+                    "code": initial_code,
+                    "paper_summary": paper_summary
+                }
+                
+                logger.info(f"Sending code to Code Reviewer 0 at {review_endpoint}")
+                review_response = requests.post(
+                    review_endpoint,
+                    json=review_payload,
+                    timeout=300  # 5 minute timeout for review
+                )
+                review_response.raise_for_status()
+                review_result = review_response.json()
+                
+                if review_result.get("success") and review_result.get("code"):
+                    reviewed_code = review_result["code"]
+                    fixes_summary = review_result.get("fixes_summary", [])
+                    code_changed = review_result.get("code_changed", False)
+                    
+                    if code_changed:
+                        logger.info(f"✅ Code Reviewer 0: Fixed TRN compatibility issues")
+                        logger.info(f"   Fixes: {', '.join(fixes_summary) if isinstance(fixes_summary, list) else fixes_summary}")
+                    else:
+                        logger.info(f"ℹ️ Code Reviewer 0: No changes needed - code is already TRN compatible")
+                    
+                    step2_5_result = {
+                        "success": True,
+                        "code_changed": code_changed,
+                        "fixes_summary": fixes_summary,
+                        "review_time": time.time() - step2_5_start
+                    }
+                else:
+                    logger.warning(f"⚠️ Code Reviewer 0 failed: {review_result.get('error', 'Unknown error')}")
+                    logger.warning(f"   Using original code without TRN compatibility fixes")
+                    step2_5_result = {
+                        "success": False,
+                        "error": review_result.get("error", "Code review failed"),
+                        "code_changed": False,
+                        "review_time": time.time() - step2_5_start
+                    }
+            except Exception as e:
+                logger.warning(f"⚠️ Code Reviewer 0 error: {e}")
+                logger.warning(f"   Using original code without TRN compatibility fixes")
+                step2_5_result = {
+                    "success": False,
+                    "error": str(e),
+                    "code_changed": False,
+                    "review_time": time.time() - step2_5_start
+                }
+        else:
+            logger.warning("⚠️ TRAINIUM_ENDPOINT not set - skipping Code Reviewer 0")
+            step2_5_result = {
+                "success": False,
+                "error": "TRAINIUM_ENDPOINT not set",
+                "code_changed": False,
+                "review_time": 0,
+                "skipped": True
+            }
+        
+        save_step_result('code-review-0', paper_id, {
+            "original_code_length": len(initial_code),
+            "reviewed_code_length": len(reviewed_code),
+            "metadata": step2_5_result
+        })
+        
+        pipeline_results["steps"]["code_review_0"] = step2_5_result
+        
+        # Update code to use reviewed version
+        code_gen_result["code"] = reviewed_code
+        
         # Step 3: Execute on Trainium via HTTP
         if not TRAINIUM_ENDPOINT:
             logger.warning("⚠️ TRAINIUM_ENDPOINT not set - skipping execution")
