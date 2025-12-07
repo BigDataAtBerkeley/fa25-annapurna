@@ -570,21 +570,29 @@ def lambda_handler(event, context):
     
     Event parameters:
     - paper_id (optional): If provided, process only this specific paper
+    - max_papers (optional): Override MAX_PAPERS_PER_RUN for testing (e.g., 5)
     """
     logger.info("Starting cron job execution")
     
     try:
-        # Check if a specific paper_id was provided in the event
+        # Check if a specific paper_id or max_papers was provided in the event
         paper_id = None
+        max_papers_override = None
         if isinstance(event, dict):
             paper_id = event.get('paper_id')
+            max_papers_override = event.get('max_papers')  # Allow override for testing
         elif isinstance(event, str):
             # Try to parse as JSON if it's a string
             try:
                 event_dict = json.loads(event)
                 paper_id = event_dict.get('paper_id')
+                max_papers_override = event_dict.get('max_papers')
             except:
                 pass
+        
+        # Use override if provided, otherwise use environment variable
+        papers_to_fetch = max_papers_override if max_papers_override is not None else MAX_PAPERS_PER_RUN
+        logger.info(f"Will fetch {papers_to_fetch} papers (MAX_PAPERS_PER_RUN={MAX_PAPERS_PER_RUN}, override={max_papers_override})")
         
         # Step 0: Manage Trainium instance based on queue status
         papers_waiting = get_papers_waiting_for_execution()
@@ -623,7 +631,7 @@ def lambda_handler(event, context):
             papers_to_process = [paper]
         else:
             # Get papers without execution (normal cron behavior)
-            papers_to_process = get_papers_without_execution(size=MAX_PAPERS_PER_RUN)
+            papers_to_process = get_papers_without_execution(size=papers_to_fetch)
         
         if not papers_to_process:
             logger.info("No papers found without executed_on_trn = true")
@@ -675,6 +683,7 @@ def lambda_handler(event, context):
             "body": json.dumps({
                 "message": "Cron job completed",
                 "paper_id": paper_id if paper_id else None,
+                "max_papers_requested": papers_to_fetch,
                 "papers_processed": len(papers_to_process),
                 "code_gen_sent": code_gen_sent,
                 "trainium_sent": trainium_sent,

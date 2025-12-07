@@ -17,7 +17,7 @@ import requests
 import boto3
 from datetime import datetime
 from typing import Dict, Any, Optional, List
-from concurrent.futures import ThreadPoolExecutor, as_completed
+# Removed ThreadPoolExecutor - processing papers sequentially to avoid Bedrock throttling
 from botocore.exceptions import ClientError
 import sys
 
@@ -530,48 +530,72 @@ def lambda_handler(event, context):
                     "failed": 0
                 }
             
-            logger.info(f"Processing {len(papers_to_process)} papers in parallel (max 5 concurrent)")
+            # Process papers SEQUENTIALLY to avoid Bedrock API throttling
+            # Each paper makes multiple Bedrock API calls (chunks, batches, final code)
+            # Processing in parallel would cause throttling errors
+            logger.info(f"Processing {len(papers_to_process)} papers sequentially (to avoid Bedrock throttling)")
             
-            # Process papers in parallel (max 5 concurrent to respect Bedrock limits)
-            MAX_PARALLEL = 5
+            # Get Lambda context for timeout management
+            lambda_timeout_seconds = context.get_remaining_time_in_millis() / 1000.0 if context else 900.0
+            safety_buffer_seconds = 60.0  # Stop processing 60 seconds before timeout to ensure we can return response
+            
             results = []
             batch_item_failures = []
             results_map = {}  # Map paper_id to result
             
-            with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as executor:
-                # Submit all papers for processing
-                future_to_paper = {
-                    executor.submit(handler.process_paper, paper['paper_id'], paper.get('slack_thread_ts')): paper
-                    for paper in papers_to_process
-                }
+            # Process papers one at a time to avoid throttling
+            for paper in papers_to_process:
+                paper_id = paper['paper_id']
+                paper_index = papers_to_process.index(paper) + 1
                 
-                # Collect results as they complete
-                for future in as_completed(future_to_paper):
-                    paper = future_to_paper[future]
-                    paper_id = paper['paper_id']
-                    try:
-                        result = future.result()
-                        results_map[paper_id] = result
-                        results.append(result)
-                        
-                        if not result.get('success'):
-                            batch_item_failures.append({"itemIdentifier": paper['message_id']})
-                            logger.warning(f"Paper {paper_id} processing failed")
-                        else:
-                            logger.info(f"✅ Paper {paper_id} processed successfully")
-                            
-                    except Exception as e:
-                        logger.error(f"Error processing paper {paper_id}: {e}")
-                        import traceback
-                        logger.error(traceback.format_exc())
+                # Check remaining time before processing each paper
+                if context:
+                    remaining_time = context.get_remaining_time_in_millis() / 1000.0
+                    if remaining_time < safety_buffer_seconds:
+                        logger.warning(
+                            f"⏰ Lambda timeout approaching ({remaining_time:.1f}s remaining). "
+                            f"Stopping processing to return response. "
+                            f"Processed {paper_index - 1}/{len(papers_to_process)} papers. "
+                            f"Remaining papers will be retried automatically by SQS."
+                        )
+                        # Mark remaining papers as failures so they're retried
+                        for remaining_paper in papers_to_process[paper_index - 1:]:
+                            batch_item_failures.append({"itemIdentifier": remaining_paper['message_id']})
+                            logger.info(f"Marked paper {remaining_paper['paper_id']} for retry (timeout protection)")
+                        break
+                
+                logger.info(f"Processing paper {paper_id} ({paper_index}/{len(papers_to_process)})")
+                
+                try:
+                    result = handler.process_paper(paper_id, paper.get('slack_thread_ts'))
+                    results_map[paper_id] = result
+                    results.append(result)
+                    
+                    if not result.get('success'):
                         batch_item_failures.append({"itemIdentifier": paper['message_id']})
-                        results.append({
-                            "paper_id": paper_id,
-                            "success": False,
-                            "error": str(e)
-                        })
+                        logger.warning(f"Paper {paper_id} processing failed: {result.get('error', 'Unknown error')}")
+                    else:
+                        logger.info(f"✅ Paper {paper_id} processed successfully")
+                        
+                        # Add small delay between papers to further reduce throttling risk
+                        if paper_index < len(papers_to_process):
+                            delay = 2.0  # 2 second delay between papers
+                            logger.info(f"Waiting {delay}s before processing next paper (throttling mitigation)...")
+                            time.sleep(delay)
+                            
+                except Exception as e:
+                    logger.error(f"Error processing paper {paper_id}: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    batch_item_failures.append({"itemIdentifier": paper['message_id']})
+                    results.append({
+                        "paper_id": paper_id,
+                        "success": False,
+                        "error": str(e)
+                    })
             
             # Collect papers with generated code for Trainium batching
+            # Only send successfully processed papers to Trainium
             papers_with_code = []
             for paper in papers_to_process:
                 paper_id = paper['paper_id']
@@ -584,17 +608,47 @@ def lambda_handler(event, context):
                         'slack_thread_ts': result.get('slack_thread_ts') or paper.get('slack_thread_ts')  # Use from result first, fallback to original
                     })
             
-            # Batch send to Trainium (up to 10 papers at once, sent concurrently)
+            # Always send successfully processed papers to Trainium queue
             trainium_result = None
             if papers_with_code:
-                logger.info(f"Sending {len(papers_with_code)} papers to Trainium in batches of 10")
-                trainium_result = send_papers_to_trainium_batch(papers_with_code, batch_size=10)
+                if context:
+                    remaining_time = context.get_remaining_time_in_millis() / 1000.0
+                    if remaining_time < 10.0:  # Need at least 10 seconds to send to Trainium (SQS calls are fast)
+                        logger.warning(
+                            f"⏰ Very little time remaining ({remaining_time:.1f}s). "
+                            f"Attempting to send {len(papers_with_code)} papers to Trainium queue quickly..."
+                        )
+                        # Still try to send - SQS calls are fast (usually < 1 second per paper)
+                        trainium_result = send_papers_to_trainium_batch(papers_with_code, batch_size=10)
+                    else:
+                        logger.info(f"Sending {len(papers_with_code)} papers to Trainium in batches of 10")
+                        trainium_result = send_papers_to_trainium_batch(papers_with_code, batch_size=10)
+                else:
+                    # No context (shouldn't happen, but handle gracefully)
+                    logger.info(f"Sending {len(papers_with_code)} papers to Trainium in batches of 10")
+                    trainium_result = send_papers_to_trainium_batch(papers_with_code, batch_size=10)
+                
+                if trainium_result:
+                    logger.info(
+                        f"✅ Trainium queue: {trainium_result.get('sent', 0)} sent, "
+                        f"{trainium_result.get('failed', 0)} failed"
+                    )
             
             # Return batch response for SQS
+            # batchItemFailures tells SQS which messages to retry
+            # Messages NOT in batchItemFailures are considered successfully processed and will be deleted
+            processed_count = len([r for r in results if r.get('success')])
+            logger.info(
+                f"Lambda execution summary: "
+                f"Processed {processed_count}/{len(papers_to_process)} papers successfully, "
+                f"{len(batch_item_failures)} marked for retry"
+            )
+            
             return {
                 "batchItemFailures": batch_item_failures,
                 "results": results,
-                "processed": len(results),
+                "processed": processed_count,
+                "total": len(papers_to_process),
                 "failed": len(batch_item_failures),
                 "trainium_sent": trainium_result.get('sent', 0) if trainium_result else 0,
                 "trainium_failed": trainium_result.get('failed', 0) if trainium_result else 0

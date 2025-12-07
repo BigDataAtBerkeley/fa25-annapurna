@@ -437,10 +437,20 @@ aws lambda invoke \
 
 ```bash
 # Invoke cron job for a random paper (sorts by ingest date, only runs for papers where executed_on_trn = False)
+# Default: 1 paper (MAX_PAPERS_PER_RUN)
 aws lambda invoke \
   --function-name PapersCronJob \
   --region us-east-1 \
   --payload '{}' \
+  /tmp/cron_response.json && \
+cat /tmp/cron_response.json | python3 -m json.tool
+
+# Invoke cron job with 5 papers (for testing)
+aws lambda invoke \
+  --function-name PapersCronJob \
+  --region us-east-1 \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"max_papers": 5}' \
   /tmp/cron_response.json && \
 cat /tmp/cron_response.json | python3 -m json.tool
 
@@ -453,6 +463,78 @@ aws lambda invoke \
   /tmp/cron_response.json && \
 cat /tmp/cron_response.json | python3 -m json.tool
 ```
+
+### Understanding SQS Queue Behavior and Lambda Timeouts
+
+**How papers stay in queue until code generation finishes:**
+
+1. **SQS Visibility Timeout**: When a message is received by Lambda, it becomes "invisible" for 900 seconds (15 minutes). This prevents other Lambdas from processing the same message.
+
+2. **Lambda Processing**: The code generator Lambda processes papers **sequentially** (one at a time) to avoid Bedrock API throttling. Each paper typically takes 3-5 minutes to generate code and makes multiple Bedrock API calls (chunks, batches, final code generation).
+
+3. **Automatic Retry on Timeout**: The Lambda monitors remaining time and handles timeouts gracefully:
+   - **Before timeout**: Lambda checks remaining time before processing each paper
+   - **60-second safety buffer**: Stops processing 60 seconds before timeout to ensure response can be returned
+   - **SQS batch item failures**: Unprocessed papers are marked in `batchItemFailures` response
+   - **Automatic retry**: SQS automatically retries only the unprocessed papers (not the successfully processed ones)
+   - **No duplicates**: Successfully processed papers are NOT retried - only unprocessed papers are retried
+   - **Trainium queue**: Successfully processed papers are automatically sent to Trainium execution queue before Lambda returns
+   - **Example**: If Lambda processes 2 papers and times out:
+     - Papers 1 & 2: Code generated → Sent to Trainium queue → SQS message deleted (not retried)
+     - Papers 3, 4, 5: Marked for retry → SQS automatically retries these in next Lambda invocation
+
+4. **Batch Processing**: The code generator Lambda is configured to:
+   - Process up to 10 messages per batch (or wait 24 hours, whichever comes first)
+   - Process papers **sequentially** (one at a time) to avoid Bedrock throttling
+   - Lambda timeout: 900 seconds (15 minutes)
+   - 2-second delay between papers for additional throttling mitigation
+
+**Why Sequential Processing?**
+
+Each paper makes multiple Bedrock API calls:
+- PDF chunk summarization (multiple chunks per paper)
+- Batch summarization (multiple batches)
+- Final code generation
+
+Processing 5 papers in parallel would result in 50-100+ concurrent Bedrock API calls, causing throttling errors. Sequential processing ensures we stay within Bedrock rate limits.
+
+**To avoid Lambda timeouts with 5 papers:**
+
+- **Option 1**: Increase Lambda timeout (recommended for 5 papers)
+  ```bash
+  aws lambda update-function-configuration \
+    --function-name PapersCodeGenerator \
+    --timeout 900  # 15 minutes (max) - allows ~3 papers
+  ```
+  **Note**: With 5 papers taking ~3-5 minutes each sequentially, you may need to process fewer papers per batch or accept that some will be retried.
+
+- **Option 2**: Reduce SQS batch size (process fewer papers per Lambda invocation)
+  ```bash
+  # Find event source mapping UUID first
+  aws lambda list-event-source-mappings \
+    --function-name PapersCodeGenerator \
+    --query 'EventSourceMappings[0].UUID' \
+    --output text
+  
+  # Update to process 3 papers at a time instead of 10
+  aws lambda update-event-source-mapping \
+    --uuid <EVENT_SOURCE_MAPPING_UUID> \
+    --batch-size 3
+  ```
+  This ensures each Lambda invocation processes fewer papers, reducing timeout risk.
+
+- **Option 3**: Process papers in smaller batches via cron job
+  - Set `MAX_PAPERS_PER_RUN=3` in cron Lambda environment variables
+  - This processes 3 papers per cron run instead of 5
+
+**Current Configuration:**
+- SQS visibility timeout: 900 seconds (15 minutes)
+- Lambda timeout: 900 seconds (15 minutes)
+- Code generator processes: Papers **sequentially** (one at a time) to avoid Bedrock API throttling
+- Expected time for 5 papers: ~15-25 minutes (each paper takes ~3-5 minutes)
+- **Note**: Papers are processed sequentially because each paper makes multiple Bedrock API calls (chunks, batches, final code). Parallel processing would cause throttling errors.
+
+**Note**: If Lambda times out, SQS automatically retries. The messages stay in the queue and become visible again, triggering a new Lambda invocation. This is handled automatically by AWS - no manual intervention needed.
 
 ---
 
