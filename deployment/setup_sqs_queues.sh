@@ -94,24 +94,36 @@ else
     echo "⚠️  PapersJudge Lambda not found"
 fi
 
-# 2. code-evaluation.fifo → PapersCodeGenerator (batch of 10)
+# 2. code-evaluation.fifo → PapersCodeGenerator-container (batch of 10)
+# Try container version first (recommended), fallback to zip version
 CODEGEN_LAMBDA_ARN=$(aws lambda get-function \
-  --function-name PapersCodeGenerator \
+  --function-name PapersCodeGenerator-container \
   --region $AWS_REGION \
   --query 'Configuration.FunctionArn' \
   --output text 2>/dev/null || echo "")
 
-if [ -n "$CODEGEN_LAMBDA_ARN" ]; then
-    echo "🔗 Configuring trigger: code-evaluation.fifo → PapersCodeGenerator"
-    aws lambda create-event-source-mapping \
+if [ -z "$CODEGEN_LAMBDA_ARN" ]; then
+    # Fallback to zip version
+    CODEGEN_LAMBDA_ARN=$(aws lambda get-function \
       --function-name PapersCodeGenerator \
+      --region $AWS_REGION \
+      --query 'Configuration.FunctionArn' \
+      --output text 2>/dev/null || echo "")
+    FUNCTION_NAME="PapersCodeGenerator"
+else
+    FUNCTION_NAME="PapersCodeGenerator-container"
+fi
+
+if [ -n "$CODEGEN_LAMBDA_ARN" ]; then
+    echo "🔗 Configuring trigger: code-evaluation.fifo → $FUNCTION_NAME"
+    aws lambda create-event-source-mapping \
+      --function-name $FUNCTION_NAME \
       --batch-size 10 \
-      --maximum-batching-window-in-seconds 86400 \
       --event-source-arn "arn:aws:sqs:$AWS_REGION:$ACCOUNT_ID:code-evaluation.fifo" \
       --region $AWS_REGION 2>/dev/null || echo "  (Trigger already exists)"
-    echo "✅ Configured (batch: 10 messages OR 24 hours, whichever comes first)"
+    echo "✅ Configured (batch: 10 messages - FIFO queues don't support batching windows)"
 else
-    echo "⚠️  PapersCodeGenerator Lambda not found"
+    echo "⚠️  PapersCodeGenerator-container or PapersCodeGenerator Lambda not found"
 fi
 
 # 3. code-testing.fifo → PapersCodeTester (batch of 10)
