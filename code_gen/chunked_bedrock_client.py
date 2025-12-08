@@ -403,7 +403,10 @@ Generate a complete, production-ready PyTorch implementation that demonstrates t
 
 CRITICAL REQUIREMENTS:
 1. Use dataset '{primary_dataset}' via: `from dataset_loader import load_dataset` (DO NOT use torchvision.datasets)
-2. Use Trainium/XLA: `import torch_xla.core.xla_model as xm` and `device = xm.xla_device()`
+   - CRITICAL: load_dataset() returns EXACTLY 2 DataLoaders: (train_loader, test_loader)
+   - NEVER unpack 3 values like "train_loader, val_loader, test_loader = load_dataset(...)"
+   - If validation is needed, split train_loader or use test_loader for validation
+2. Use Trainium/XLA: `import torch_xla` and `device = torch_xla.device()` (NOT xm.xla_device())
 3. Use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` and call `xm.mark_step()` after
 4. Import ALL modules you use (math, random, collections, etc.)
 
@@ -414,17 +417,38 @@ PACKAGES & ENVIRONMENT
 AVAILABLE (Neuron SDK Environment):
 - torch, torch_xla (Neuron SDK PyTorch 2.1.0 with XLA support) - REQUIRED for Trainium
 - torch.nn, torch.optim (PyTorch neural network and optimizer modules)
-- transformers (HuggingFace) - for tokenization - USE: 'from transformers import AutoTokenizer'
 - numpy, standard library (math, random, collections, json, os, sys, etc.)
-- dataset_loader (custom module)
+- dataset_loader (custom module) - provides pre-processed datasets with tokenization already done
+
+HuggingFace Hub Usage:
+- Datasets (wikitext/imdb): dataset_loader already provides pre-processed data from S3 - NO downloads needed
+- Models/Tokenizers for fine-tuning: Can use AutoTokenizer.from_pretrained() or AutoModel.from_pretrained() IF:
+  * The model is publicly available (no private repo)
+  * HUGGINGFACE_HUB_TOKEN may be set (optional, only needed for private models)
+  * For fine-tuning papers: you can load pre-trained models from HuggingFace Hub
+- If you get HTTP errors: the model may require authentication or the instance has no internet access
 
 NOTE: This code runs on AWS Trainium using the Neuron SDK. The torch_xla module is part of the Neuron SDK and provides XLA (Accelerated Linear Algebra) support for Trainium accelerators.
 
+IMPORTANT RESOURCE CONSTRAINTS:
+- Do NOT set NEURON_RT_NUM_CORES or request multiple cores - use default single-core allocation
+- Only 1 Neuron core is available - keep models small enough to fit in 1 core
+- Large models (e.g., very large transformers) may require 2+ cores and will fail
+- Initialize device BEFORE moving models to device: device = torch_xla.device() must come first
+- Only one execution runs at a time on the instance
+
 NOT AVAILABLE / DO NOT USE:
-- transformers_xla (THIS PACKAGE DOES NOT EXIST - use 'from transformers import AutoTokenizer' instead)
-- XLATokenizer (THIS CLASS DOES NOT EXIST - use AutoTokenizer instead)
+- transformers_xla (THIS PACKAGE DOES NOT EXIST)
+- XLATokenizer (THIS CLASS DOES NOT EXIST)
 - matplotlib, PIL/Pillow, pandas, scipy, sklearn, torchtext
 - torchvision.datasets (use dataset_loader instead)
+
+NOTE on HuggingFace Hub:
+- Datasets: dataset_loader provides wikitext/imdb from S3 - no HF Hub download needed
+- Models: For fine-tuning, you CAN use AutoModel.from_pretrained() or AutoTokenizer.from_pretrained()
+  * Use publicly available models (e.g., 'bert-base-uncased', 'gpt2', 'distilbert-base-uncased')
+  * HUGGINGFACE_HUB_TOKEN may be available for private models
+  * If HTTP errors occur, the model may require authentication or instance lacks internet access
 
 ═══════════════════════════════════════════════════════════════════════════════
 OUTPUT FORMAT - CODE WITH BRIEF INLINE COMMENTS

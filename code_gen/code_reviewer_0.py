@@ -81,6 +81,27 @@ def code_reviewer_0(code: str, paper_id: str, paper_summary: Optional[str] = Non
     
     logger.info(f"Code Reviewer 0: Fixing TRN compatibility issues WITHOUT sending to trn. paper = {paper_id}")
     
+    # Pre-validate code for common issues
+    detected_issues = []
+    if re.search(r'(\w+),\s*(\w+),\s*(\w+)\s*=\s*load_dataset', code):
+        detected_issues.append("3-value unpacking from load_dataset() detected")
+        logger.warning(f"Code Reviewer 0: Detected 3-value unpacking pattern - will be fixed")
+    
+    if re.search(r'xm\.xla_device\(\)', code):
+        detected_issues.append("Deprecated xm.xla_device() usage detected")
+        logger.warning(f"Code Reviewer 0: Detected deprecated xm.xla_device() - will be fixed")
+    
+    if re.search(r'NEURON_RT_NUM_CORES\s*=', code, re.IGNORECASE):
+        detected_issues.append("NEURON_RT_NUM_CORES setting detected")
+        logger.warning(f"Code Reviewer 0: Detected NEURON_RT_NUM_CORES setting - will be removed")
+    
+    if re.search(r'os\.environ\[.NEURON_RT_NUM_CORES', code, re.IGNORECASE):
+        detected_issues.append("NEURON_RT_NUM_CORES environment variable setting detected")
+        logger.warning(f"Code Reviewer 0: Detected NEURON_RT_NUM_CORES env var setting - will be removed")
+    
+    # Note: .from_pretrained() is OK for models (fine-tuning), but not for datasets
+    # We'll let Code Reviewer 0 handle this case-by-case based on context
+    
     paper_context = ""
     if paper_summary:
         paper_context = f"""
@@ -95,7 +116,7 @@ PAPER CONTEXT (for better understanding of what the code should implement):
 ESSENTIAL TRAINIUM/XLA REQUIREMENTS (verify and fix all of these):
 ═══════════════════════════════════════════════════════════════════════════════
 1. Device handling:
-   - MUST use: device = xm.xla_device()
+   - MUST use: device = torch_xla.device() (NOT xm.xla_device() - that's deprecated)
    - MUST NOT use: torch.device('cuda'), torch.device('cpu'), .to('cuda'), .cuda()
 
 2. Optimizer:
@@ -113,7 +134,7 @@ ESSENTIAL TRAINIUM/XLA REQUIREMENTS (verify and fix all of these):
    - If validation is needed, split train_loader or use test_loader for validation
 
 5. Imports:
-   - MUST import: import torch_xla.core.xla_model as xm
+   - MUST import: import torch_xla (for device) and import torch_xla.core.xla_model as xm (for optimizer_step, mark_step)
    - MUST NOT import torchvision datasets
    - Use nn.Module, NOT xm.XlaModule
 
@@ -123,6 +144,23 @@ ESSENTIAL TRAINIUM/XLA REQUIREMENTS (verify and fix all of these):
 
 7. Device placement:
    - All model, input, labels, and loss tensors MUST be moved to device
+
+8. Neuron Core Allocation:
+   - MUST NOT set NEURON_RT_NUM_CORES environment variable
+   - MUST NOT use os.environ['NEURON_RT_NUM_CORES'] = '2' or any value
+   - MUST use default single-core allocation (only 1 core available on instance)
+   - If code sets NEURON_RT_NUM_CORES, remove those lines completely
+   - Keep models small enough to fit in 1 core (avoid very large models that require 2+ cores)
+   - If model compilation requires 2 cores, reduce model size or complexity
+
+9. HuggingFace Hub Usage:
+   - Datasets: dataset_loader provides wikitext/imdb from S3 - NO dataset downloads from HF Hub needed
+   - Models for fine-tuning: CAN use AutoModel.from_pretrained() or AutoTokenizer.from_pretrained()
+     * Use publicly available models (e.g., 'bert-base-uncased', 'gpt2')
+     * HUGGINGFACE_HUB_TOKEN may be available if needed
+     * If HTTP errors occur, try a different public model or check if token is needed
+   - If error shows HTTP 401/403: model requires authentication - use a public model instead
+   - If error shows HTTP 404: model name is wrong - fix the model name
 ═══════════════════════════════════════════════════════════════════════════════
 """
     
@@ -150,6 +188,20 @@ INSTRUCTIONS:
 2. Identify ALL TRN/XLA compatibility issues (device, optimizer, synchronization, datasets, imports)
 3. Check for runtime errors that would cause immediate failures:
    - Unpacking errors: Verify number of variables matches function return values
+     * CRITICAL: load_dataset() returns exactly 2 values (train_loader, test_loader)
+     * Fix any 3-value unpacking: "train_loader, val_loader, test_loader = load_dataset(...)" → "train_loader, test_loader = load_dataset(...)"
+   - Neuron Core Allocation errors: Remove ALL lines that set NEURON_RT_NUM_CORES
+     * CRITICAL: If error shows "Logical Neuron Core(s) not available - Requested:2 Available:0"
+     * Remove lines like: os.environ['NEURON_RT_NUM_CORES'] = '2' or NEURON_RT_NUM_CORES = 2
+     * Only 1 core is available - code must use default single-core allocation
+   - HuggingFace Hub errors: Fix based on error type
+     * HTTP 401/403: Model requires authentication - change to a public model (e.g., 'bert-base-uncased')
+     * HTTP 404: Model name is wrong - fix the model name
+     * HTTP 429: Rate limited - add retry logic or use a different model
+     * For datasets: dataset_loader provides wikitext/imdb from S3 - don't download datasets from HF Hub
+   - Data structure errors: Verify data access patterns match actual data types
+     * If accessing item['key'], ensure item is a dict, not a list
+     * Add isinstance() checks if data format is uncertain
    - API contract mismatches: Ensure function calls match their return signatures
    - Common errors: ValueError, TypeError, AttributeError that would occur on first execution
 4. Fix ALL issues in one pass - don't leave any compatibility problems
@@ -167,7 +219,7 @@ CRITICAL: You must return BOTH the fixed code AND a summary of fixes in the foll
 ---FIXES_SUMMARY_END---
 
 The fixes summary should be a brief list (3-5 items max) of the key TRN compatibility changes made. Example:
-- Changed device from torch.device('cuda') to xm.xla_device()
+- Changed device from torch.device('cuda') or xm.xla_device() to torch_xla.device()
 - Replaced optimizer.step() with xm.optimizer_step(optimizer)
 - Added xm.mark_step() after backward pass
 - Fixed dataset unpacking: changed "train_loader, val_loader, test_loader = load_dataset(...)" to "train_loader, test_loader = load_dataset(...)" (load_dataset returns 2 values, not 3)
@@ -229,6 +281,8 @@ IMPORTANT: The code block must come FIRST, followed by the fixes summary between
             if code_changed:
                 logger.info(f"✅ Code Reviewer 0: Fixed code extracted (length: {len(fixed_code)} chars)")
                 logger.info(f"   Code length: {len(code)} → {len(fixed_code)} chars")
+                if detected_issues:
+                    logger.info(f"   Pre-detected issues: {', '.join(detected_issues)}")
                 summary_str = ', '.join(fixes_summary) if isinstance(fixes_summary, list) else str(fixes_summary)
                 logger.info(f"   Fixes summary: {summary_str[:200]}")
                 

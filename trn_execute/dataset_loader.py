@@ -110,9 +110,25 @@ class DatasetManager:
         return self._index
     
     def list_datasets(self) -> list:
-        """List all available datasets"""
+        """List all available datasets from S3 (not just index)"""
+        # Try to get from index first
         index = self.get_dataset_index()
-        return [ds['name'] for ds in index.get('datasets', [])]
+        index_datasets = [ds['name'] for ds in index.get('datasets', [])]
+        
+        # Also check S3 directly for datasets with registered loaders
+        # This ensures we find datasets even if index is outdated
+        try:
+            response = s3_client.list_objects_v2(Bucket=self.s3_bucket, Delimiter='/')
+            s3_datasets = [obj['Prefix'].rstrip('/') for obj in response.get('CommonPrefixes', [])]
+            
+            # Return union of index datasets and S3 datasets that have loaders
+            all_datasets = set(index_datasets) | set(s3_datasets)
+            # Filter to only datasets with registered loaders
+            available = [ds for ds in all_datasets if ds in self._loader_registry]
+            return sorted(available)
+        except Exception as e:
+            logger.warning(f"Failed to list datasets from S3: {e}. Using index only.")
+            return index_datasets
     
     def download_dataset(self, dataset_name: str, force: bool = False) -> str:
         """
@@ -176,7 +192,8 @@ class DatasetManager:
             **kwargs: Additional arguments for dataset loading
             
         Returns:
-            Dataset object or tuple of (train, test)
+            Tuple[DataLoader, DataLoader]: (train_loader, test_loader)
+            ALWAYS returns exactly 2 DataLoaders. Do NOT attempt to unpack 3 values.
             
         Raises:
             ValueError: If dataset name is not registered
@@ -216,18 +233,57 @@ class DatasetManager:
                 train_labels = data['train_labels']
                 test_images = data['test_data']
                 test_labels = data['test_labels']
-            else:
-                # Extract from dataset objects
+                logger.info(f"Loaded CIFAR-10 from tensor format: train={train_images.shape}, test={test_images.shape}")
+            elif isinstance(data, dict) and 'train' in data and 'test' in data:
+                # Extract from dataset objects (more memory-efficient batch processing)
                 train_dataset_obj = data.get('train')
                 test_dataset_obj = data.get('test')
                 
-                # Get all data from dataset objects
-                train_images = torch.stack([torch.tensor(train_dataset_obj[i][0]) for i in range(len(train_dataset_obj))])
-                train_labels = torch.tensor([train_dataset_obj[i][1] for i in range(len(train_dataset_obj))])
-                test_images = torch.stack([torch.tensor(test_dataset_obj[i][0]) for i in range(len(test_dataset_obj))])
-                test_labels = torch.tensor([test_dataset_obj[i][1] for i in range(len(test_dataset_obj))])
+                # Check if dataset objects are already tensors or need extraction
+                if hasattr(train_dataset_obj, '__getitem__') and hasattr(train_dataset_obj, '__len__'):
+                    # Extract in batches to avoid OOM
+                    logger.info(f"Extracting CIFAR-10 from dataset objects: train={len(train_dataset_obj)}, test={len(test_dataset_obj)}")
+                    batch_size = 1000
+                    train_batches = []
+                    train_label_batches = []
+                    for i in range(0, len(train_dataset_obj), batch_size):
+                        batch_end = min(i + batch_size, len(train_dataset_obj))
+                        batch_data = [train_dataset_obj[j] for j in range(i, batch_end)]
+                        train_batches.append(torch.stack([torch.tensor(item[0]) for item in batch_data]))
+                        train_label_batches.append(torch.tensor([item[1] for item in batch_data]))
+                    train_images = torch.cat(train_batches, dim=0)
+                    train_labels = torch.cat(train_label_batches, dim=0)
+                    
+                    # Same for test set
+                    test_batches = []
+                    test_label_batches = []
+                    for i in range(0, len(test_dataset_obj), batch_size):
+                        batch_end = min(i + batch_size, len(test_dataset_obj))
+                        batch_data = [test_dataset_obj[j] for j in range(i, batch_end)]
+                        test_batches.append(torch.stack([torch.tensor(item[0]) for item in batch_data]))
+                        test_label_batches.append(torch.tensor([item[1] for item in batch_data]))
+                    test_images = torch.cat(test_batches, dim=0)
+                    test_labels = torch.cat(test_label_batches, dim=0)
+                    logger.info(f"Extracted CIFAR-10: train={train_images.shape}, test={test_images.shape}")
+                else:
+                    # Already tensors or unexpected format
+                    raise ValueError(f"CIFAR-10 'train'/'test' objects don't have expected dataset interface. Type: {type(train_dataset_obj)}")
+            else:
+                # Log detailed error information
+                data_info = f"Type: {type(data)}"
+                if isinstance(data, dict):
+                    data_info += f", Keys: {list(data.keys())}"
+                    data_info += f", Sample values: {[(k, type(v).__name__) for k, v in list(data.items())[:5]]}"
+                raise ValueError(
+                    f"Unknown CIFAR-10 data format in {pt_file}. "
+                    f"Expected dict with 'train_data'/'train_labels' or 'train'/'test' keys. "
+                    f"Got: {data_info}"
+                )
         except Exception as e:
-            logger.error(f"Error extracting CIFAR-10 data: {e}")
+            logger.error(f"Error extracting CIFAR-10 data from {pt_file}: {e}")
+            logger.error(f"Data type: {type(data)}, Keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+            import traceback
+            logger.error(traceback.format_exc())
             raise
         
         # Normalize: (x / 255.0 - 0.5) / 0.5 = (x - 127.5) / 127.5
@@ -510,9 +566,9 @@ class DatasetManager:
         val_pytorch_dataset = WikiTextDataset(val_dataset, vocab, seq_length=seq_length)
         
         train_loader = DataLoader(train_pytorch_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
-        val_loader = DataLoader(val_pytorch_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+        test_loader = DataLoader(val_pytorch_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
         
-        return train_loader, val_loader
+        return train_loader, test_loader
     
     def _load_synthetic(self, dataset_dir: str, batch_size: int = 128, variant: str = 'small', **kwargs):
         """Load synthetic dataset from pre-processed .pt file"""
@@ -598,13 +654,22 @@ def get_dataset_manager() -> DatasetManager:
 
 
 # Convenience functions for generated code
-def load_dataset(name: str, **kwargs):
+def load_dataset(name: str, **kwargs) -> Tuple[DataLoader, DataLoader]:
     """
     Convenience function to load a dataset.
+    
+    Args:
+        name: Dataset name (e.g., 'cifar10', 'mnist', 'imdb')
+        **kwargs: Additional arguments (e.g., batch_size=128)
+    
+    Returns:
+        Tuple[DataLoader, DataLoader]: (train_loader, test_loader)
+        ALWAYS returns exactly 2 DataLoaders. Do NOT attempt to unpack 3 values.
     
     Usage in generated code:
         from dataset_loader import load_dataset
         train_loader, test_loader = load_dataset('cifar10', batch_size=128)
+        # CRITICAL: Only unpack 2 values, not 3!
     """
     manager = get_dataset_manager()
     return manager.load_dataset(name, **kwargs)
