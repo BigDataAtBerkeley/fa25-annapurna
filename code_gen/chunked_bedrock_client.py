@@ -6,7 +6,6 @@ Handles individual chunk summarization and final code generation.
 
 import os
 import json
-import logging
 import time
 import random
 from typing import Dict, Any, Optional, List
@@ -19,7 +18,19 @@ MODEL_ID = "anthropic.claude-3-5-sonnet-20240620-v1:0"
 
 load_dotenv()
 
-logger = logging.getLogger(__name__)
+import logging
+
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
+)
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+
 
 
 class ChunkedBedrockClient:
