@@ -188,23 +188,29 @@ else
             --query 'Policy.DefaultVersionId' \
             --output text 2>/dev/null)
         
-        # Try to delete versions in order (v1, v2, etc.) until we find one that's not default and can be deleted
+        # Get the oldest non-default version (sorted by CreateDate, excluding default)
+        OLDEST_VERSION=$(aws iam list-policy-versions \
+            --policy-arn "$POLICY_ARN" \
+            --query "Versions[?VersionId != \`$DEFAULT_VERSION\`] | sort_by(@, &CreateDate) | [0].VersionId" \
+            --output text 2>/dev/null)
+        
         DELETED=false
-        for v in v1 v2 v3 v4 v5; do
-            if [ "$v" != "$DEFAULT_VERSION" ]; then
-                echo "🗑️  Attempting to delete policy version: $v"
-                if aws iam delete-policy-version \
-                    --policy-arn "$POLICY_ARN" \
-                    --version-id "$v" > /dev/null 2>&1; then
-                    echo "✅ Deleted policy version: $v"
-                    DELETED=true
-                    break
-                fi
+        if [ -n "$OLDEST_VERSION" ] && [ "$OLDEST_VERSION" != "None" ] && [ "$OLDEST_VERSION" != "null" ]; then
+            echo "🗑️  Attempting to delete oldest non-default policy version: $OLDEST_VERSION"
+            if aws iam delete-policy-version \
+                --policy-arn "$POLICY_ARN" \
+                --version-id "$OLDEST_VERSION" 2>&1; then
+                echo "✅ Deleted policy version: $OLDEST_VERSION"
+                DELETED=true
+            else
+                echo "❌ Failed to delete policy version: $OLDEST_VERSION"
             fi
-        done
+        fi
         
         if [ "$DELETED" = false ]; then
             echo "⚠️  Warning: Could not delete any non-default policy version. You may need to manually delete a version."
+            echo "   Run: aws iam list-policy-versions --policy-arn $POLICY_ARN"
+            echo "   Then: aws iam delete-policy-version --policy-arn $POLICY_ARN --version-id <VERSION_ID>"
         fi
     fi
     
@@ -308,14 +314,37 @@ fi
 echo ""
 echo "🔧 Setting environment variables..."
 
-# Prompt for required environment variables if not set
+# Load .env file if it exists (from project root)
+ENV_FILE="$PROJECT_ROOT/.env"
+if [ -f "$ENV_FILE" ]; then
+    echo "📄 Loading environment variables from .env file..."
+    # Read .env file and export variables (skip comments and empty lines)
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip comments and empty lines
+        if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]]; then
+            continue
+        fi
+        # Export the variable (handles KEY=value format, strips quotes)
+        if [[ "$line" =~ ^[[:space:]]*([^=]+)=(.*)$ ]]; then
+            key="${BASH_REMATCH[1]// /}"
+            value="${BASH_REMATCH[2]}"
+            # Remove surrounding quotes if present
+            if [[ "$value" =~ ^\"(.*)\"$ ]] || [[ "$value" =~ ^\'(.*)\'$ ]]; then
+                value="${BASH_REMATCH[1]}"
+            fi
+            export "$key"="$value"
+        fi
+    done < "$ENV_FILE"
+    echo "✅ Loaded variables from .env file"
+fi
+
 if [ -z "$OPENSEARCH_ENDPOINT" ] || [ "$OPENSEARCH_ENDPOINT" == "*" ]; then
     read -p "Enter OpenSearch endpoint (e.g., https://search-xxx.us-east-1.es.amazonaws.com): " OPENSEARCH_ENDPOINT
 fi
 
 if [ -z "$OPENSEARCH_INDEX" ]; then
-    read -p "Enter OpenSearch index (default: research-papers): " OPENSEARCH_INDEX
-    OPENSEARCH_INDEX="${OPENSEARCH_INDEX:-research-papers}"
+    read -p "Enter OpenSearch index (default: research-papers-v3): " OPENSEARCH_INDEX
+    OPENSEARCH_INDEX="${OPENSEARCH_INDEX:-research-papers-v3}"
 fi
 
 if [ -z "$CODE_EVAL_QUEUE_URL" ]; then
