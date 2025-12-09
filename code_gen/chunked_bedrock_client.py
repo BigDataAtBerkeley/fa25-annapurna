@@ -406,6 +406,24 @@ CRITICAL REQUIREMENTS:
    - CRITICAL: load_dataset() returns EXACTLY 2 DataLoaders: (train_loader, test_loader)
    - NEVER unpack 3 values like "train_loader, val_loader, test_loader = load_dataset(...)"
    - If validation is needed, split train_loader or use test_loader for validation
+   - IMPORTANT: load_dataset() automatically downloads the dataset from S3 if not already cached - no manual download needed
+   - Simply call: train_loader, test_loader = load_dataset('{primary_dataset}', batch_size=128)
+   
+   DATASET FORMATS (CRITICAL - understand what each dataset returns):
+   - Image datasets (mnist, cifar10, cifar100, fashion_mnist, synthetic): 
+     * Returns (image_tensor, label_tensor) where labels are SCALAR integers (0, 1, 2, ...)
+     * Image shape: [batch, channels, height, width] or [batch, height, width] for grayscale
+     * Label shape: [batch] - each label is a single integer class ID
+   - Text classification (imdb):
+     * Returns (text_string, label_tensor) where labels are SCALAR integers (0 or 1)
+     * Text: Python strings (need tokenization in your code)
+     * Label shape: [batch] - each label is a single integer (0=negative, 1=positive)
+   - Language modeling (wikitext2):
+     * Returns (input_ids_tensor, labels_tensor) where BOTH are SEQUENCES of token IDs
+     * Input shape: [batch, seq_length] - token IDs for input sequence
+     * Label shape: [batch, seq_length] - token IDs for next-token prediction (shifted by 1)
+     * CRITICAL: Labels are NOT scalars - they are sequences! Use them directly in loss functions like CrossEntropyLoss
+     * Example: loss = criterion(logits.view(-1, vocab_size), labels.view(-1))  # Flatten for loss calculation
 2. Use Trainium/XLA: `import torch_xla` and `device = torch_xla.device()` (NOT xm.xla_device())
 3. Use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` and call `xm.mark_step()` after
 4. Import ALL modules you use (math, random, collections, etc.)
