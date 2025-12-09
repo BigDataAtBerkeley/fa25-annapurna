@@ -80,7 +80,6 @@ def ensure_index():
                 "rejected_by": {"type": "keyword"},
                 "reason": {"type": "text"},
                 "relevance": {"type": "keyword"},
-                "novelty": {"type": "keyword"},
                 "ingested_at": {"type": "date"}
             }}
         }
@@ -184,44 +183,58 @@ def is_duplicate(title_norm: str, sha_abs: str) -> bool:
         return False
 
 def evaluate_initial_gates(title: str, abstract: str, max_retries: int = 6) -> Dict[str, str]:
-    """
-    Combined evaluation of relevance, novelty, and Trainium compatibility in a single LLM call.
-    """
+
     prompt = f"""
-You are an expert ML research analyst embedded in an AWS AI automation pipeline. 
-Be conservative in your judgements - if the abstract is vague, lean towards "no" or "unclear". 
+You are an expert ML research analyst embedded in an AWS AI automation pipeline.
+Be *conservative* in all judgments - If anything is vague, ambiguous, or not clearly implementable, choose "no" or "unclear".
 Only chose "yes" if the paper would be valuable to implement and train on AWS Trainium in 2025.
+Evaluate this paper across two dimensions: RELEVANCE and TRAINIUM COMPATIBILITY.
 
-Evaluate this paper across three dimensions: RELEVANCE, NOVELTY, and TRAINIUM COMPATIBILITY.
+--------------------------------------------------------------------------------
+RELEVANCE (strict)
+--------------------------------------------------------------------------------
+Say “yes” ONLY if the abstract does ALL of the following:
+- directly targets *training* or *inference* for language or vision models (Transformers, Diffusion models, CNNs,etc.), AND
+- proposes a concrete, implementable architectural or algorithmic innovation, AND
+- the innovation materially affects model training, scaling laws, optimization strategies, fine-tuning, or inference efficiency.
 
-RELEVANCE — say "yes" only if the paper:
-- proposes an innovative, new model architecture (LLMs, Transformers, CNNs, GNNs, diffusion models, MoE, hybrid or modular systems, etc.),
-- training algorithms or optimization strategies (optimizers, regularization, loss design, curriculum learning, meta-learning, etc.),
-- efficiency improvements (training or inference speedups, quantization, sparsity, parallelism, mixed precision, distributed training, etc.),
-- alignment, fine-tuning, or data-centric techniques (RLHF, DPO/ORPO, synthetic data, augmentation, retrieval, multimodal alignment, etc.)
+Examples of relevant contributions:
+- New model architectures (e.g., novel Transformer variants, diffusion architectures, new MoE routing designs, hybrid or modular systems)
+- New training algorithms or optimization techniques (e.g., new optimizers, regularization strategies, loss functions, curriculum learning, meta-learning, scalable pretraining procedures)
+- Efficiency or scalability improvements (e.g., faster attention mechanisms, quantization schemes, sparsity methods, parallelism or distributed training strategies, mixed-precision or memory-optimized kernels)
 
-The paper must implement or propose new, directly implementable ML techniques, not just analyze or survey existing ones.
+Say if "no" if any of the following are true:
+- the abstract is vague or uses high-level non-technical language,
+- missing specific details on the model, architecture, or algorithm,
+- the paper focuses on methods of improvement outside the scope of training or inference, such as dataset curation, synthetic data generation, deployment of agents, or specialized prompting etc.
+- the paper is purely empirical: benchmarks, datasets, metrics, evaluations, surveys, ablations, or analysis of existing techniques,
+- the paper is an application of existing models to a domain (e.g., medicine, law, robotics, finance) without core training/architecture innovation,
+- the contributions are incremental or trivial (dataset swaps, hyperparameter tweaks, small add-on modules, minor architecture variations),
+- theoretical work without a clear implementation path.
 
-Say "no" if the paper:
-- is a survey/position/ethics/policy piece or new analysis of existing methods,
-- proposes only benchmarks or methods of evaluation,
-- an application of an existing model or LLMs to a specific domain (e.g., healthcare, finance) without revisions to the training or architecture,
-- makes trivial modifications to existing models, such as hyperparameter tuning, dataset swaps, or adding singular layers to known architectures,
-- non-neural stats unrelated to ML or evaluation/safety methods
-- purely theoretical work without clear implementation.
+Examples of irrelevant contributions:
+- A paper that proposes a new visual-audio dataset that improves the quality of image-to-audio generation.
+- A paper that focuses on analyzing internal embedding representations of hallucinations in language models.
+- A paper that researhes the affects of deplyoing multiple agents within a single enviorment.
+- A paper that creates a novel method of chain-of-thought reasoning.
+- A paper that proposes a new evaluation process for different metrics of reasoning abilities.
 
-NOVELTY — judge relative to widely known 2024–2025 techniques (e.g., Llama-3/Mistral/Gemma/Claude-class practices).
-- novel = "yes" if it proposes a new algorithm/architecture or materially better training/inference method with credible evidence
-(theory or strong experiments), not just a dataset swap or minor tuning.
-- novel = "no" if it is mostly packaging/ablations/parameter tweaks/benchmarking of known tricks. Remember, a new benchmark is NOT considered novel. If the paper is merely about a new benchmark, it is not novel.
+If uncertain, set relevance= "no".
 
-If the abstract is too vague to tell, set novelty="no".
+--------------------------------------------------------------------------------
+TRAINIUM COMPATIBILITY (not as strict as the initial evaluation)
+--------------------------------------------------------------------------------
+Say “yes” ONLY if the paper’s method is clearly implementable using PyTorch/XLA with
+available kernels or transformer-compatible operations.
 
-TRAINIUM COMPATIBILITY — respond "yes" only if the method can realistically run on AWS Trainium:
-- Expressible in PyTorch/XLA; uses FP16/BF16; relies on transformer-compatible ops or ops with XLA kernels (e.g., Flash-Attention-style
-kernels that have XLA paths); no proprietary hardware requirements (TPU-only) or CUDA-only custom kernels without XLA equivalents.
-- If the abstract lacks enough detail to judge, respond "unclear". If it depends on unavailable kernels or CUDA-only custom ops, respond "no".
+Say “no” if:
+- the work relies on custom CUDA kernels, Triton kernels, fused GPU-only ops,
+- the method likely requires specialized GPU implementations with no XLA path,
+- the architecture includes exotic attention mechanisms or convolutions lacking XLA ops.
 
+If the abstract does not provide enough implementation detail, set "unclear".
+
+--------------------------------------------------------------------------------
 Paper:
 Title: {title}
 Abstract: {abstract}
@@ -230,8 +243,6 @@ Respond with STRICT JSON only, exactly:
 {{
 "relevance": "yes" | "no",
 "relevance_reason": "<≤2 short sentences>",
-"novelty": "yes" | "no",
-"novelty_reason": "<≤2 short sentences>",
 "trainium_compatibility": "yes" | "no" | "unclear",
 "trainium_reason": "<≤2 short sentences>"
 }}
@@ -265,8 +276,6 @@ Respond with STRICT JSON only, exactly:
                     return {
                         "relevance": "unknown",
                         "relevance_reason": "Bedrock throttling - max retries exceeded",
-                        "novelty": "unknown",
-                        "novelty_reason": "Bedrock throttling - max retries exceeded",
                         "trainium_compatibility": "unknown",
                         "trainium_reason": "Bedrock throttling - max retries exceeded"
                     }
@@ -275,8 +284,6 @@ Respond with STRICT JSON only, exactly:
                 return {
                     "relevance": "unknown",
                     "relevance_reason": f"Evaluation failed: {str(e)}",
-                    "novelty": "unknown",
-                    "novelty_reason": f"Evaluation failed: {str(e)}",
                     "trainium_compatibility": "unknown",
                     "trainium_reason": f"Evaluation failed: {str(e)}"
                 }
@@ -284,8 +291,6 @@ Respond with STRICT JSON only, exactly:
     return {
         "relevance": "unknown",
         "relevance_reason": "Unexpected error in retry loop",
-        "novelty": "unknown",
-        "novelty_reason": "Unexpected error in retry loop",
         "trainium_compatibility": "unknown",
         "trainium_reason": "Unexpected error in retry loop"
     }
@@ -461,23 +466,16 @@ def retrieve_rag_context_window(
 
 # Claude via Bedrock evaluation
 def evaluate_paper_with_claude(title: str, abstract: str, rag_context_window: str, max_retries: int = 6) -> Dict[str, str]:
-    """
-    Orchestrator function with early termination logic.
-    Now uses combined initial evaluation (relevance, novelty, trainium) in one call,
-    then separate similarity check if needed.
-    """
     reasons = []
     
-    # Step 1: Combined evaluation of relevance, novelty, and Trainium compatibility
-    logger.info(f"Evaluating relevance, novelty, and Trainium compatibility for: {title[:50]}...")
+    # Step 1: Combined evaluation of relevance and Trainium compatibility
+    logger.info(f"Evaluating relevance and Trainium compatibility for: {title[:50]}...")
     initial_eval = evaluate_initial_gates(title, abstract, max_retries)
     
     relevance = initial_eval.get("relevance", "unknown").lower()
-    novelty = initial_eval.get("novelty", "unknown").lower()
     trainium_compatibility = initial_eval.get("trainium_compatibility", "unknown").lower()
     
     reasons.append(f"Relevance: {initial_eval.get('relevance_reason', 'N/A')}")
-    reasons.append(f"Novelty: {initial_eval.get('novelty_reason', 'N/A')}")
     reasons.append(f"Trainium: {initial_eval.get('trainium_reason', 'N/A')}")
     
     # Early termination checks
@@ -485,29 +483,17 @@ def evaluate_paper_with_claude(title: str, abstract: str, rag_context_window: st
         logger.info(f"Early termination: relevance={relevance}")
         return {
             "relevance": relevance,
-            "novelty": novelty,
             "trainium_compatibility": trainium_compatibility,
             "similarity": "not_evaluated",
             "reason": " | ".join(reasons),
             "early_termination": "relevance"
         }
-    
-    if novelty != "yes":
-        logger.info(f"Early termination: novelty={novelty}")
-        return {
-            "relevance": relevance,
-            "novelty": novelty,
-            "trainium_compatibility": trainium_compatibility,
-            "similarity": "not_evaluated",
-            "reason": " | ".join(reasons),
-            "early_termination": "novelty"
-        }
+
     
     if trainium_compatibility == "no":
         logger.info(f"Early termination: trainium_compatibility={trainium_compatibility}")
         return {
             "relevance": relevance,
-            "novelty": novelty,
             "trainium_compatibility": trainium_compatibility,
             "similarity": "not_evaluated",
             "reason": " | ".join(reasons),
@@ -527,7 +513,6 @@ def evaluate_paper_with_claude(title: str, abstract: str, rag_context_window: st
     # All gates passed
     return {
         "relevance": relevance,
-        "novelty": novelty,
         "trainium_compatibility": trainium_compatibility,
         "similarity": similarity,
         "reason": " | ".join(reasons),
@@ -610,11 +595,13 @@ def lambda_handler(event, context):
             # Evaluate with Claude (Bedrock)
             evaluation = evaluate_paper_with_claude(title, abstract, rag_context_window)
             relevance = evaluation.get("relevance", "unknown").lower()
-            novelty = evaluation.get("novelty", "unknown").lower()
+            similarity = evaluation.get("similarity", "unknown").lower()
+            trainium_compatibility = evaluation.get("trainium_compatibility", "unknown").lower()
             reason = evaluation.get("reason", "No reason provided.")
+            
 
             # Only store relevant + novel papers
-            if relevance == "yes" and novelty == "yes":
+            if relevance == "yes" and similarity == "no" and trainium_compatibility != "no":
                 doc = {
                     "title": title,
                     "title_normalized": title_norm,
@@ -627,7 +614,6 @@ def lambda_handler(event, context):
                     "decision": "accept",
                     "reason": reason,
                     "relevance": relevance,
-                    "novelty": novelty,
                     "ingested_at": int(time.time() * 1000)
                 }
                 # Add embedding for accepted docs
