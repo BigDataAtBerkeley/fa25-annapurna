@@ -118,14 +118,14 @@ class DatasetRecommender:
         logger.info("Dataset Recommender initialized")
     
     def recommend_datasets(self, paper: Dict[str, Any], 
-                          paper_content: Optional[str] = None,
+                          paper_summary: str,
                           use_llm: bool = True) -> Dict[str, Any]:
         """
         Recommend datasets for a research paper.
         
         Args:
             paper: Paper document from OpenSearch
-            paper_content: Full paper content (optional)
+            paper_summary: Full paper summary from page classification (required)
             use_llm: Whether to use LLM for intelligent recommendation
             
         Returns:
@@ -143,12 +143,12 @@ class DatasetRecommender:
         }
         
         # Extract explicitly mentioned datasets
-        explicitly_mentioned = self._extract_dataset_mentions(paper, paper_content)
+        explicitly_mentioned = self._extract_dataset_mentions(paper, paper_summary)
         recommendations["explicitly_mentioned"] = explicitly_mentioned
         
         # Use LLM for intelligent recommendation if available
         if use_llm and self.bedrock_client:
-            llm_recommendations = self._llm_recommend_datasets(paper, paper_content)
+            llm_recommendations = self._llm_recommend_datasets(paper, paper_summary)
             if llm_recommendations:
                 recommendations.update(llm_recommendations)
         
@@ -164,26 +164,21 @@ class DatasetRecommender:
         return recommendations
     
     def _extract_dataset_mentions(self, paper: Dict[str, Any], 
-                                  paper_content: Optional[str] = None) -> List[str]:
+                                  paper_summary: str) -> List[str]:
         """
         Extract explicitly mentioned datasets from paper text.
         
         Args:
             paper: Paper document
-            paper_content: Full paper content
+            paper_summary: Full paper summary from page classification (required)
             
         Returns:
             List of normalized dataset names
         """
         mentioned_datasets = set()
-        text_to_search = ""
         
-        # Collect text from paper
-        if paper_content:
-            text_to_search = paper_content[:50000]  # Limit to first 50k chars
-        else:
-            # Use abstract and title if full content not available
-            text_to_search = f"{paper.get('title', '')} {paper.get('abstract', '')}"
+        # Use the full paper summary (limit to first 50k chars for performance)
+        text_to_search = paper_summary[:50000]
         
         # Search for dataset patterns
         for pattern in DATASET_PATTERNS:
@@ -252,13 +247,13 @@ class DatasetRecommender:
         return prioritized
     
     def _llm_recommend_datasets(self, paper: Dict[str, Any],
-                                paper_content: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                                paper_summary: str) -> Optional[Dict[str, Any]]:
         """
         Use LLM to intelligently recommend datasets.
         
         Args:
             paper: Paper document
-            paper_content: Full paper content
+            paper_summary: Full paper summary from page classification (required)
             
         Returns:
             Dictionary with LLM recommendations
@@ -267,10 +262,12 @@ class DatasetRecommender:
             return None
         
         try:
-            # Prepare paper summary
-            paper_summary = f"""
+            # Use the full paper summary from page classification
+            paper_info = f"""
 Title: {paper.get('title', 'Unknown')}
-Abstract: {paper.get('abstract', 'No abstract available')}
+
+Full Paper Summary (from page classification):
+{paper_summary}
 """
             
             # Prepare prompt for dataset recommendation
@@ -278,7 +275,7 @@ Abstract: {paper.get('abstract', 'No abstract available')}
 You are an expert in machine learning datasets. Analyze this research paper and recommend the most appropriate datasets for training and evaluating models described in the paper.
 
 Paper Information:
-{paper_summary}
+{paper_info}
 
 Available Datasets (ONLY THESE ARE AVAILABLE ON TRAINIUM):
 - cifar10: 60K 32x32 color images, 10 classes (computer vision, image classification) - ✅ AVAILABLE
