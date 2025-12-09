@@ -424,6 +424,7 @@ CRITICAL REQUIREMENTS:
      * Label shape: [batch, seq_length] - token IDs for next-token prediction (shifted by 1)
      * CRITICAL: Labels are NOT scalars - they are sequences! Use them directly in loss functions like CrossEntropyLoss
      * Example: loss = criterion(logits.view(-1, vocab_size), labels.view(-1))  # Flatten for loss calculation
+     
 2. Use Trainium/XLA: `import torch_xla` and `device = torch_xla.device()` (NOT xm.xla_device())
 3. Use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` and call `torch_xla.sync()` after (NOT xm.mark_step())
 4. Import ALL modules you use (math, random, collections, etc.)
