@@ -82,34 +82,6 @@ def code_reviewer_0(code: str, paper_id: str, paper_summary: Optional[str] = Non
     logger.info(f"Code Reviewer 0: Fixing TRN compatibility issues WITHOUT sending to trn. paper = {paper_id}")
     
     # Pre-validate code for common issues
-    detected_issues = []
-    if re.search(r'(\w+),\s*(\w+),\s*(\w+)\s*=\s*load_dataset', code):
-        detected_issues.append("3-value unpacking from load_dataset() detected")
-        logger.warning(f"Code Reviewer 0: Detected 3-value unpacking pattern - will be fixed")
-    
-    if re.search(r'xm\.xla_device\(\)', code):
-        detected_issues.append("Deprecated xm.xla_device() usage detected")
-        logger.warning(f"Code Reviewer 0: Detected deprecated xm.xla_device() - will be fixed")
-    
-    if re.search(r'NEURON_RT_NUM_CORES\s*=', code, re.IGNORECASE):
-        detected_issues.append("NEURON_RT_NUM_CORES setting detected")
-        logger.warning(f"Code Reviewer 0: Detected NEURON_RT_NUM_CORES setting - will be removed")
-    
-    if re.search(r'os\.environ\[.NEURON_RT_NUM_CORES', code, re.IGNORECASE):
-        detected_issues.append("NEURON_RT_NUM_CORES environment variable setting detected")
-        logger.warning(f"Code Reviewer 0: Detected NEURON_RT_NUM_CORES env var setting - will be removed")
-    
-    if re.search(r'xm\.mark_step\(\)', code):
-        detected_issues.append("Deprecated xm.mark_step() usage detected - should use torch_xla.sync()")
-        logger.warning(f"Code Reviewer 0: Detected deprecated xm.mark_step() - will be fixed")
-    
-    if re.search(r'torchvision\.transforms', code):
-        detected_issues.append("torchvision.transforms usage detected - may cause compatibility issues")
-        logger.warning(f"Code Reviewer 0: Detected torchvision.transforms - will be reviewed")
-    
-    if re.search(r'nn\.Dropout2d', code) and re.search(r'\.view\([^)]*\)|\.reshape\([^)]*\)', code):
-        detected_issues.append("Potential dropout2d with 2D input - may need nn.Dropout() instead")
-        logger.warning(f"Code Reviewer 0: Detected potential dropout2d dimension issue - will be reviewed")
     
     # Note: .from_pretrained() is OK for models (fine-tuning), but not for datasets
     # We'll let Code Reviewer 0 handle this case-by-case based on context
