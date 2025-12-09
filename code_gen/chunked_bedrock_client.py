@@ -407,8 +407,23 @@ CRITICAL REQUIREMENTS:
    - NEVER unpack 3 values like "train_loader, val_loader, test_loader = load_dataset(...)"
    - If validation is needed, split train_loader or use test_loader for validation
 2. Use Trainium/XLA: `import torch_xla` and `device = torch_xla.device()` (NOT xm.xla_device())
-3. Use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` and call `xm.mark_step()` after
+3. Use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` and call `torch_xla.sync()` after (NOT xm.mark_step())
 4. Import ALL modules you use (math, random, collections, etc.)
+5. DEVICE PLACEMENT (CRITICAL - prevents RuntimeError: bridge::IsXlaTensor):
+   - ALL tensors used in computation MUST be on the XLA device
+   - Move ALL tensors to device: data.to(device), labels.to(device), model.to(device)
+   - When indexing XLA tensors, ensure indices are also on device: t = t.to(device) before using t as index
+   - Example: If using model.alpha_bar[t], ensure BOTH model.alpha_bar AND t are on device
+   - Common error: CPU tensor indexing XLA tensor → move ALL tensors to device first
+6. MODEL INPUT SHAPES (prevents dropout2d and dimension errors):
+   - Ensure input dimensions match model expectations
+   - For CNNs: inputs should be (batch, channels, height, width) - use .view() or .reshape() if needed
+   - For 2D inputs to dropout2d: use nn.Dropout() instead (dropout2d requires 3D/4D inputs)
+   - Verify data loader returns correct shape for your model architecture
+7. SYNCHRONIZATION (prevents DeprecationWarning and crashes):
+   - Use torch_xla.sync() instead of xm.mark_step() (xm.mark_step() is deprecated)
+   - Call torch_xla.sync() after: loss.backward() and xm.optimizer_step(optimizer)
+   - Do NOT call sync/mark_step before any XLA operations have been built
 
 ═══════════════════════════════════════════════════════════════════════════════
 PACKAGES & ENVIRONMENT
@@ -437,11 +452,21 @@ IMPORTANT RESOURCE CONSTRAINTS:
 - Initialize device BEFORE moving models to device: device = torch_xla.device() must come first
 - Only one execution runs at a time on the instance
 
+COMMON ERRORS TO AVOID:
+1. Device mismatch: Ensure ALL tensors (data, labels, model parameters, indices) are on XLA device
+2. Wrong sync API: Use torch_xla.sync() NOT xm.mark_step() (deprecated)
+3. Input shape mismatch: Verify model input dimensions match data loader output shapes
+4. Transform incompatibility: Avoid torchvision.transforms - use pure PyTorch operations
+5. Dataset unpacking: load_dataset() returns 2 values (train, test) - never unpack 3
+
 NOT AVAILABLE / DO NOT USE:
 - transformers_xla (THIS PACKAGE DOES NOT EXIST)
 - XLATokenizer (THIS CLASS DOES NOT EXIST)
 - matplotlib, PIL/Pillow, pandas, scipy, sklearn, torchtext
 - torchvision.datasets (use dataset_loader instead)
+- torchvision.transforms (use pure PyTorch operations instead - PIL/PIL-based transforms may fail)
+  * Instead of torchvision.transforms, use torch operations: torch.tensor(), .view(), .reshape(), etc.
+  * For normalization: manually compute mean/std and use torch operations
 
 NOTE on HuggingFace Hub:
 - Datasets: dataset_loader provides wikitext/imdb from S3 - no HF Hub download needed
