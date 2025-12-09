@@ -882,7 +882,7 @@ ESSENTIAL TRAINIUM/XLA REQUIREMENTS (verify these in the code):
 ═══════════════════════════════════════════════════════════════════════════════
 1. Device: `device = torch_xla.device()` (NOT xm.xla_device() - that's deprecated, NOT torch.device('cuda') or 'cpu')
 2. Optimizer: `xm.optimizer_step(optimizer)` instead of `optimizer.step()`
-3. Synchronization: Call `xm.mark_step()` after each backward pass
+3. Synchronization: Call `torch_xla.sync()` after each backward pass (NOT xm.mark_step() - deprecated)
 4. Dataset: `train_loader, test_loader = load_dataset('name')` (returns EXACTLY 2 DataLoaders, NOT 3)
    - CRITICAL: If error shows "ValueError: not enough values to unpack (expected 3, got 2)", 
      fix unpacking to match: "train_loader, test_loader = load_dataset(...)" (NOT train_loader, val_loader, test_loader)
@@ -895,6 +895,7 @@ ESSENTIAL TRAINIUM/XLA REQUIREMENTS (verify these in the code):
 
 Common mistakes to check:
 - ❌ `xm.xla_device()` → ✅ `torch_xla.device()` (deprecated API)
+- ❌ `xm.mark_step()` → ✅ `torch_xla.sync()` (deprecated API - causes DeprecationWarning and crashes)
 - ❌ `xm.XlaModule` → ✅ `nn.Module`
 - ❌ `xm.tensor()` → ✅ `torch.tensor()`
 - ❌ `xm.dot_general()` → ✅ `torch.matmul()`
@@ -906,6 +907,10 @@ Common mistakes to check:
 - ❌ HTTP 401/403 errors → ✅ Use a public model instead (e.g., 'bert-base-uncased', 'gpt2')
 - ❌ `base_model = ...` → ✅ Initialize with actual model
 - ❌ Setting NEURON_RT_NUM_CORES → ✅ Use default single-core allocation
+- ❌ CPU tensor indexing XLA tensor (RuntimeError: bridge::IsXlaTensor) → ✅ Move ALL tensors to device: data.to(device), labels.to(device), indices.to(device)
+- ❌ `nn.Dropout2d` with 2D inputs → ✅ Use `nn.Dropout()` for 2D inputs (dropout2d requires 3D/4D)
+- ❌ `torchvision.transforms` → ✅ Use pure PyTorch operations (torch.tensor(), .view(), .reshape())
+- ❌ Wrong input dimensions for model → ✅ Verify data shape matches model expectations, use .view()/.reshape() if needed
 
 {error_patterns_note}
 ═══════════════════════════════════════════════════════════════════════════════
@@ -959,7 +964,9 @@ CRITICAL: You must return BOTH the fixed code AND a summary of fixes in the foll
 The fixes summary should be a brief list (3-5 items max) of the key changes made. Example:
 - Fixed XLA tensor size conversion by adding int() wrapper
 - Replaced xm.optimizer.SGD with torch.optim.SGD
-- Added missing xm.mark_step() call after backward pass
+- Replaced xm.mark_step() with torch_xla.sync() (deprecated API)
+- Fixed device placement: moved all tensors (data, labels, indices) to XLA device
+- Fixed input dimensions: replaced nn.Dropout2d with nn.Dropout for 2D inputs
 
 IMPORTANT: The code block must come FIRST, followed by the fixes summary between the markers.
 """

@@ -82,22 +82,6 @@ def code_reviewer_0(code: str, paper_id: str, paper_summary: Optional[str] = Non
     logger.info(f"Code Reviewer 0: Fixing TRN compatibility issues WITHOUT sending to trn. paper = {paper_id}")
     
     # Pre-validate code for common issues
-    detected_issues = []
-    if re.search(r'(\w+),\s*(\w+),\s*(\w+)\s*=\s*load_dataset', code):
-        detected_issues.append("3-value unpacking from load_dataset() detected")
-        logger.warning(f"Code Reviewer 0: Detected 3-value unpacking pattern - will be fixed")
-    
-    if re.search(r'xm\.xla_device\(\)', code):
-        detected_issues.append("Deprecated xm.xla_device() usage detected")
-        logger.warning(f"Code Reviewer 0: Detected deprecated xm.xla_device() - will be fixed")
-    
-    if re.search(r'NEURON_RT_NUM_CORES\s*=', code, re.IGNORECASE):
-        detected_issues.append("NEURON_RT_NUM_CORES setting detected")
-        logger.warning(f"Code Reviewer 0: Detected NEURON_RT_NUM_CORES setting - will be removed")
-    
-    if re.search(r'os\.environ\[.NEURON_RT_NUM_CORES', code, re.IGNORECASE):
-        detected_issues.append("NEURON_RT_NUM_CORES environment variable setting detected")
-        logger.warning(f"Code Reviewer 0: Detected NEURON_RT_NUM_CORES env var setting - will be removed")
     
     # Note: .from_pretrained() is OK for models (fine-tuning), but not for datasets
     # We'll let Code Reviewer 0 handle this case-by-case based on context
@@ -123,7 +107,9 @@ ESSENTIAL TRAINIUM/XLA REQUIREMENTS (verify and fix all of these):
    - MUST replace optimizer.step() → xm.optimizer_step(optimizer)
 
 3. Synchronization:
-   - MUST call xm.mark_step() after each backward() + optimizer step
+   - MUST use torch_xla.sync() instead of xm.mark_step() (xm.mark_step() is deprecated and causes errors)
+   - MUST call torch_xla.sync() after: loss.backward() and xm.optimizer_step(optimizer)
+   - MUST NOT call sync/mark_step before any XLA operations have been built
    - MUST NOT call .item() inside training loop except for logging
 
 4. Dataset:
@@ -142,8 +128,13 @@ ESSENTIAL TRAINIUM/XLA REQUIREMENTS (verify and fix all of these):
    - MUST use torch.matmul / torch.mm etc.
    - MUST NOT use xm-specific ops (xm.tensor, xm.dot_general, etc.)
 
-7. Device placement:
-   - All model, input, labels, and loss tensors MUST be moved to device
+7. Device placement (CRITICAL - prevents RuntimeError: bridge::IsXlaTensor):
+   - ALL tensors used in computation MUST be on the XLA device
+   - Move ALL tensors to device: data.to(device), labels.to(device), model.to(device)
+   - When indexing XLA tensors, ensure indices are also on device: t = t.to(device) before using t as index
+   - Example: If using model.alpha_bar[t], ensure BOTH model.alpha_bar AND t are on device
+   - Common error: CPU tensor indexing XLA tensor → move ALL tensors to device first
+   - All model parameters, input tensors, label tensors, loss tensors, and index tensors MUST be on device
 
 8. Neuron Core Allocation:
    - MUST NOT set NEURON_RT_NUM_CORES environment variable
@@ -161,6 +152,24 @@ ESSENTIAL TRAINIUM/XLA REQUIREMENTS (verify and fix all of these):
      * If HTTP errors occur, try a different public model or check if token is needed
    - If error shows HTTP 401/403: model requires authentication - use a public model instead
    - If error shows HTTP 404: model name is wrong - fix the model name
+
+10. Model Input Shapes (prevents dropout2d and dimension errors):
+    - Ensure input dimensions match model expectations
+    - For CNNs: inputs should be (batch, channels, height, width) - use .view() or .reshape() if needed
+    - For 2D inputs to dropout2d: use nn.Dropout() instead (dropout2d requires 3D/4D inputs)
+    - Verify data loader returns correct shape for your model architecture
+    - Common error: "dropout2d: Received a 2-D input" → replace nn.Dropout2d with nn.Dropout for 2D inputs
+
+11. Transform Compatibility (prevents PIL/torchvision errors):
+    - DO NOT use torchvision.transforms (may fail due to PIL/PIL dependencies)
+    - Use pure PyTorch operations instead: torch.tensor(), .view(), .reshape(), manual normalization
+    - For normalization: manually compute mean/std and use torch operations
+    - Common error: PIL/PIL-based transforms fail → replace with pure PyTorch tensor operations
+
+12. Data Structure Validation (prevents TypeError: list indices must be integers):
+    - When accessing item['key'], ensure item is a dict, not a list
+    - Add isinstance() checks if data format is uncertain: if isinstance(item, dict): item['key']
+    - Verify data loader returns expected format (dict vs list vs tuple)
 ═══════════════════════════════════════════════════════════════════════════════
 """
     
@@ -194,6 +203,21 @@ INSTRUCTIONS:
      * CRITICAL: If error shows "Logical Neuron Core(s) not available - Requested:2 Available:0"
      * Remove lines like: os.environ['NEURON_RT_NUM_CORES'] = '2' or NEURON_RT_NUM_CORES = 2
      * Only 1 core is available - code must use default single-core allocation
+   - Device placement errors (CRITICAL - RuntimeError: bridge::IsXlaTensor):
+     * Ensure ALL tensors used in computation are on XLA device
+     * When indexing XLA tensors (e.g., model.alpha_bar[t]), ensure BOTH tensors are on device
+     * Move indices to device: t = t.to(device) before using as index
+     * Move all data, labels, model parameters, and intermediate tensors to device
+   - Synchronization errors (DeprecationWarning: Use torch_xla.sync instead):
+     * Replace xm.mark_step() with torch_xla.sync()
+     * Only call sync after backward() and optimizer_step() - not before XLA ops are built
+   - Model input shape errors (dropout2d: Received a 2-D input):
+     * For 2D inputs, use nn.Dropout() instead of nn.Dropout2d()
+     * Ensure input dimensions match model expectations (CNNs need 4D: batch, channels, H, W)
+     * Use .view() or .reshape() to fix dimensions if needed
+   - Transform compatibility errors:
+     * Replace torchvision.transforms with pure PyTorch operations
+     * Use torch.tensor(), .view(), .reshape() instead of PIL-based transforms
    - HuggingFace Hub errors: Fix based on error type
      * HTTP 401/403: Model requires authentication - change to a public model (e.g., 'bert-base-uncased')
      * HTTP 404: Model name is wrong - fix the model name
@@ -203,7 +227,7 @@ INSTRUCTIONS:
      * If accessing item['key'], ensure item is a dict, not a list
      * Add isinstance() checks if data format is uncertain
    - API contract mismatches: Ensure function calls match their return signatures
-   - Common errors: ValueError, TypeError, AttributeError that would occur on first execution
+   - Common errors: ValueError, TypeError, AttributeError, RuntimeError that would occur on first execution
 4. Fix ALL issues in one pass - don't leave any compatibility problems
 5. Ensure the code will work on Trainium without execution errors
 6. Preserve the original code logic and functionality - only fix compatibility and correctness issues
@@ -221,8 +245,11 @@ CRITICAL: You must return BOTH the fixed code AND a summary of fixes in the foll
 The fixes summary should be a brief list (3-5 items max) of the key TRN compatibility changes made. Example:
 - Changed device from torch.device('cuda') or xm.xla_device() to torch_xla.device()
 - Replaced optimizer.step() with xm.optimizer_step(optimizer)
-- Added xm.mark_step() after backward pass
+- Replaced xm.mark_step() with torch_xla.sync() (deprecated API)
 - Fixed dataset unpacking: changed "train_loader, val_loader, test_loader = load_dataset(...)" to "train_loader, test_loader = load_dataset(...)" (load_dataset returns 2 values, not 3)
+- Fixed device placement: moved all tensors (data, labels, indices) to XLA device to prevent RuntimeError: bridge::IsXlaTensor
+- Fixed input dimensions: replaced nn.Dropout2d with nn.Dropout for 2D inputs
+- Replaced torchvision.transforms with pure PyTorch operations
 
 IMPORTANT: The code block must come FIRST, followed by the fixes summary between the markers.
 """
