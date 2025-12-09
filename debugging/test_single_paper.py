@@ -9,8 +9,8 @@ import os
 import json
 from pathlib import Path
 
-# Add code_gen to path
-code_gen_path = Path(__file__).parent / "code_gen"
+# Add code_gen to path (go up one level from debugging/)
+code_gen_path = Path(__file__).parent.parent / "code_gen"
 sys.path.insert(0, str(code_gen_path))
 
 from chunked_generator import ChunkedPyTorchGenerator

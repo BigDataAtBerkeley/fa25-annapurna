@@ -403,9 +403,46 @@ Generate a complete, production-ready PyTorch implementation that demonstrates t
 
 CRITICAL REQUIREMENTS:
 1. Use dataset '{primary_dataset}' via: `from dataset_loader import load_dataset` (DO NOT use torchvision.datasets)
-2. Use Trainium/XLA: `import torch_xla.core.xla_model as xm` and `device = xm.xla_device()`
-3. Use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` and call `xm.mark_step()` after
+   - CRITICAL: load_dataset() returns EXACTLY 2 DataLoaders: (train_loader, test_loader)
+   - NEVER unpack 3 values like "train_loader, val_loader, test_loader = load_dataset(...)"
+   - If validation is needed, split train_loader or use test_loader for validation
+   - IMPORTANT: load_dataset() automatically downloads the dataset from S3 if not already cached - no manual download needed
+   - Simply call: train_loader, test_loader = load_dataset('{primary_dataset}', batch_size=128)
+   
+   DATASET FORMATS (CRITICAL - understand what each dataset returns):
+   - Image datasets (mnist, cifar10, cifar100, fashion_mnist, synthetic): 
+     * Returns (image_tensor, label_tensor) where labels are SCALAR integers (0, 1, 2, ...)
+     * Image shape: [batch, channels, height, width] or [batch, height, width] for grayscale
+     * Label shape: [batch] - each label is a single integer class ID
+   - Text classification (imdb):
+     * Returns (text_string, label_tensor) where labels are SCALAR integers (0 or 1)
+     * Text: Python strings (need tokenization in your code)
+     * Label shape: [batch] - each label is a single integer (0=negative, 1=positive)
+   - Language modeling (wikitext2):
+     * Returns (input_ids_tensor, labels_tensor) where BOTH are SEQUENCES of token IDs
+     * Input shape: [batch, seq_length] - token IDs for input sequence
+     * Label shape: [batch, seq_length] - token IDs for next-token prediction (shifted by 1)
+     * CRITICAL: Labels are NOT scalars - they are sequences! Use them directly in loss functions like CrossEntropyLoss
+     * Example: loss = criterion(logits.view(-1, vocab_size), labels.view(-1))  # Flatten for loss calculation
+     
+2. Use Trainium/XLA: `import torch_xla` and `device = torch_xla.device()` (NOT xm.xla_device())
+3. Use `xm.optimizer_step(optimizer)` instead of `optimizer.step()` and call `torch_xla.sync()` after (NOT xm.mark_step())
 4. Import ALL modules you use (math, random, collections, etc.)
+5. DEVICE PLACEMENT (CRITICAL - prevents RuntimeError: bridge::IsXlaTensor):
+   - ALL tensors used in computation MUST be on the XLA device
+   - Move ALL tensors to device: data.to(device), labels.to(device), model.to(device)
+   - When indexing XLA tensors, ensure indices are also on device: t = t.to(device) before using t as index
+   - Example: If using model.alpha_bar[t], ensure BOTH model.alpha_bar AND t are on device
+   - Common error: CPU tensor indexing XLA tensor → move ALL tensors to device first
+6. MODEL INPUT SHAPES (prevents dropout2d and dimension errors):
+   - Ensure input dimensions match model expectations
+   - For CNNs: inputs should be (batch, channels, height, width) - use .view() or .reshape() if needed
+   - For 2D inputs to dropout2d: use nn.Dropout() instead (dropout2d requires 3D/4D inputs)
+   - Verify data loader returns correct shape for your model architecture
+7. SYNCHRONIZATION (prevents DeprecationWarning and crashes):
+   - Use torch_xla.sync() instead of xm.mark_step() (xm.mark_step() is deprecated)
+   - Call torch_xla.sync() after: loss.backward() and xm.optimizer_step(optimizer)
+   - Do NOT call sync/mark_step before any XLA operations have been built
 
 ═══════════════════════════════════════════════════════════════════════════════
 PACKAGES & ENVIRONMENT
@@ -414,17 +451,48 @@ PACKAGES & ENVIRONMENT
 AVAILABLE (Neuron SDK Environment):
 - torch, torch_xla (Neuron SDK PyTorch 2.1.0 with XLA support) - REQUIRED for Trainium
 - torch.nn, torch.optim (PyTorch neural network and optimizer modules)
-- transformers (HuggingFace) - for tokenization - USE: 'from transformers import AutoTokenizer'
 - numpy, standard library (math, random, collections, json, os, sys, etc.)
-- dataset_loader (custom module)
+- dataset_loader (custom module) - provides pre-processed datasets with tokenization already done
+
+HuggingFace Hub Usage:
+- Datasets (wikitext/imdb): dataset_loader already provides pre-processed data from S3 - NO downloads needed
+- Models/Tokenizers for fine-tuning: Can use AutoTokenizer.from_pretrained() or AutoModel.from_pretrained() IF:
+  * The model is publicly available (no private repo)
+  * HUGGINGFACE_HUB_TOKEN may be set (optional, only needed for private models)
+  * For fine-tuning papers: you can load pre-trained models from HuggingFace Hub
+- If you get HTTP errors: the model may require authentication or the instance has no internet access
 
 NOTE: This code runs on AWS Trainium using the Neuron SDK. The torch_xla module is part of the Neuron SDK and provides XLA (Accelerated Linear Algebra) support for Trainium accelerators.
 
+IMPORTANT RESOURCE CONSTRAINTS:
+- Do NOT set NEURON_RT_NUM_CORES or request multiple cores - use default single-core allocation
+- Only 1 Neuron core is available - keep models small enough to fit in 1 core
+- Large models (e.g., very large transformers) may require 2+ cores and will fail
+- Initialize device BEFORE moving models to device: device = torch_xla.device() must come first
+- Only one execution runs at a time on the instance
+
+COMMON ERRORS TO AVOID:
+1. Device mismatch: Ensure ALL tensors (data, labels, model parameters, indices) are on XLA device
+2. Wrong sync API: Use torch_xla.sync() NOT xm.mark_step() (deprecated)
+3. Input shape mismatch: Verify model input dimensions match data loader output shapes
+4. Transform incompatibility: Avoid torchvision.transforms - use pure PyTorch operations
+5. Dataset unpacking: load_dataset() returns 2 values (train, test) - never unpack 3
+
 NOT AVAILABLE / DO NOT USE:
-- transformers_xla (THIS PACKAGE DOES NOT EXIST - use 'from transformers import AutoTokenizer' instead)
-- XLATokenizer (THIS CLASS DOES NOT EXIST - use AutoTokenizer instead)
+- transformers_xla (THIS PACKAGE DOES NOT EXIST)
+- XLATokenizer (THIS CLASS DOES NOT EXIST)
 - matplotlib, PIL/Pillow, pandas, scipy, sklearn, torchtext
 - torchvision.datasets (use dataset_loader instead)
+- torchvision.transforms (use pure PyTorch operations instead - PIL/PIL-based transforms may fail)
+  * Instead of torchvision.transforms, use torch operations: torch.tensor(), .view(), .reshape(), etc.
+  * For normalization: manually compute mean/std and use torch operations
+
+NOTE on HuggingFace Hub:
+- Datasets: dataset_loader provides wikitext/imdb from S3 - no HF Hub download needed
+- Models: For fine-tuning, you CAN use AutoModel.from_pretrained() or AutoTokenizer.from_pretrained()
+  * Use publicly available models (e.g., 'bert-base-uncased', 'gpt2', 'distilbert-base-uncased')
+  * HUGGINGFACE_HUB_TOKEN may be available for private models
+  * If HTTP errors occur, the model may require authentication or instance lacks internet access
 
 ═══════════════════════════════════════════════════════════════════════════════
 OUTPUT FORMAT - CODE WITH BRIEF INLINE COMMENTS

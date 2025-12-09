@@ -313,6 +313,7 @@ Group=ec2-user
 WorkingDirectory=/home/ec2-user/trainium-executor
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONUNBUFFERED=1"
+Environment="HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN:-}"
 ExecStart=/usr/bin/python3 /home/ec2-user/trainium-executor/app.py
 Restart=always
 RestartSec=10

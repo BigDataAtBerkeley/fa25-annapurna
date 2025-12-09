@@ -2,22 +2,19 @@
 Logistic classifer for page relevance (for when we send a PDF to the bedrock vision api)
 """
 
-import os
+import argparse
 import pickle
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, accuracy_score
-from sklearn.pipeline import FeatureUnion
 from sklearn.preprocessing import StandardScaler
 from scipy.sparse import hstack, csr_matrix
 import pandas as pd
-
-import logging
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,6 +23,8 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+DEFAULT_DATA_PATH = Path(__file__).parent / "paper_texts - pdf_texts.csv"
 
 
 
@@ -59,7 +58,15 @@ class PageRelevanceClassifier:
                 logger.warning(f"Failed to load model from {self.model_path}: {e}")
                 logger.info("Will train a new model")
     
-    def train(self, csv_path: str, test_size: float = 0.2, random_state: int = 42):
+    def train(
+        self,
+        csv_path: str,
+        test_size: float = 0.3,
+        random_state: int = 42,
+        oversample_positive: bool = True,
+        unigram_max_features: int = 5000,
+        trigram_max_features: int = 2000
+    ):
         """
         Train the classifier on labeled page data.
         
@@ -67,24 +74,15 @@ class PageRelevanceClassifier:
             csv_path: Path to CSV file with columns: paper_id, pdf_name, page_number, text, keep
             test_size: Proportion of data to use for testing
             random_state: Random seed for reproducibility
+            oversample_positive: Whether to balance training data by oversampling
+                the minority (keep=1) class after the train/test split. Enabled by default.
+            unigram_max_features: Vocabulary size for the main TF-IDF vectorizer.
+            trigram_max_features: Vocabulary size for the trigram TF-IDF vectorizer.
         """
         logger.info(f"Training page classifier on data from {csv_path}")
         
-        # Load data
-        df = pd.read_csv(csv_path)
-        
-        # Ensure we have required columns
-        required_cols = ['text', 'keep']
-        if not all(col in df.columns for col in required_cols):
-            raise ValueError(f"CSV must have columns: {required_cols}")
-        
-        # Clean data
-        df = df[df['text'].notna() & df['keep'].notna()].copy()
-        df['keep'] = df['keep'].astype(int)
-        df = df[df['keep'].isin([0, 1])]
-        
-        if len(df) == 0:
-            raise ValueError("No valid training data found")
+        # Load and clean data
+        df = self._load_labeled_dataframe(csv_path)
         
         logger.info(f"Training on {len(df)} pages")
         logger.info(f"Class distribution: {df['keep'].value_counts().to_dict()}")
@@ -95,13 +93,22 @@ class PageRelevanceClassifier:
         
         # Split data
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state, stratify=y
+s            X, y, test_size=test_size, random_state=random_state, stratify=y
         )
+        
+        if oversample_positive:
+            X_train, y_train = self._oversample_positive_pages(
+                X_train, y_train, random_state
+            )
+            logger.info(
+                "Applied positive-class oversampling. New train distribution: %s",
+                {0: int((y_train == 0).sum()), 1: int((y_train == 1).sum())}
+            )
         
         # Create TF-IDF vectorizers with different configurations for richer features
         # Main TF-IDF vectorizer with unigrams and bigrams
         self.vectorizer = TfidfVectorizer(
-            max_features=5000,
+            max_features=unigram_max_features,
             ngram_range=(1, 2),  # Unigrams and bigrams
             min_df=2,  # Minimum document frequency
             max_df=0.95,  # Maximum document frequency
@@ -112,7 +119,7 @@ class PageRelevanceClassifier:
         
         # Additional TF-IDF vectorizer for trigrams (captures longer phrases)
         self.trigram_vectorizer = TfidfVectorizer(
-            max_features=2000,
+            max_features=trigram_max_features,
             ngram_range=(3, 3),  # Trigrams only
             min_df=3,
             max_df=0.9,
@@ -192,7 +199,8 @@ class PageRelevanceClassifier:
             'test_size': len(X_test),
             'model_path': str(self.model_path)
         }
-    
+
+        
     def predict(self, page_text: str) -> Dict[str, Any]:
         """
         Predict if a page is relevant for code generation.
@@ -298,6 +306,45 @@ class PageRelevanceClassifier:
         
         return results
     
+    def evaluate_on_csv(self, csv_path: str) -> Dict[str, Any]:
+        """
+        Evaluate the trained model on a labeled CSV.
+        
+        Args:
+            csv_path: Path to CSV with `text` and `keep` columns.
+            
+        Returns:
+            Dictionary containing evaluation metrics.
+        """
+        if not self.is_trained:
+            raise ValueError("Classifier must be trained or loaded before evaluating.")
+        
+        df = self._load_labeled_dataframe(csv_path)
+        
+        texts = df['text'].fillna('').astype(str).tolist()
+        labels = df['keep'].tolist()
+        
+        logger.info(f"Evaluating on {len(df)} pages from {csv_path}")
+        preds = self.predict_batch(texts)
+        pred_labels = [int(p['is_relevant']) for p in preds]
+        
+        accuracy = accuracy_score(labels, pred_labels)
+        report = classification_report(
+            labels,
+            pred_labels,
+            target_names=['Not Relevant', 'Relevant']
+        )
+        
+        logger.info(f"Evaluation accuracy: {accuracy:.4f}")
+        logger.info("\nClassification Report:")
+        logger.info(report)
+        
+        return {
+            'accuracy': accuracy,
+            'sample_size': len(df),
+            'report': report
+        }
+    
     def save_model(self, path: Optional[str] = None):
         """Save the trained model to disk."""
         if not self.is_trained:
@@ -355,6 +402,63 @@ class PageRelevanceClassifier:
         
         logger.info(f"Loaded model from {load_path}")
     
+    def _load_labeled_dataframe(self, csv_path: str) -> pd.DataFrame:
+        """Load CSV, ensure required columns, and clean keep labels."""
+        df = pd.read_csv(csv_path)
+        required_cols = ['text', 'keep']
+        if not all(col in df.columns for col in required_cols):
+            raise ValueError(f"CSV must have columns: {required_cols}")
+        
+        df = df[df['text'].notna() & df['keep'].notna()].copy()
+        
+        # Normalize keep column to contain only digits 0/1
+        keep_series = (
+            df['keep']
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .str.replace('o', '0')
+            .str.replace(r'[^01]', '', regex=True)
+        )
+        keep_series = keep_series.str.extract(r'([01])')[0]
+        df['keep'] = keep_series
+        df = df[df['keep'].notna()].copy()
+        df['keep'] = df['keep'].astype(int)
+        df = df[df['keep'].isin([0, 1])]
+        
+        if len(df) == 0:
+            raise ValueError("No valid labeled data found")
+        
+        return df
+    
+    def _oversample_positive_pages(
+        self,
+        texts: np.ndarray,
+        labels: np.ndarray,
+        random_state: int
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Oversample positive class to match negatives in the training split."""
+        positives = np.where(labels == 1)[0]
+        negatives = np.where(labels == 0)[0]
+        
+        if len(positives) == 0 or len(negatives) == 0:
+            logger.warning("Skipping oversampling due to missing class in training split.")
+            return texts, labels
+        
+        if len(positives) >= len(negatives):
+            return texts, labels
+        
+        rng = np.random.default_rng(seed=random_state)
+        sampled_pos = rng.choice(
+            positives,
+            size=len(negatives),
+            replace=True
+        )
+        new_indices = np.concatenate([negatives, sampled_pos])
+        rng.shuffle(new_indices)
+        
+        return texts[new_indices], labels[new_indices]
+    
     def _extract_tfidf_statistics(self, texts: List[str], tfidf_matrix) -> csr_matrix:
         """
         Extract TF-IDF-based statistical features from text.
@@ -404,3 +508,92 @@ class PageRelevanceClassifier:
         
         return csr_matrix(features)
 
+
+def _parse_args():
+    parser = argparse.ArgumentParser(
+        description="Train and evaluate the PageRelevanceClassifier."
+    )
+    default_train = str(DEFAULT_DATA_PATH) if DEFAULT_DATA_PATH.exists() else None
+    parser.add_argument(
+        "--model-path",
+        default=None,
+        help="Optional path to save/load the trained model (defaults to code_gen/page_classifier_model.pkl)."
+    )
+    parser.add_argument(
+        "--train-csv",
+        default=default_train,
+        help=(
+            "CSV of labeled pages used for training "
+            f"(defaults to {DEFAULT_DATA_PATH.name} if it exists)."
+        )
+    )
+    parser.add_argument(
+        "--evaluate-csv",
+        help="CSV of labeled pages to evaluate after training or loading a model."
+    )
+    parser.add_argument(
+        "--test-size",
+        type=float,
+        default=0.3,
+        help="Fraction of the training CSV to reserve for validation (default: 0.3)."
+    )
+    parser.add_argument(
+        "--no-oversample-positive",
+        action="store_false",
+        dest="oversample_positive",
+        help="Disable balancing the training set by oversampling pages with keep=1."
+    )
+    parser.set_defaults(oversample_positive=True)
+    parser.add_argument(
+        "--random-state",
+        type=int,
+        default=42,
+        help="Random seed used for splitting and oversampling."
+    )
+    parser.add_argument(
+        "--tfidf-max-features",
+        type=int,
+        default=5000,
+        help="Max vocabulary size for the main (1-2 gram) TF-IDF vectorizer."
+    )
+    parser.add_argument(
+        "--trigram-max-features",
+        type=int,
+        default=2000,
+        help="Max vocabulary size for the trigram TF-IDF vectorizer."
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = _parse_args()
+    
+    if not args.train_csv and not args.evaluate_csv:
+        raise SystemExit("Specify --train-csv, --evaluate-csv, or both.")
+    
+    classifier = PageRelevanceClassifier(model_path=args.model_path)
+    
+    if args.train_csv:
+        train_path = Path(args.train_csv)
+        if not train_path.exists():
+            raise SystemExit(f"Training CSV not found: {train_path}")
+        train_metrics = classifier.train(
+            args.train_csv,
+            test_size=args.test_size,
+            random_state=args.random_state,
+            oversample_positive=args.oversample_positive,
+            unigram_max_features=args.tfidf_max_features,
+            trigram_max_features=args.trigram_max_features
+        )
+        logger.info(f"Training metrics: {train_metrics}")
+    
+    if args.evaluate_csv:
+        eval_path = Path(args.evaluate_csv)
+        if not eval_path.exists():
+            raise SystemExit(f"Evaluation CSV not found: {eval_path}")
+        eval_metrics = classifier.evaluate_on_csv(args.evaluate_csv)
+        logger.info(f"Evaluation metrics: {eval_metrics}")
+
+
+if __name__ == "__main__":
+    main()

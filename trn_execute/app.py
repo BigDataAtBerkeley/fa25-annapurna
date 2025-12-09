@@ -405,12 +405,64 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
         logger.error(traceback.format_exc())
 
     
+def cleanup_stale_neuron_processes():
+    """
+    Kill stale Python processes that might be holding Neuron cores.
+    This prevents "Logical Neuron Core(s) not available" errors.
+    """
+    try:
+        # Find Python processes using Neuron
+        result = subprocess.run(
+            ['ps', 'aux'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode != 0:
+            logger.warning("Could not list processes for cleanup")
+            return
+        
+        lines = result.stdout.split('\n')
+        neuron_processes = []
+        
+        for line in lines:
+            # Look for Python processes that might be using Neuron
+            if 'python' in line.lower() and ('neuron' in line.lower() or '/tmp/trainium_exec_' in line):
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        pid = int(parts[1])
+                        # Skip our own process and the Flask app
+                        if pid != os.getpid() and 'app.py' not in line:
+                            neuron_processes.append(pid)
+                    except (ValueError, IndexError):
+                        continue
+        
+        if neuron_processes:
+            logger.info(f"Found {len(neuron_processes)} stale Neuron processes, cleaning up...")
+            for pid in neuron_processes:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    logger.info(f"Sent SIGTERM to stale process {pid}")
+                except ProcessLookupError:
+                    pass  # Process already gone
+                except PermissionError:
+                    logger.warning(f"Permission denied killing process {pid}")
+        else:
+            logger.debug("No stale Neuron processes found")
+            
+    except Exception as e:
+        logger.warning(f"Error during Neuron process cleanup: {e}")
+
+
 def execute_code_sync(paper_id: str, code: str, timeout: int, paper_title: Optional[str] = None) -> Dict[str, Any]:
     """
     Execute code synchronously (blocking).
     This is the core execution function used by both /execute and /code_review.
     
     Process Management:
+    - Cleans up stale Neuron processes before execution
     - Uses start_new_session=True to create a new process group
     - When timeout is reached, subprocess.run() kills the entire process group
     - This ensures all child processes are properly terminated
@@ -425,6 +477,9 @@ def execute_code_sync(paper_id: str, code: str, timeout: int, paper_title: Optio
     Returns:
         Execution result dictionary
     """
+    # Clean up stale processes before execution to free Neuron cores
+    cleanup_stale_neuron_processes()
+    
     exec_dir = tempfile.mkdtemp(prefix=f'trainium_exec_{paper_id}_', dir='/tmp')
     
     try:
@@ -495,7 +550,11 @@ sys.path.append('{exec_dir}')
             'DATASET_CACHE_DIR': DATASET_CACHE_DIR,
             'PYTHONDONTWRITEBYTECODE': '1',
             'NEURON_RT_LOG_LEVEL': 'ERROR',
-            'NEURON_RETRY_FAILED_COMPILATION': '1'  # Retry failed compilations instead of using cached failures
+            'NEURON_RETRY_FAILED_COMPILATION': '1',  # Retry failed compilations instead of using cached failures
+            # Explicitly prevent multiple core requests - only 1 core available
+            'NEURON_RT_NUM_CORES': '1',  # Force single-core allocation
+            # HuggingFace token (optional - only needed for private models or rate limit issues)
+            'HUGGINGFACE_HUB_TOKEN': os.getenv('HUGGINGFACE_HUB_TOKEN', '')  # Allow HF downloads for fine-tuning
         }
         
         # Build command
@@ -627,6 +686,20 @@ sys.path.append('{exec_dir}')
                 shutil.rmtree(exec_dir)
         except Exception as e:
             logger.warning(f"Failed to cleanup {exec_dir}: {e}")
+        
+        # Restart Neuron runtime to free cores after each execution
+        # This ensures cores are released even if the process didn't clean up properly
+        try:
+            logger.debug("Restarting Neuron runtime to free cores...")
+            subprocess.run(
+                ['sudo', 'systemctl', 'restart', 'neuron-rtd'],
+                timeout=10,
+                capture_output=True,
+                check=False  # Don't fail if restart fails
+            )
+            logger.debug("Neuron runtime restarted successfully")
+        except Exception as e:
+            logger.warning(f"Failed to restart Neuron runtime (non-critical): {e}")
 
 
 def extract_errors_from_result(exec_result: Dict[str, Any]) -> str:
@@ -807,20 +880,37 @@ The following errors occurred in similar papers. Check your code to ensure these
 ═══════════════════════════════════════════════════════════════════════════════
 ESSENTIAL TRAINIUM/XLA REQUIREMENTS (verify these in the code):
 ═══════════════════════════════════════════════════════════════════════════════
-1. Device: `device = xm.xla_device()` (NOT torch.device('cuda') or 'cpu')
+1. Device: `device = torch_xla.device()` (NOT xm.xla_device() - that's deprecated, NOT torch.device('cuda') or 'cpu')
 2. Optimizer: `xm.optimizer_step(optimizer)` instead of `optimizer.step()`
-3. Synchronization: Call `xm.mark_step()` after each backward pass
+3. Synchronization: Call `torch_xla.sync()` after each backward pass (NOT xm.mark_step() - deprecated)
 4. Dataset: `train_loader, test_loader = load_dataset('name')` (returns EXACTLY 2 DataLoaders, NOT 3)
    - CRITICAL: If error shows "ValueError: not enough values to unpack (expected 3, got 2)", 
      fix unpacking to match: "train_loader, test_loader = load_dataset(...)" (NOT train_loader, val_loader, test_loader)
-5. Imports: Use `from dataset_loader import load_dataset` (NOT torchvision.datasets)
+5. Neuron Core Allocation: 
+   - CRITICAL: If error shows "Logical Neuron Core(s) not available - Requested:2 Available:0",
+     remove ALL lines that set NEURON_RT_NUM_CORES (e.g., os.environ['NEURON_RT_NUM_CORES'] = '2')
+   - Only 1 core is available - code must use default single-core allocation
+   - If model is too large and requires 2+ cores, reduce model size/complexity (fewer layers, smaller hidden dims)
+6. Imports: Use `from dataset_loader import load_dataset` (NOT torchvision.datasets)
 
 Common mistakes to check:
+- ❌ `xm.xla_device()` → ✅ `torch_xla.device()` (deprecated API)
+- ❌ `xm.mark_step()` → ✅ `torch_xla.sync()` (deprecated API - causes DeprecationWarning and crashes)
 - ❌ `xm.XlaModule` → ✅ `nn.Module`
 - ❌ `xm.tensor()` → ✅ `torch.tensor()`
 - ❌ `xm.dot_general()` → ✅ `torch.matmul()`
 - ❌ `train_dataset, val_dataset, test_dataset = load_dataset()` → ✅ `train_loader, test_loader = load_dataset()`
+- ❌ `train_loader, val_loader, test_loader = load_dataset()` → ✅ `train_loader, test_loader = load_dataset()` (only 2 values!)
+- ❌ `item['key']` when item is a list → ✅ Check isinstance(item, dict) first
+- ❌ `AutoTokenizer.from_pretrained('wikitext')` → ✅ Use dataset_loader (datasets come from S3, not HF Hub)
+- ✅ `AutoModel.from_pretrained('bert-base-uncased')` → OK for fine-tuning (use public models)
+- ❌ HTTP 401/403 errors → ✅ Use a public model instead (e.g., 'bert-base-uncased', 'gpt2')
 - ❌ `base_model = ...` → ✅ Initialize with actual model
+- ❌ Setting NEURON_RT_NUM_CORES → ✅ Use default single-core allocation
+- ❌ CPU tensor indexing XLA tensor (RuntimeError: bridge::IsXlaTensor) → ✅ Move ALL tensors to device: data.to(device), labels.to(device), indices.to(device)
+- ❌ `nn.Dropout2d` with 2D inputs → ✅ Use `nn.Dropout()` for 2D inputs (dropout2d requires 3D/4D)
+- ❌ `torchvision.transforms` → ✅ Use pure PyTorch operations (torch.tensor(), .view(), .reshape())
+- ❌ Wrong input dimensions for model → ✅ Verify data shape matches model expectations, use .view()/.reshape() if needed
 
 {error_patterns_note}
 ═══════════════════════════════════════════════════════════════════════════════
@@ -874,7 +964,9 @@ CRITICAL: You must return BOTH the fixed code AND a summary of fixes in the foll
 The fixes summary should be a brief list (3-5 items max) of the key changes made. Example:
 - Fixed XLA tensor size conversion by adding int() wrapper
 - Replaced xm.optimizer.SGD with torch.optim.SGD
-- Added missing xm.mark_step() call after backward pass
+- Replaced xm.mark_step() with torch_xla.sync() (deprecated API)
+- Fixed device placement: moved all tensors (data, labels, indices) to XLA device
+- Fixed input dimensions: replaced nn.Dropout2d with nn.Dropout for 2D inputs
 
 IMPORTANT: The code block must come FIRST, followed by the fixes summary between the markers.
 """
