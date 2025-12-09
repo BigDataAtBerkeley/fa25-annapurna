@@ -40,9 +40,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Add code_gen to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code_gen'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'trn_execute'))
+# Add code_gen to path (go up one level from debugging/)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'code_gen'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'trn_execute'))
 
 from storage_utils import save_json, save_code
 
@@ -55,15 +55,15 @@ except ImportError:
     logger.warning("slack_notifier module not available - initial paper notifications will be disabled")
 
 try:
-    # Import chunked generator from code_gen subdirectory
+    # Import chunked generator from code_gen subdirectory (go up one level from debugging/)
     import importlib.util
-    chunked_dir = os.path.join(os.path.dirname(__file__), 'code_gen')
+    chunked_dir = os.path.join(os.path.dirname(__file__), '..', 'code_gen')
     chunked_generator_path = os.path.join(chunked_dir, 'chunked_generator.py')
-    
+
     if os.path.exists(chunked_generator_path):
         # Add the code_gen directory to path so it can import its dependencies
         sys.path.insert(0, chunked_dir)
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code_gen'))
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'code_gen'))
         
         # Load the chunked_generator module
         spec = importlib.util.spec_from_file_location("chunked_generator", chunked_generator_path)
@@ -92,8 +92,8 @@ ec2_client = None
 if TRAINIUM_INSTANCE_ID:
     ec2_client = boto3.client('ec2', region_name=TRAINIUM_REGION)
 
-# Results directory structure - per-paper folders
-RESULTS_DIR = Path('results')
+# Results directory structure - per-paper folders (in parent directory)
+RESULTS_DIR = Path(__file__).parent.parent / 'results'
 # Directories will be created per-paper: results/{paper_id}/{step}/
 
 
@@ -496,8 +496,8 @@ def process_paper(paper_id: str, generator) -> Dict[str, Any]:
         
         # Code Reviewer 0: Proactive TRN compatibility fixer (runs locally)
         try:
-            # Import from code_gen module
-            sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code_gen'))
+            # Import from code_gen module (go up one level from debugging/)
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'code_gen'))
             from code_reviewer_0 import code_reviewer_0
             
             logger.info(f"Code Reviewer 0: Reviewing code for {paper_id}")
