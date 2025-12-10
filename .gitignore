@@ -125,3 +125,5 @@ debugging/clear_opensearch.py
 code_gen/page_classifier_model.pkl
 
 debugging/code_reviewer_0_testing/
+
+debugging/ntrace.pb

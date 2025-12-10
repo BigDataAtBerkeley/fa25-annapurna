@@ -149,9 +149,100 @@ notification_lock = threading.Lock()
 # SQS client for queue polling
 sqs_client = boto3.client('sqs', region_name=AWS_REGION) if TRAINIUM_EXECUTION_QUEUE_URL else None
 
+def convert_to_perfetto_format(profiler_path: str) -> bool:
+    """
+    Convert neuron-profile trace files to Perfetto format (.pftrace).
+    
+    The profiler generates .pb files (like ntrace.pb), which need to be converted
+    to .pftrace format for Perfetto UI. This function runs neuron-profile view
+    to perform the conversion.
+    
+    Args:
+        profiler_path: Path to the profiler output directory
+        
+    Returns:
+        True if conversion succeeded, False otherwise
+    """
+    if not os.path.exists(profiler_path):
+        logger.warning(f"Profiler path does not exist: {profiler_path}")
+        return False
+    
+    neuron_profile_cmd = '/opt/aws/neuron/bin/neuron-profile'
+    if not os.path.exists(neuron_profile_cmd):
+        logger.warning(f"neuron-profile command not found at {neuron_profile_cmd}, skipping Perfetto conversion")
+        return False
+    
+    # Check if we have trace files to convert
+    trace_files = []
+    for root, dirs, files in os.walk(profiler_path):
+        for file in files:
+            if file.endswith('.pb') and file in ['ntrace.pb', 'cpu_util.pb', 'host_mem.pb']:
+                trace_files.append(file)
+    
+    if not trace_files:
+        logger.info(f"No trace files found in {profiler_path} to convert")
+        return False
+    
+    logger.info(f"Found trace files to convert: {trace_files}")
+    
+    try:
+        # Run neuron-profile view to convert trace files to Perfetto format
+        # Using -d (directory) should automatically find and convert all trace files
+        cmd = [
+            neuron_profile_cmd,
+            'view',
+            '-d', profiler_path,
+            '--output-format', 'perfetto'
+        ]
+        
+        logger.info(f"Converting trace files to Perfetto format in {profiler_path}")
+        logger.info(f"Running command: {' '.join(cmd)}")
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout for conversion
+        )
+        
+        # Log output for debugging
+        if result.stdout:
+            logger.info(f"Conversion stdout: {result.stdout[:500]}")  # First 500 chars
+        if result.stderr:
+            logger.info(f"Conversion stderr: {result.stderr[:500]}")  # First 500 chars
+        
+        if result.returncode == 0:
+            # Check if .pftrace files were actually created
+            pftrace_files = []
+            for root, dirs, files in os.walk(profiler_path):
+                for file in files:
+                    if file.endswith('.pftrace'):
+                        pftrace_files.append(file)
+            
+            if pftrace_files:
+                logger.info(f"✅ Successfully converted trace files to Perfetto format: {pftrace_files}")
+                return True
+            else:
+                logger.warning(f"Conversion command succeeded but no .pftrace files found. Output: {result.stdout}")
+                return False
+        else:
+            logger.warning(f"Failed to convert to Perfetto format (return code {result.returncode})")
+            logger.warning(f"stderr: {result.stderr}")
+            logger.warning(f"stdout: {result.stdout}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout converting trace files to Perfetto format after 5 minutes")
+        return False
+    except Exception as e:
+        logger.error(f"Error converting to Perfetto format: {e}")
+        logger.error(traceback.format_exc())
+        return False
+
+
 def collect_profiler_artifacts(paper_id: str, profiler_path: str) -> Dict[str, Any]:
     """
     Collect and upload profiler artifacts to S3.
+    Converts trace files to Perfetto format before uploading.
     
     Returns:
         Dictionary with profiler information including uploaded files and S3 location
@@ -167,9 +258,14 @@ def collect_profiler_artifacts(paper_id: str, profiler_path: str) -> Dict[str, A
     }
     
     try:
+        # Convert trace files to Perfetto format first
+        convert_to_perfetto_format(profiler_path)
+        
         s3_client = boto3.client('s3')
         uploaded_files = []
         
+        # Collect all files and prioritize .pftrace files for Perfetto
+        pftrace_file = None
         for root, dirs, files in os.walk(profiler_path):
             for file in files:
                 local_path = os.path.join(root, file)
@@ -177,9 +273,20 @@ def collect_profiler_artifacts(paper_id: str, profiler_path: str) -> Dict[str, A
                 s3_client.upload_file(local_path, RESULTS_BUCKET, s3_key)
                 uploaded_files.append(file)
                 
-                # Check if this is a perfetto file
-                if file.endswith('.perfetto') or 'perfetto' in file.lower():
-                    profiler_info['perfetto_file'] = file
+                # Prioritize .pftrace files (converted Perfetto format)
+                # Fall back to .pb files if conversion didn't produce .pftrace
+                if file.endswith('.pftrace'):
+                    pftrace_file = file
+                elif not pftrace_file and (file.endswith('.perfetto') or 'perfetto' in file.lower()):
+                    pftrace_file = file
+                elif not pftrace_file and file == 'ntrace.pb':
+                    # ntrace.pb might be usable in Perfetto, but prefer converted .pftrace
+                    pftrace_file = file
+        
+        # Set the perfetto file (prefer .pftrace, fall back to others)
+        if pftrace_file:
+            profiler_info['perfetto_file'] = pftrace_file
+            logger.info(f"Found Perfetto-compatible file: {pftrace_file}")
         
         profiler_info['profiler_files'] = uploaded_files
         logger.info(f"Uploaded {len(uploaded_files)} profiler artifacts for {paper_id}")
