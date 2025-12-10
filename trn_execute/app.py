@@ -987,9 +987,18 @@ The following errors occurred in similar papers. Check your code to ensure these
 ═══════════════════════════════════════════════════════════════════════════════
 ESSENTIAL TRAINIUM/XLA REQUIREMENTS (verify these in the code):
 ═══════════════════════════════════════════════════════════════════════════════
-1. Device: `device = torch_xla.device()` (NOT xm.xla_device() - that's deprecated, NOT torch.device('cuda') or 'cpu')
+1. Device: 
+   - MUST use: `import torch_xla.core.xla_model as xm` then `device = xm.xla_device()`
+   - MUST NOT use: `torch_xla.device()` (THIS FUNCTION DOES NOT EXIST)
+   - MUST NOT use: `torch.device('cuda')`, `torch.device('cpu')`, `.to('cuda')`, `.cuda()`
+   - CRITICAL: If error shows "NameError: name 'torch_xla' is not defined", add the import:
+     `import torch_xla.core.xla_model as xm` and use `xm.xla_device()`
 2. Optimizer: `xm.optimizer_step(optimizer)` instead of `optimizer.step()`
-3. Synchronization: Call `torch_xla.sync()` after each backward pass (NOT xm.mark_step() - deprecated)
+3. Synchronization: 
+   - DO NOT use `torch_xla.sync()` (THIS FUNCTION DOES NOT EXIST)
+   - DO NOT use `xm.mark_step()` (deprecated)
+   - Manual sync rarely needed - XLA syncs implicitly on .item() or logging
+   - If explicit sync needed: use `xm.wait_device_ops()` (only at epoch boundaries or profiling)
 4. Dataset: `train_loader, test_loader = load_dataset('name')` (returns EXACTLY 2 DataLoaders, NOT 3)
    - CRITICAL: If error shows "ValueError: not enough values to unpack (expected 3, got 2)", 
      fix unpacking to match: "train_loader, test_loader = load_dataset(...)" (NOT train_loader, val_loader, test_loader)
@@ -1001,8 +1010,11 @@ ESSENTIAL TRAINIUM/XLA REQUIREMENTS (verify these in the code):
 6. Imports: Use `from dataset_loader import load_dataset` (NOT torchvision.datasets)
 
 Common mistakes to check:
-- ❌ `xm.xla_device()` → ✅ `torch_xla.device()` (deprecated API)
-- ❌ `xm.mark_step()` → ✅ `torch_xla.sync()` (deprecated API - causes DeprecationWarning and crashes)
+- ❌ `torch_xla.device()` → ✅ `import torch_xla.core.xla_model as xm` then `xm.xla_device()` (torch_xla.device() DOES NOT EXIST)
+- ❌ `device = torch_xla.device()` without import → ✅ Add `import torch_xla.core.xla_model as xm` first
+- ❌ `torch_xla.sync()` → ✅ DO NOT use (function doesn't exist) - use `xm.wait_device_ops()` if needed
+- ❌ `xm.mark_step()` → ✅ DO NOT use (deprecated) - XLA syncs implicitly
+- ❌ `optimizer.step()` → ✅ `xm.optimizer_step(optimizer)` (CRITICAL: optimizer.step() does NOT work on Trainium - must use xm.optimizer_step)
 - ❌ `xm.XlaModule` → ✅ `nn.Module`
 - ❌ `xm.tensor()` → ✅ `torch.tensor()`
 - ❌ `xm.dot_general()` → ✅ `torch.matmul()`
@@ -1016,8 +1028,17 @@ Common mistakes to check:
 - ❌ Setting NEURON_RT_NUM_CORES → ✅ Use default single-core allocation
 - ❌ CPU tensor indexing XLA tensor (RuntimeError: bridge::IsXlaTensor) → ✅ Move ALL tensors to device: data.to(device), labels.to(device), indices.to(device)
 - ❌ `nn.Dropout2d` with 2D inputs → ✅ Use `nn.Dropout()` for 2D inputs (dropout2d requires 3D/4D)
+- ❌ `nn.Dropout()` with 3D/4D inputs → ✅ Use `nn.Dropout2d()` for 3D/4D inputs (but this is rare - usually Dropout2d is wrong)
 - ❌ `torchvision.transforms` → ✅ Use pure PyTorch operations (torch.tensor(), .view(), .reshape())
 - ❌ Wrong input dimensions for model → ✅ Verify data shape matches model expectations, use .view()/.reshape() if needed
+- ❌ Classifier dimension mismatch (INVALID_ARGUMENT: Cannot infer shape for dot operation) → ✅ Calculate flattened size correctly: after conv/pool layers, flattened = channels * height * width, then use `nn.Linear(flattened, num_classes)` NOT arbitrary numbers
+- ❌ Error "f32[1,128] <dot> f32[16,10]" → ✅ Linear layer input_dim (16) doesn't match flattened features (128) - fix input_dim to match actual flattened size
+
+CRITICAL: Verify fix direction is CORRECT:
+- If code has `optimizer.step()` → MUST change to `xm.optimizer_step(optimizer)` (NOT the reverse!)
+- If code has `nn.Dropout2d` with 2D inputs → MUST change to `nn.Dropout()` (NOT the reverse!)
+- If code has `xm.xla_device()` → Keep it! Ensure `import torch_xla.core.xla_model as xm` exists (DO NOT change to torch_xla.device() - it doesn't exist!)
+- If error shows "NameError: name 'torch_xla' is not defined" → Add `import torch_xla.core.xla_model as xm` and use `xm.xla_device()` (NOT torch_xla.device())
 
 {error_patterns_note}
 ═══════════════════════════════════════════════════════════════════════════════
