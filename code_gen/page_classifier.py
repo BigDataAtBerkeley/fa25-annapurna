@@ -30,18 +30,20 @@ DEFAULT_DATA_PATH = Path(__file__).parent / "paper_texts - pdf_texts.csv"
 class PageRelevanceClassifier:
     """Classifier to determine if a PDF page is relevant for code generation."""
     
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model_path: Optional[str] = None, threshold: float = 0.4):
         """
         Initialize the page relevance classifier.
         
         Args:
             model_path: Path to saved model file. If None, will use default path.
+            threshold: Classification threshold for relevance prediction (default: 0.4)
         """
         # Default model path in code_gen directory
         if model_path is None:
             model_path = Path(__file__).parent / "page_classifier_model.pkl"
         
         self.model_path = Path(model_path)
+        self.threshold = threshold
         self.vectorizer = None
         self.trigram_vectorizer = None
         self.scaler = None
@@ -66,7 +68,7 @@ class PageRelevanceClassifier:
         unigram_max_features: int = 5000,
         trigram_max_features: int = 2000,
         c_regularization: float = 1.0,
-        class_weight_ratio: Optional[float] = None,
+        class_weight_ratio: Optional[float] = 5.0,
         max_iter: int = 1000
     ):
         """
@@ -80,6 +82,9 @@ class PageRelevanceClassifier:
                 the minority (keep=1) class after the train/test split. Enabled by default.
             unigram_max_features: Vocabulary size for the main TF-IDF vectorizer.
             trigram_max_features: Vocabulary size for the trigram TF-IDF vectorizer.
+            c_regularization: Regularization strength for LogisticRegression
+            class_weight_ratio: Custom class weight ratio for Relevant class (default: 5.0)
+            max_iter: Maximum iterations for training
         """
         logger.info(f"Training page classifier on data from {csv_path}")
         
@@ -170,33 +175,28 @@ class PageRelevanceClassifier:
             csr_matrix(X_test_stats_scaled)
         ])
         
-        # Train logistic regression classifier
-        # Determine class weights
-        if class_weight_ratio is not None:
-            class_weight = {0: 1.0, 1: float(class_weight_ratio)}
-            logger.info(f"Using custom class weights: {class_weight}")
-        else:
-            class_weight = 'balanced'  # Automatically balance based on class frequencies
-            logger.info("Using 'balanced' class weights")
+        # Train logistic regression classifier with explicit class weights
+        class_weight = {0: 1.0, 1: float(class_weight_ratio)}
+        logger.info(f"Using class weights: {class_weight}")
+        logger.info(f"Training with C={c_regularization}, max_iter={max_iter}")
         
         self.classifier = LogisticRegression(
             class_weight=class_weight,
             max_iter=max_iter,
             random_state=random_state,
-            solver='lbfgs',  # Good for small-medium datasets
-            C=c_regularization  # Regularization strength (lower = stronger regularization)
+            solver='lbfgs',
+            C=c_regularization
         )
-        logger.info(f"Training with C={c_regularization}, max_iter={max_iter}")
         
         logger.info("Training classifier...")
         self.classifier.fit(X_train_final, y_train)
         
         # Evaluate with default threshold (0.5)
         y_pred = self.classifier.predict(X_test_final)
-        y_proba = self.classifier.predict_proba(X_test_final)[:, 1]  # Probability of "Relevant" class
+        y_proba = self.classifier.predict_proba(X_test_final)[:, 1]
         accuracy = accuracy_score(y_test, y_pred)
         
-        logger.info(f"Test accuracy: {accuracy:.4f}")
+        logger.info(f"\nTest accuracy: {accuracy:.4f}")
         logger.info("\nClassification Report (threshold=0.5):")
         logger.info(classification_report(y_test, y_pred, target_names=['Not Relevant', 'Relevant']))
         
@@ -222,14 +222,15 @@ class PageRelevanceClassifier:
         logger.info(f"\n📊 Optimal threshold for 'Relevant' class: {best_threshold:.2f}")
         logger.info(f"   Precision: {best_precision:.3f}, Recall: {best_recall:.3f}, F1: {best_f1:.3f}")
         
-        # Show metrics at a few key thresholds
+        # Show metrics at different thresholds
         logger.info("\n📈 Metrics at different thresholds:")
         for thresh in [0.4, 0.5, 0.6, 0.7]:
-            y_pred_thresh = (y_proba >= thresh).astype(int)
-            prec = precision_score(y_test, y_pred_thresh, pos_label=1, zero_division=0)
-            rec = recall_score(y_test, y_pred_thresh, pos_label=1, zero_division=0)
-            f1 = f1_score(y_test, y_pred_thresh, pos_label=1, zero_division=0)
-            logger.info(f"   Threshold {thresh:.1f}: Precision={prec:.3f}, Recall={rec:.3f}, F1={f1:.3f}")
+            for label in [0, 1]:
+                y_pred_thresh = (y_proba >= thresh).astype(int)
+                prec = precision_score(y_test, y_pred_thresh, pos_label=label, zero_division=0)
+                rec = recall_score(y_test, y_pred_thresh, pos_label=label, zero_division=0)
+                f1 = f1_score(y_test, y_pred_thresh, pos_label=label, zero_division=0)
+                logger.info(f"For label {label}: Threshold {thresh:.1f}: Precision={prec:.3f}, Recall={rec:.3f}, F1={f1:.3f}")
         
         self.is_trained = True
         
@@ -265,6 +266,7 @@ class PageRelevanceClassifier:
             }
         
         # Transform text with all feature extractors
+        page_text = page_text.replace('\n', ' ')
         text_tfidf = self.vectorizer.transform([str(page_text)])
         text_trigram = self.trigram_vectorizer.transform([str(page_text)])
         text_stats = self._extract_tfidf_statistics([str(page_text)], text_tfidf)
@@ -284,12 +286,12 @@ class PageRelevanceClassifier:
             csr_matrix(text_stats_scaled)
         ])
         
-        # Predict
-        prediction = self.classifier.predict(text_final)[0]
-        probabilities = self.classifier.predict_proba(text_final)[0]
-        
         # Get probability of relevant class (class 1)
+        probabilities = self.classifier.predict_proba(text_final)[0]
         relevant_prob = probabilities[1] if len(probabilities) > 1 else 0.0
+        
+        # Apply threshold
+        prediction = relevant_prob >= self.threshold
         
         return {
             'is_relevant': bool(prediction),
@@ -311,7 +313,7 @@ class PageRelevanceClassifier:
             raise ValueError("Classifier not trained. Call train() first or load a saved model.")
         
         # Handle empty texts
-        page_texts = [str(text) if text else '' for text in page_texts]
+        page_texts = [str(text).replace('\n', ' ') if text else '' for text in page_texts]
         
         # Transform texts with all feature extractors
         text_tfidf = self.vectorizer.transform(page_texts)
@@ -333,15 +335,15 @@ class PageRelevanceClassifier:
             csr_matrix(text_stats_scaled)
         ])
         
-        # Predict
-        predictions = self.classifier.predict(text_final)
+        # Get probabilities
         probabilities = self.classifier.predict_proba(text_final)
         
         results = []
-        for i, (pred, probs) in enumerate(zip(predictions, probabilities)):
+        for probs in probabilities:
             relevant_prob = probs[1] if len(probs) > 1 else 0.0
+            prediction = relevant_prob >= self.threshold
             results.append({
-                'is_relevant': bool(pred),
+                'is_relevant': bool(prediction),
                 'confidence': float(relevant_prob),
                 'probability': float(relevant_prob)
             })
@@ -361,7 +363,8 @@ class PageRelevanceClassifier:
             'trigram_vectorizer': self.trigram_vectorizer,
             'scaler': self.scaler,
             'classifier': self.classifier,
-            'is_trained': self.is_trained
+            'is_trained': self.is_trained,
+            'threshold': self.threshold
         }
         
         with open(save_path, 'wb') as f:
@@ -384,6 +387,7 @@ class PageRelevanceClassifier:
         self.scaler = model_data.get('scaler')
         self.classifier = model_data['classifier']
         self.is_trained = model_data.get('is_trained', True)
+        self.threshold = model_data.get('threshold', 0.4)
         
         # Handle backward compatibility (old models without trigram vectorizer)
         if self.trigram_vectorizer is None:
@@ -412,22 +416,11 @@ class PageRelevanceClassifier:
         if not all(col in df.columns for col in required_cols):
             raise ValueError(f"CSV must have columns: {required_cols}")
         
-        df = df[df['text'].notna() & df['keep'].notna()].copy()
-        
-        # Normalize keep column to contain only digits 0/1
-        keep_series = (
-            df['keep']
-            .astype(str)
-            .str.strip()
-            .str.lower()
-            .str.replace('o', '0')
-            .str.replace(r'[^01]', '', regex=True)
-        )
-        keep_series = keep_series.str.extract(r'([01])')[0]
-        df['keep'] = keep_series
-        df = df[df['keep'].notna()].copy()
+        # Clean data
+        df.dropna(inplace=True)
+        df = df[(df['keep'] == 0) | (df['keep'] == 1)]
         df['keep'] = df['keep'].astype(int)
-        df = df[df['keep'].isin([0, 1])]
+        df['text'] = df['text'].str.replace('\n', ' ')
         
         if len(df) == 0:
             raise ValueError("No valid labeled data found")
@@ -574,14 +567,20 @@ def _parse_args():
     parser.add_argument(
         "--class-weight-ratio",
         type=float,
-        default=None,
-        help="Custom class weight ratio for Relevant class (e.g., 3.0 means Relevant class is 3x more important). If not set, uses 'balanced'."
+        default=5.0,
+        help="Custom class weight ratio for Relevant class (default: 5.0)."
     )
     parser.add_argument(
         "--max-iter",
         type=int,
         default=1000,
         help="Maximum iterations for LogisticRegression training."
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.4,
+        help="Classification threshold for relevance prediction (default: 0.4)."
     )
     return parser.parse_args()
 
@@ -592,7 +591,7 @@ def main():
     if not args.train_csv and not args.evaluate_csv:
         raise SystemExit("Specify --train-csv, --evaluate-csv, or both.")
     
-    classifier = PageRelevanceClassifier(model_path=args.model_path)
+    classifier = PageRelevanceClassifier(model_path=args.model_path, threshold=args.threshold)
     
     if args.train_csv:
         train_path = Path(args.train_csv)
@@ -621,4 +620,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
