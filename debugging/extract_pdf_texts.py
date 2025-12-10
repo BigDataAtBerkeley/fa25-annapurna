@@ -42,7 +42,7 @@ def main():
     
     # Get 50 random papers
     print("Fetching 50 random papers from OpenSearch...")
-    papers = opensearch_client.get_random_papers(size=15)
+    papers = opensearch_client.get_random_papers(size=100)
     print(f"Retrieved {len(papers)} papers")
     
     # Prepare CSV data
