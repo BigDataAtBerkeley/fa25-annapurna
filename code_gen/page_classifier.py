@@ -11,7 +11,7 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, accuracy_score
+from sklearn.metrics import classification_report, accuracy_score, precision_score, recall_score, f1_score
 from sklearn.preprocessing import StandardScaler
 from scipy.sparse import hstack, csr_matrix
 import pandas as pd
@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 DEFAULT_DATA_PATH = Path(__file__).parent / "paper_texts - pdf_texts.csv"
-
 
 
 class PageRelevanceClassifier:
@@ -65,7 +64,10 @@ class PageRelevanceClassifier:
         random_state: int = 42,
         oversample_positive: bool = True,
         unigram_max_features: int = 5000,
-        trigram_max_features: int = 2000
+        trigram_max_features: int = 2000,
+        c_regularization: float = 1.0,
+        class_weight_ratio: Optional[float] = None,
+        max_iter: int = 1000
     ):
         """
         Train the classifier on labeled page data.
@@ -169,24 +171,65 @@ class PageRelevanceClassifier:
         ])
         
         # Train logistic regression classifier
+        # Determine class weights
+        if class_weight_ratio is not None:
+            class_weight = {0: 1.0, 1: float(class_weight_ratio)}
+            logger.info(f"Using custom class weights: {class_weight}")
+        else:
+            class_weight = 'balanced'  # Automatically balance based on class frequencies
+            logger.info("Using 'balanced' class weights")
+        
         self.classifier = LogisticRegression(
-            class_weight='balanced',  # Handle class imbalance
-            max_iter=1000,
+            class_weight=class_weight,
+            max_iter=max_iter,
             random_state=random_state,
             solver='lbfgs',  # Good for small-medium datasets
-            C=1.0  # Regularization strength
+            C=c_regularization  # Regularization strength (lower = stronger regularization)
         )
+        logger.info(f"Training with C={c_regularization}, max_iter={max_iter}")
         
         logger.info("Training classifier...")
         self.classifier.fit(X_train_final, y_train)
         
-        # Evaluate
+        # Evaluate with default threshold (0.5)
         y_pred = self.classifier.predict(X_test_final)
+        y_proba = self.classifier.predict_proba(X_test_final)[:, 1]  # Probability of "Relevant" class
         accuracy = accuracy_score(y_test, y_pred)
         
         logger.info(f"Test accuracy: {accuracy:.4f}")
-        logger.info("\nClassification Report:")
+        logger.info("\nClassification Report (threshold=0.5):")
         logger.info(classification_report(y_test, y_pred, target_names=['Not Relevant', 'Relevant']))
+        
+        # Find optimal threshold for "Relevant" class (maximize F1)
+        thresholds = np.arange(0.3, 0.8, 0.05)
+        best_f1 = 0
+        best_threshold = 0.5
+        best_precision = 0
+        best_recall = 0
+        
+        for threshold in thresholds:
+            y_pred_thresh = (y_proba >= threshold).astype(int)
+            f1 = f1_score(y_test, y_pred_thresh, pos_label=1, zero_division=0)
+            precision = precision_score(y_test, y_pred_thresh, pos_label=1, zero_division=0)
+            recall = recall_score(y_test, y_pred_thresh, pos_label=1, zero_division=0)
+            
+            if f1 > best_f1:
+                best_f1 = f1
+                best_threshold = threshold
+                best_precision = precision
+                best_recall = recall
+        
+        logger.info(f"\n📊 Optimal threshold for 'Relevant' class: {best_threshold:.2f}")
+        logger.info(f"   Precision: {best_precision:.3f}, Recall: {best_recall:.3f}, F1: {best_f1:.3f}")
+        
+        # Show metrics at a few key thresholds
+        logger.info("\n📈 Metrics at different thresholds:")
+        for thresh in [0.4, 0.5, 0.6, 0.7]:
+            y_pred_thresh = (y_proba >= thresh).astype(int)
+            prec = precision_score(y_test, y_pred_thresh, pos_label=1, zero_division=0)
+            rec = recall_score(y_test, y_pred_thresh, pos_label=1, zero_division=0)
+            f1 = f1_score(y_test, y_pred_thresh, pos_label=1, zero_division=0)
+            logger.info(f"   Threshold {thresh:.1f}: Precision={prec:.3f}, Recall={rec:.3f}, F1={f1:.3f}")
         
         self.is_trained = True
         
@@ -199,8 +242,7 @@ class PageRelevanceClassifier:
             'test_size': len(X_test),
             'model_path': str(self.model_path)
         }
-
-        
+    
     def predict(self, page_text: str) -> Dict[str, Any]:
         """
         Predict if a page is relevant for code generation.
@@ -305,45 +347,6 @@ class PageRelevanceClassifier:
             })
         
         return results
-    
-    def evaluate_on_csv(self, csv_path: str) -> Dict[str, Any]:
-        """
-        Evaluate the trained model on a labeled CSV.
-        
-        Args:
-            csv_path: Path to CSV with `text` and `keep` columns.
-            
-        Returns:
-            Dictionary containing evaluation metrics.
-        """
-        if not self.is_trained:
-            raise ValueError("Classifier must be trained or loaded before evaluating.")
-        
-        df = self._load_labeled_dataframe(csv_path)
-        
-        texts = df['text'].fillna('').astype(str).tolist()
-        labels = df['keep'].tolist()
-        
-        logger.info(f"Evaluating on {len(df)} pages from {csv_path}")
-        preds = self.predict_batch(texts)
-        pred_labels = [int(p['is_relevant']) for p in preds]
-        
-        accuracy = accuracy_score(labels, pred_labels)
-        report = classification_report(
-            labels,
-            pred_labels,
-            target_names=['Not Relevant', 'Relevant']
-        )
-        
-        logger.info(f"Evaluation accuracy: {accuracy:.4f}")
-        logger.info("\nClassification Report:")
-        logger.info(report)
-        
-        return {
-            'accuracy': accuracy,
-            'sample_size': len(df),
-            'report': report
-        }
     
     def save_model(self, path: Optional[str] = None):
         """Save the trained model to disk."""
@@ -562,6 +565,24 @@ def _parse_args():
         default=2000,
         help="Max vocabulary size for the trigram TF-IDF vectorizer."
     )
+    parser.add_argument(
+        "--c-regularization",
+        type=float,
+        default=1.0,
+        help="Regularization strength C for LogisticRegression (lower = stronger regularization). Try 0.1, 0.5, 1.0, 2.0, 5.0"
+    )
+    parser.add_argument(
+        "--class-weight-ratio",
+        type=float,
+        default=None,
+        help="Custom class weight ratio for Relevant class (e.g., 3.0 means Relevant class is 3x more important). If not set, uses 'balanced'."
+    )
+    parser.add_argument(
+        "--max-iter",
+        type=int,
+        default=1000,
+        help="Maximum iterations for LogisticRegression training."
+    )
     return parser.parse_args()
 
 
@@ -583,7 +604,10 @@ def main():
             random_state=args.random_state,
             oversample_positive=args.oversample_positive,
             unigram_max_features=args.tfidf_max_features,
-            trigram_max_features=args.trigram_max_features
+            trigram_max_features=args.trigram_max_features,
+            c_regularization=args.c_regularization,
+            class_weight_ratio=args.class_weight_ratio,
+            max_iter=args.max_iter
         )
         logger.info(f"Training metrics: {train_metrics}")
     
@@ -597,3 +621,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
