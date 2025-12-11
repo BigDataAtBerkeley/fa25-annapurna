@@ -116,12 +116,29 @@ fi
 
 if [ -n "$CODEGEN_LAMBDA_ARN" ]; then
     echo "🔗 Configuring trigger: code-evaluation.fifo → $FUNCTION_NAME"
-    aws lambda create-event-source-mapping \
+    # Check if event source mapping already exists
+    EXISTING_MAPPING=$(aws lambda list-event-source-mappings \
       --function-name $FUNCTION_NAME \
-      --batch-size 10 \
-      --event-source-arn "arn:aws:sqs:$AWS_REGION:$ACCOUNT_ID:code-evaluation.fifo" \
-      --region $AWS_REGION 2>/dev/null || echo "  (Trigger already exists)"
-    echo "✅ Configured (batch: 10 messages - FIFO queues don't support batching windows)"
+      --region $AWS_REGION \
+      --query "EventSourceMappings[?EventSourceArn=='arn:aws:sqs:$AWS_REGION:$ACCOUNT_ID:code-evaluation.fifo'].UUID" \
+      --output text 2>/dev/null || echo "")
+    
+    if [ -n "$EXISTING_MAPPING" ]; then
+        echo "  Updating existing event source mapping (UUID: $EXISTING_MAPPING)..."
+        aws lambda update-event-source-mapping \
+          --uuid "$EXISTING_MAPPING" \
+          --batch-size 10 \
+          --region $AWS_REGION
+        echo "✅ Updated (batch: 10 messages - FIFO queues don't support batching windows)"
+    else
+        echo "  Creating new event source mapping..."
+        aws lambda create-event-source-mapping \
+          --function-name $FUNCTION_NAME \
+          --batch-size 10 \
+          --event-source-arn "arn:aws:sqs:$AWS_REGION:$ACCOUNT_ID:code-evaluation.fifo" \
+          --region $AWS_REGION
+        echo "✅ Created (batch: 10 messages - FIFO queues don't support batching windows)"
+    fi
 else
     echo "⚠️  PapersCodeGenerator-container or PapersCodeGenerator Lambda not found"
 fi

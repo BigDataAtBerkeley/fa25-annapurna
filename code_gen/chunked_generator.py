@@ -34,7 +34,7 @@ class ChunkedPyTorchGenerator:
     def __init__(
         self,
         batch_size: int = 8,
-        pages_per_pdf_chunk: int = 2,
+        pages_per_pdf_chunk: int = 4,
         use_smart_pdf_chunking: bool = True,
         max_pdf_chunks: int = 15,
     ):

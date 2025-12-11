@@ -303,41 +303,108 @@ class DatasetManager:
     
     def _load_cifar100(self, dataset_dir: str, batch_size: int = 128, **kwargs):
         """Load CIFAR-100 dataset from pre-processed .pt file"""
+        # Use the correct filename as confirmed in S3
         pt_file = os.path.join(dataset_dir, 'cifar100_pytorch.pt')
         
         if not os.path.exists(pt_file):
-            raise FileNotFoundError(f"CIFAR-100 data file not found: {pt_file}. Please download from S3 first.")
+            raise FileNotFoundError(
+                f"CIFAR-100 data file not found: {pt_file}. "
+                f"Please download from S3 first."
+            )
         
+        logger.info(f"Loading CIFAR-100 from {pt_file}")
         data = torch.load(pt_file, map_location='cpu')
         
+        # Extract data from torchvision dataset objects if needed
+        # The .pt file contains the dataset objects, so we need to extract the actual data
         try:
+            # Try to get data directly if it's stored as tensors
             if isinstance(data, dict) and 'train_data' in data:
                 train_images = data['train_data']
                 train_labels = data['train_labels']
                 test_images = data['test_data']
                 test_labels = data['test_labels']
-            else:
+                logger.info(f"Loaded CIFAR-100 from tensor format: train={train_images.shape}, test={test_images.shape}")
+            elif isinstance(data, dict) and 'train' in data and 'test' in data:
+                # Extract from dataset objects (more memory-efficient batch processing)
                 train_dataset_obj = data.get('train')
                 test_dataset_obj = data.get('test')
-                train_images = torch.stack([torch.tensor(train_dataset_obj[i][0]) for i in range(len(train_dataset_obj))])
-                train_labels = torch.tensor([train_dataset_obj[i][1] for i in range(len(train_dataset_obj))])
-                test_images = torch.stack([torch.tensor(test_dataset_obj[i][0]) for i in range(len(test_dataset_obj))])
-                test_labels = torch.tensor([test_dataset_obj[i][1] for i in range(len(test_dataset_obj))])
+                
+                # Check if dataset objects are already tensors or need extraction
+                if hasattr(train_dataset_obj, '__getitem__') and hasattr(train_dataset_obj, '__len__'):
+                    # Extract in batches to avoid OOM
+                    logger.info(f"Extracting CIFAR-100 from dataset objects: train={len(train_dataset_obj)}, test={len(test_dataset_obj)}")
+                    batch_size_extract = 1000
+                    train_batches = []
+                    train_label_batches = []
+                    for i in range(0, len(train_dataset_obj), batch_size_extract):
+                        batch_end = min(i + batch_size_extract, len(train_dataset_obj))
+                        batch_data = [train_dataset_obj[j] for j in range(i, batch_end)]
+                        train_batches.append(torch.stack([torch.tensor(item[0]) for item in batch_data]))
+                        train_label_batches.append(torch.tensor([item[1] for item in batch_data]))
+                    train_images = torch.cat(train_batches, dim=0)
+                    train_labels = torch.cat(train_label_batches, dim=0)
+                    
+                    # Same for test set
+                    test_batches = []
+                    test_label_batches = []
+                    for i in range(0, len(test_dataset_obj), batch_size_extract):
+                        batch_end = min(i + batch_size_extract, len(test_dataset_obj))
+                        batch_data = [test_dataset_obj[j] for j in range(i, batch_end)]
+                        test_batches.append(torch.stack([torch.tensor(item[0]) for item in batch_data]))
+                        test_label_batches.append(torch.tensor([item[1] for item in batch_data]))
+                    test_images = torch.cat(test_batches, dim=0)
+                    test_labels = torch.cat(test_label_batches, dim=0)
+                    logger.info(f"Extracted CIFAR-100: train={train_images.shape}, test={test_images.shape}")
+                else:
+                    # Already tensors or unexpected format
+                    raise ValueError(f"CIFAR-100 'train'/'test' objects don't have expected dataset interface. Type: {type(train_dataset_obj)}")
+            else:
+                # Log detailed error information
+                data_info = f"Type: {type(data)}"
+                if isinstance(data, dict):
+                    data_info += f", Keys: {list(data.keys())}"
+                    data_info += f", Sample values: {[(k, type(v).__name__) for k, v in list(data.items())[:5]]}"
+                raise ValueError(
+                    f"Unknown CIFAR-100 data format in {pt_file}. "
+                    f"Expected dict with 'train_data'/'train_labels' or 'train'/'test' keys. "
+                    f"Got: {data_info}"
+                )
         except Exception as e:
-            logger.error(f"Error extracting CIFAR-100 data: {e}")
+            logger.error(f"Error extracting CIFAR-100 data from {pt_file}: {e}")
+            logger.error(f"Data type: {type(data)}, Keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+            import traceback
+            logger.error(traceback.format_exc())
             raise
         
+        # Validate shapes - CIFAR-100 should be (N, 3, 32, 32) or (N, 3072) if flattened
+        if len(train_images.shape) == 2:
+            # Flattened format - reshape to (N, 3, 32, 32)
+            if train_images.shape[1] == 3072:  # 3*32*32
+                train_images = train_images.view(-1, 3, 32, 32)
+                test_images = test_images.view(-1, 3, 32, 32)
+                logger.info(f"Reshaped flattened CIFAR-100 to: train={train_images.shape}, test={test_images.shape}")
+            else:
+                logger.warning(f"Unexpected flattened shape: {train_images.shape}. Expected (N, 3072)")
+        
+        # Ensure images are in correct format: (N, C, H, W) = (N, 3, 32, 32)
+        if len(train_images.shape) != 4 or train_images.shape[1] != 3 or train_images.shape[2] != 32 or train_images.shape[3] != 32:
+            logger.warning(f"CIFAR-100 images have unexpected shape: {train_images.shape}. Expected (N, 3, 32, 32)")
+        
+        # Normalize: (x / 255.0 - 0.5) / 0.5 = (x - 127.5) / 127.5
         def normalize_transform(img):
             if img.max() > 1.0:
                 img = img.float() / 255.0
             return (img - 0.5) / 0.5
         
+        # Create simple datasets
         train_dataset = SimpleImageDataset(train_images, train_labels, transform=normalize_transform)
         test_dataset = SimpleImageDataset(test_images, test_labels, transform=normalize_transform)
         
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
         
+        logger.info(f"CIFAR-100 loaded successfully: {len(train_loader)} train batches, {len(test_loader)} test batches")
         return train_loader, test_loader
     
     def _load_mnist(self, dataset_dir: str, batch_size: int = 128, **kwargs):
