@@ -314,6 +314,12 @@ def collect_profiler_artifacts(paper_id: str, profiler_path: str) -> Dict[str, A
 def upload_execution_results(paper_id: str, result: Dict[str, Any], executed_on_trn: bool = False):
     """Upload execution results to S3 and update OpenSearch."""
     try:
+        # Add profiler S3 location to result if profiler was enabled
+        profiler_info = result.get('profiler', {})
+        if profiler_info and profiler_info.get('profiler_enabled'):
+            result['profiler_s3_location'] = profiler_info.get('profiler_s3_location', f"s3://{RESULTS_BUCKET}/profiler/{paper_id}/")
+            result['profiler_s3_console_url'] = f"https://s3.console.aws.amazon.com/s3/buckets/{RESULTS_BUCKET}?prefix=profiler/{paper_id}/"
+        
         # Upload to S3
         s3_client = boto3.client('s3')
         s3_key = f"results/{paper_id}/execution_result.json"
@@ -432,34 +438,28 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
             if thread_ts:
                 logger.info(f"Retrieved slack_thread_ts from OpenSearch for {paper_id}: {thread_ts}")
         
-        # Filter out embeddings and other large binary fields
+        # Filter out embeddings, internal fields, and other large binary fields
         fields_to_exclude = {
             'embedding', 'embeddings', 'vector', 'vectors', 
             'pdf_bytes', 'pdf_content', 'raw_content',
-            's3_bucket', 's3_key'  # We'll add formatted S3 link instead
+            's3_bucket', 's3_key',  # We'll add formatted S3 link instead
+            # Internal/metadata fields that shouldn't be shown in Slack
+            'slack_thread_ts', 'relevance', 'decision', 'ingested_at', 'reason',
+            'executed_on_trn', 'executed_on_trn_updated_at', 'code_generated', 'code_generated_at'
         }
         
-        # Create filtered paper dict with key fields
+        # Create filtered paper dict with key fields only
         filtered_paper = {
             '_id': paper_id,
             'title': paper.get('title', 'Unknown Title'),
             'authors': paper.get('authors', []),
-            'abstract': paper.get('abstract', ''),
+            'abstract': paper.get('abstract', ''),  # Full abstract, not truncated
             'date': paper.get('date', ''),
-            'venue': paper.get('venue', ''),
             'url': paper.get('url', ''),
             'arxiv_id': paper.get('arxiv_id', ''),
         }
         
-        # Add other non-excluded fields
-        for key, value in paper.items():
-            if key not in fields_to_exclude and key not in filtered_paper:
-                # Skip very large fields
-                if isinstance(value, str) and len(value) > 2000:
-                    continue
-                if isinstance(value, (dict, list)) and len(str(value)) > 2000:
-                    continue
-                filtered_paper[key] = value
+        # Don't add other fields - only use the explicitly defined fields above
         
         # Add execution result info
         filtered_paper['execution_success'] = execution_result.get('success', False)

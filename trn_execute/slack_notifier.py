@@ -79,85 +79,19 @@ class SlackNotifier:
             ]
         })
         
-        # Authors
-        authors = paper.get('authors', [])
-        if authors:
-            authors_text = ", ".join(authors[:5])  # Limit to first 5 authors
-            if len(authors) > 5:
-                authors_text += f" (+{len(authors) - 5} more)"
-            blocks.append({
-                "type": "section",
-                "fields": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*Authors:*\n{authors_text}"
-                    }
-                ]
-            })
         
-        # Abstract (truncated to 800 chars for better visibility)
-        abstract = paper.get('abstract', '')
-        if abstract:
-            abstract_preview = abstract[:800] + "..." if len(abstract) > 800 else abstract
+        # S3 information if available - make it clickable like other S3 links
+        s3_bucket = paper.get('s3_bucket')
+        s3_key = paper.get('s3_key')
+        if s3_bucket and s3_key:
+            # Create clickable S3 console URL (correct format for specific object)
+            s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{s3_bucket}/{s3_key}"
             blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*Abstract:*\n{abstract_preview}"
+                    "text": f"*📄 Paper PDF:*\n<{s3_console_url}|View in S3 Console>"
                 }
-            })
-        
-        # All other fields in a collapsible section
-        other_fields = {}
-        known_fields = {'title', 'authors', 'abstract', '_id', 's3_bucket', 's3_key', 
-                       'abstract_embedding', 'sha_abstract', 'title_normalized'}
-        
-        for key, value in paper.items():
-            if key not in known_fields:
-                # Format the value
-                if isinstance(value, (dict, list)):
-                    value_str = json.dumps(value, indent=2)[:200]
-                    if len(json.dumps(value, indent=2)) > 200:
-                        value_str += "..."
-                elif isinstance(value, str) and len(value) > 200:
-                    value_str = value[:200] + "..."
-                else:
-                    value_str = str(value)
-                
-                other_fields[key] = value_str
-        
-        if other_fields:
-
-            fields_list = []
-            for key, value in other_fields.items():
-                fields_list.append({
-                    "type": "mrkdwn",
-                    "text": f"*{key}:*\n{value}"
-                })
-            
-            # Split into sections of 2 fields each (Slack limit per section)
-            for i in range(0, len(fields_list), 2):
-                section_fields = fields_list[i:i+2]
-                blocks.append({
-                    "type": "section",
-                    "fields": section_fields
-                })
-        
-        # S3 information if available
-        s3_bucket = paper.get('s3_bucket')
-        s3_key = paper.get('s3_key')
-        if s3_bucket and s3_key:
-            aws_region = os.getenv('AWS_REGION', 'us-east-1')
-            s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{s3_bucket}?prefix={s3_key}"
-            s3_path = f"s3://{s3_bucket}/{s3_key}"
-            blocks.append({
-                "type": "section",
-                "fields": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*S3 Location:*\n<{s3_console_url}|View in S3 Console>\n`{s3_path}`"
-                    }
-                ]
             })
         
         return blocks
@@ -267,12 +201,8 @@ class SlackNotifier:
             
             blocks.append({"type": "divider"})
             
-            # Code review details
+            # Code review details (no Paper ID)
             fields = [
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Paper ID:*\n`{paper_id}`"
-                },
                 {
                     "type": "mrkdwn",
                     "text": f"*Code Review Iterations:*\n{code_review_iterations}"
@@ -294,14 +224,13 @@ class SlackNotifier:
             # S3 link if available
             if code_s3_key:
                 code_s3_bucket = os.getenv('CODE_BUCKET', 'papers-code-artifacts')
-                aws_region = os.getenv('AWS_REGION', 'us-east-1')
-                s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{code_s3_bucket}?prefix={code_s3_key}"
-                s3_path = f"s3://{code_s3_bucket}/{code_s3_key}"
+                # Create clickable S3 console URL (correct format for specific object)
+                s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{code_s3_bucket}/{code_s3_key}"
                 blocks.append({
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*Final Code Location:*\n<{s3_console_url}|View in S3 Console>\n`{s3_path}`"
+                        "text": f"*📄 Final Code Location:*\n<{s3_console_url}|View in S3 Console>"
                     }
                 })
             
@@ -384,27 +313,12 @@ class SlackNotifier:
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": f"{status_emoji} Final Execution Results: {title[:60]}{'...' if len(title) > 60 else ''}"
+                    "text": f"{status_emoji} Final Execution Results"
                 }
             })
             
             blocks.append({"type": "divider"})
-            
-            # Paper ID
-            paper_id = paper.get('_id', 'Unknown ID')
-            blocks.append({
-                "type": "section",
-                "fields": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*Paper ID:*\n`{paper_id}`"
-                    },
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*Status:*\n{execution_status}"
-                    }
-                ]
-            })
+        
             
             # Execution details
             exec_time = paper.get('execution_time_seconds', 0)
@@ -422,32 +336,6 @@ class SlackNotifier:
                     }
                 ]
             })
-            
-            # Authors
-            authors = paper.get('authors', [])
-            if authors:
-                authors_text = ", ".join(authors[:3])  # Limit to first 3 authors
-                if len(authors) > 3:
-                    authors_text += f" (+{len(authors) - 3} more)"
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*Authors:* {authors_text}"
-                    }
-                })
-            
-            # Abstract (truncated to 800 chars for better visibility)
-            abstract = paper.get('abstract', '')
-            if abstract:
-                abstract_preview = abstract[:800] + "..." if len(abstract) > 800 else abstract
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*Abstract:*\n{abstract_preview}"
-                    }
-                })
             
             # Execution error details (if failed)
             if not execution_result.get('success'):
@@ -483,16 +371,30 @@ class SlackNotifier:
                         }
                     })
             
-            # Code S3 link
+            # Code S3 link - construct from code_s3_key or code_s3_location
+            code_s3_key = paper.get('code_s3_key', '')
             code_s3_location = paper.get('code_s3_location', '')
-            if code_s3_location:
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*📄 Code Location:*\n<{paper.get('code_s3_url', '')}|{code_s3_location}>"
-                    }
-                })
+            if code_s3_key or code_s3_location:
+                # Extract bucket and key from code_s3_location if available, otherwise use code_s3_key
+                if code_s3_location and code_s3_location.startswith('s3://'):
+                    s3_path = code_s3_location[5:]  # Remove 's3://'
+                    bucket, key = s3_path.split('/', 1) if '/' in s3_path else (s3_path, '')
+                elif code_s3_key:
+                    bucket = os.getenv('CODE_BUCKET', 'papers-code-artifacts')
+                    key = code_s3_key
+                else:
+                    bucket = None
+                    key = None
+                
+                if bucket and key:
+                    s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{bucket}/{key}"
+                    blocks.append({
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*📄 Code Location:*\n<{s3_console_url}|View in S3 Console>"
+                        }
+                    })
             
             # Execution metrics (if available) - check both paper (from OpenSearch) and execution_result
             execution_metrics = paper.get('execution_metrics', {})
@@ -548,13 +450,13 @@ class SlackNotifier:
                 if results_s3_location.startswith('s3://'):
                     s3_path = results_s3_location[5:]  # Remove 's3://'
                     bucket, key = s3_path.split('/', 1) if '/' in s3_path else (s3_path, '')
-                    aws_region = os.getenv('AWS_REGION', 'us-east-1')
-                    s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{bucket}?prefix={key}"
+                    # Correct format for specific object
+                    s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{bucket}/{key}"
                     blocks.append({
                         "type": "section",
                         "text": {
                             "type": "mrkdwn",
-                            "text": f"*📊 Execution Results:*\n<{s3_console_url}|View in S3 Console>\n`{results_s3_location}`\n*Contains:* Metrics, epochs, loss, stdout/stderr, and execution details"
+                            "text": f"*📊 Execution Results:*\n<{s3_console_url}|View in S3 Console>\n*Contains:* Metrics, epochs, loss, stdout/stderr, and execution details"
                         }
                     })
                 else:
@@ -581,41 +483,35 @@ class SlackNotifier:
                     if paper_id:
                         profiler_s3 = f"s3://{results_bucket}/profiler/{paper_id}/"
                 
-                profiler_text = f"*🔬 Profiler Artifacts*\n"
+                # Profiler/trace files link - make it a clear, clickable link
                 if profiler_s3:
                     # Parse S3 location to create console URL
                     if profiler_s3.startswith('s3://'):
                         s3_path = profiler_s3[5:]  # Remove 's3://'
                         bucket, key_prefix = s3_path.split('/', 1) if '/' in s3_path else (s3_path, '')
-                        aws_region = os.getenv('AWS_REGION', 'us-east-1')
                         s3_console_url = f"https://s3.console.aws.amazon.com/s3/buckets/{bucket}?prefix={key_prefix}"
-                        profiler_text += f"<{s3_console_url}|View in S3 Console>\n`{profiler_s3}`\n"
+                        profiler_info_text = f"*🔬 Trace Files:*\n<{s3_console_url}|View in S3 Console>"
+                        if profiler_files:
+                            profiler_info_text += f"\n*Files:* {len(profiler_files)} profiler files (including .ptrace files)"
+                        if perfetto_file:
+                            profiler_info_text += f"\n*Perfetto File:* `{perfetto_file}`"
+                        
+                        blocks.append({
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": profiler_info_text
+                            }
+                        })
                     else:
-                        profiler_text += f"S3 Location: `{profiler_s3}`\n"
-                if perfetto_file:
-                    profiler_text += f"Perfetto File: `{perfetto_file}`\n"
-                if profiler_files:
-                    profiler_text += f"*Files:* {len(profiler_files)} profiler files (including .ptrace files)"
-                
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": profiler_text
-                    }
-                })
-            
-            # Additional paper metadata
-            if paper.get('venue'):
-                blocks.append({
-                    "type": "section",
-                    "fields": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"*Venue:*\n{paper['venue']}"
-                        }
-                    ]
-                })
+                        # Fallback if not in s3:// format
+                        blocks.append({
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*🔬 Trace Files:*\n`{profiler_s3}`"
+                            }
+                        })
             
             if paper.get('url'):
                 blocks.append({

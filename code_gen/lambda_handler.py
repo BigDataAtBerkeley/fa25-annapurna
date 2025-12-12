@@ -306,7 +306,9 @@ class PipelineHandler:
                     # Get paper from OpenSearch to send initial notification
                     paper = self.generator.opensearch_client.get_paper_by_id(paper_id)
                     if paper:
-                        filtered_paper = {k: v for k, v in paper.items() if k != 'embeddings'}
+                        # Filter out unwanted fields - only keep fields needed for Slack display
+                        fields_to_keep = {'_id', 'title', 'authors', 'abstract', 's3_bucket', 's3_key', 'date', 'url', 'arxiv_id'}
+                        filtered_paper = {k: v for k, v in paper.items() if k in fields_to_keep}
                         filtered_paper['_id'] = paper_id
                         slack_notifier = SlackNotifier()
                         slack_thread_ts = slack_notifier.send_paper_info(filtered_paper)
