@@ -539,7 +539,7 @@ aws s3 cp s3://trainium-execution-results/profiler/{paper_id}/system_profile.pft
 
 1. Go to https://ui.perfetto.dev/
 2. Click "Open trace file" or drag and drop
-3. Upload the `.pftrace` file (or try `.pb` directly - Perfetto may accept it)
+3. Upload the `.pftrace` file 
 4. Wait for upload and processing (large files may take a minute)
 
 **What You'll See in Perfetto:**
