@@ -1,8 +1,6 @@
 """
 Dataset Recommender for Research Papers
-
-This module analyzes research papers to recommend appropriate datasets
-for training models described in the papers.
+Limited to the datasets we have in S3 (cifar10, cifar100, mnist, fashion mnist, wikitext, imdb, synthetic)
 """
 
 import os
@@ -97,40 +95,20 @@ DATASET_NAME_MAP = {
     "synthetic": "synthetic"
 }
 
-# Available datasets in our system (from dataset_loader)
-# Vision datasets use .pt files, NLP datasets use HuggingFace Arrow format
-AVAILABLE_DATASETS = {
-    "cifar10", "cifar100", "mnist", "fashion_mnist", "imdb", "wikitext2", "synthetic"
-}
+# Available datasets in S3
+AVAILABLE_DATASETS = { "cifar10", "cifar100", "mnist", "fashion_mnist", "imdb", "wikitext2", "synthetic"}
 
 
 class DatasetRecommender:
-    """Recommends datasets based on paper content analysis."""
     
     def __init__(self, bedrock_client=None):
-        """
-        Initialize the dataset recommender.
-        
-        Args:
-            bedrock_client: Optional BedrockClient instance for LLM-based recommendations
-        """
         self.bedrock_client = bedrock_client
         logger.info("Dataset Recommender initialized")
     
     def recommend_datasets(self, paper: Dict[str, Any], 
                           paper_summary: str,
                           use_llm: bool = True) -> Dict[str, Any]:
-        """
-        Recommend datasets for a research paper.
-        
-        Args:
-            paper: Paper document from OpenSearch
-            paper_summary: Full paper summary from page classification (required)
-            use_llm: Whether to use LLM for intelligent recommendation
-            
-        Returns:
-            Dictionary with recommended datasets and reasoning
-        """
+
         recommendations = {
             "paper_id": paper.get("_id"),
             "paper_title": paper.get("title", "Unknown"),
@@ -142,17 +120,14 @@ class DatasetRecommender:
             "confidence": "medium"
         }
         
-        # Extract explicitly mentioned datasets
         explicitly_mentioned = self._extract_dataset_mentions(paper, paper_summary)
         recommendations["explicitly_mentioned"] = explicitly_mentioned
         
-        # Use LLM for intelligent recommendation if available
         if use_llm and self.bedrock_client:
             llm_recommendations = self._llm_recommend_datasets(paper, paper_summary)
             if llm_recommendations:
                 recommendations.update(llm_recommendations)
         
-        # Combine and prioritize recommendations
         final_datasets = self._prioritize_datasets(
             explicitly_mentioned,
             recommendations.get("llm_recommended", [])
@@ -166,18 +141,10 @@ class DatasetRecommender:
     def _extract_dataset_mentions(self, paper: Dict[str, Any], 
                                   paper_summary: str) -> List[str]:
         """
-        Extract explicitly mentioned datasets from paper text.
-        
-        Args:
-            paper: Paper document
-            paper_summary: Full paper summary from page classification (required)
-            
-        Returns:
-            List of normalized dataset names
+        Extracts any explicitly mentioned datasets from paper text
         """
         mentioned_datasets = set()
         
-        # Use the full paper summary (limit to first 50k chars for performance)
         text_to_search = paper_summary[:50000]
         
         # Search for dataset patterns
@@ -189,8 +156,7 @@ class DatasetRecommender:
                 normalized = self._normalize_dataset_name(match)
                 if normalized:
                     mentioned_datasets.add(normalized)
-        
-        # Also check for lowercase mentions
+    
         text_lower = text_to_search.lower()
         for dataset_name, normalized in DATASET_NAME_MAP.items():
             if dataset_name in text_lower:
@@ -199,31 +165,13 @@ class DatasetRecommender:
         return list(mentioned_datasets)
     
     def _normalize_dataset_name(self, dataset_name: str) -> Optional[str]:
-        """
-        Normalize dataset name to our standard format.
-        
-        Args:
-            dataset_name: Raw dataset name from text
-            
-        Returns:
-            Normalized dataset name or None
-        """
         name_lower = dataset_name.lower().strip()
         return DATASET_NAME_MAP.get(name_lower, None)
 
     
     def _prioritize_datasets(self, explicitly_mentioned: List[str],
                             llm_recommended: List[str]) -> List[str]:
-        """
-        Prioritize and combine dataset recommendations.
-        
-        Args:
-            explicitly_mentioned: Datasets explicitly mentioned in paper
-            llm_recommended: Datasets recommended by LLM
-            
-        Returns:
-            Prioritized list of dataset names
-        """
+
         prioritized = []
         seen = set()
         
@@ -248,21 +196,11 @@ class DatasetRecommender:
     
     def _llm_recommend_datasets(self, paper: Dict[str, Any],
                                 paper_summary: str) -> Optional[Dict[str, Any]]:
-        """
-        Use LLM to intelligently recommend datasets.
-        
-        Args:
-            paper: Paper document
-            paper_summary: Full paper summary from page classification (required)
-            
-        Returns:
-            Dictionary with LLM recommendations
-        """
+
         if not self.bedrock_client:
             return None
         
         try:
-            # Use the full paper summary from page classification
             paper_info = f"""
 Title: {paper.get('title', 'Unknown')}
 
@@ -270,7 +208,6 @@ Full Paper Summary (from page classification):
 {paper_summary}
 """
             
-            # Prepare prompt for dataset recommendation
             prompt = f"""
 You are an expert in machine learning datasets. Analyze this research paper and recommend the most appropriate datasets for training and evaluating models described in the paper.
 
@@ -306,7 +243,6 @@ Respond in JSON format:
 Only use datasets from the available list above. If none are perfect matches, choose the closest alternatives.
 """
             
-            # Make LLM request
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": 500,
@@ -344,15 +280,7 @@ Only use datasets from the available list above. If none are perfect matches, ch
             return None
     
     def get_dataset_info(self, dataset_name: str) -> Dict[str, Any]:
-        """
-        Get information about a specific dataset.
-        
-        Args:
-            dataset_name: Name of the dataset
-            
-        Returns:
-            Dictionary with dataset information
-        """
+
         dataset_info = {
             "cifar10": {
                 "name": "CIFAR-10",
@@ -417,4 +345,3 @@ Only use datasets from the available list above. If none are perfect matches, ch
             "type": "unknown",
             "use_case": "Unknown dataset"
         })
-
