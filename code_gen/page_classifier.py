@@ -1,5 +1,5 @@
 """
-Logistic classifer for page relevance (for when we send a PDF to the bedrock vision api)
+Logistic classifier for PDF page relevance -> used before sending raw PDF pages to Claude via Bedrock
 """
 
 import argparse
@@ -7,58 +7,50 @@ import pickle
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
+
 import numpy as np
+import pandas as pd
+from scipy.sparse import hstack, csr_matrix
+
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, accuracy_score, precision_score, recall_score, f1_score
 from sklearn.preprocessing import StandardScaler
-from scipy.sparse import hstack, csr_matrix
-import pandas as pd
+from sklearn.metrics import (
+    classification_report,
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+)
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
-
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
-DEFAULT_DATA_PATH = Path(__file__).parent / "paper_texts - pdf_texts.csv"
+DEFAULT_DATA_PATH = Path(__file__).parent / "paper_texts_pdf_texts.csv"
+
 
 
 class PageRelevanceClassifier:
-    """Classifier to determine if a PDF page is relevant for code generation."""
-    
+    """Binary classifier for identifying relevant PDF pages for code gen"""
+
     def __init__(self, model_path: Optional[str] = None, threshold: float = 0.4):
-        """
-        Initialize the page relevance classifier.
-        
-        Args:
-            model_path: Path to saved model file. If None, will use default path.
-            threshold: Classification threshold for relevance prediction (default: 0.4)
-        """
-        # Default model path in code_gen directory
-        if model_path is None:
-            model_path = Path(__file__).parent / "page_classifier_model.pkl"
-        
-        self.model_path = Path(model_path)
+        self.model_path = Path(model_path) if model_path else Path(__file__).parent / "page_classifier_model.pkl"
         self.threshold = threshold
-        self.vectorizer = None
-        self.trigram_vectorizer = None
-        self.scaler = None
-        self.classifier = None
+
+        self.vectorizer: Optional[TfidfVectorizer] = None
+        self.trigram_vectorizer: Optional[TfidfVectorizer] = None
+        self.scaler: Optional[StandardScaler] = None
+        self.classifier: Optional[LogisticRegression] = None
         self.is_trained = False
-        
-        # Try to load existing model
+
         if self.model_path.exists():
-            try:
-                self.load_model()
-                logger.info(f"Loaded page classifier from {self.model_path}")
-            except Exception as e:
-                logger.warning(f"Failed to load model from {self.model_path}: {e}")
-                logger.info("Will train a new model")
-    
+            self.load_model()
+
+    # Training
     def train(
         self,
         csv_path: str,
@@ -68,554 +60,214 @@ class PageRelevanceClassifier:
         unigram_max_features: int = 5000,
         trigram_max_features: int = 2000,
         c_regularization: float = 1.0,
-        class_weight_ratio: Optional[float] = 5.0,
-        max_iter: int = 1000
-    ):
-        """
-        Train the classifier on labeled page data.
-        
-        Args:
-            csv_path: Path to CSV file with columns: paper_id, pdf_name, page_number, text, keep
-            test_size: Proportion of data to use for testing
-            random_state: Random seed for reproducibility
-            oversample_positive: Whether to balance training data by oversampling
-                the minority (keep=1) class after the train/test split. Enabled by default.
-            unigram_max_features: Vocabulary size for the main TF-IDF vectorizer.
-            trigram_max_features: Vocabulary size for the trigram TF-IDF vectorizer.
-            c_regularization: Regularization strength for LogisticRegression
-            class_weight_ratio: Custom class weight ratio for Relevant class (default: 5.0)
-            max_iter: Maximum iterations for training
-        """
-        logger.info(f"Training page classifier on data from {csv_path}")
-        
-        # Load and clean data
+        class_weight_ratio: float = 5.0,
+        max_iter: int = 1000,
+    ) -> Dict[str, Any]:
+
         df = self._load_labeled_dataframe(csv_path)
-        
-        logger.info(f"Training on {len(df)} pages")
-        logger.info(f"Class distribution: {df['keep'].value_counts().to_dict()}")
-        
-        # Prepare features and labels
-        X = df['text'].fillna('').astype(str).values
-        y = df['keep'].values
-        
-        # Split data
+        X = df["text"].values
+        y = df["keep"].values
+
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state, stratify=y
+            X, y, stratify=y, test_size=test_size, random_state=random_state
         )
-        
+
         if oversample_positive:
-            X_train, y_train = self._oversample_positive_pages(
-                X_train, y_train, random_state
-            )
-            logger.info(
-                "Applied positive-class oversampling. New train distribution: %s",
-                {0: int((y_train == 0).sum()), 1: int((y_train == 1).sum())}
-            )
-        
-        # Create TF-IDF vectorizers with different configurations for richer features
-        # Main TF-IDF vectorizer with unigrams and bigrams
+            X_train, y_train = self._oversample_positive_pages(X_train, y_train, random_state)
+
+        # TF-IDF 
         self.vectorizer = TfidfVectorizer(
             max_features=unigram_max_features,
-            ngram_range=(1, 2),  # Unigrams and bigrams
-            min_df=2,  # Minimum document frequency
-            max_df=0.95,  # Maximum document frequency
-            stop_words='english',
-            sublinear_tf=True,  # Use logarithmic scaling for term frequency
-            norm='l2'  # L2 normalization
+            ngram_range=(1, 2),
+            stop_words="english",
+            min_df=2,
+            max_df=0.95,
+            sublinear_tf=True,
         )
-        
-        # Additional TF-IDF vectorizer for trigrams (captures longer phrases)
+
         self.trigram_vectorizer = TfidfVectorizer(
             max_features=trigram_max_features,
-            ngram_range=(3, 3),  # Trigrams only
+            ngram_range=(3, 3),
+            stop_words="english",
             min_df=3,
             max_df=0.9,
-            stop_words='english',
             sublinear_tf=True,
-            norm='l2'
         )
-        
-        # Fit vectorizers and transform training data
-        logger.info("Extracting TF-IDF features...")
-        X_train_tfidf = self.vectorizer.fit_transform(X_train)
-        X_train_trigram = self.trigram_vectorizer.fit_transform(X_train)
-        
-        # Extract additional TF-IDF-based statistical features
-        X_train_stats = self._extract_tfidf_statistics(X_train, X_train_tfidf)
-        
-        # Combine all features
-        X_train_combined = hstack([X_train_tfidf, X_train_trigram, X_train_stats])
-        
-        # Transform test data
-        X_test_tfidf = self.vectorizer.transform(X_test)
-        X_test_trigram = self.trigram_vectorizer.transform(X_test)
-        X_test_stats = self._extract_tfidf_statistics(X_test, X_test_tfidf)
-        X_test_combined = hstack([X_test_tfidf, X_test_trigram, X_test_stats])
-        
-        # Normalize statistical features
+
+        X_train_tf = self.vectorizer.fit_transform(X_train)
+        X_train_tri = self.trigram_vectorizer.fit_transform(X_train)
+        X_train_stats = self._extract_tfidf_statistics(X_train, X_train_tf)
+
+        X_train_all = hstack([X_train_tf, X_train_tri, X_train_stats])
+
+        X_test_tf = self.vectorizer.transform(X_test)
+        X_test_tri = self.trigram_vectorizer.transform(X_test)
+        X_test_stats = self._extract_tfidf_statistics(X_test, X_test_tf)
+
+        X_test_all = hstack([X_test_tf, X_test_tri, X_test_stats])
+
+        # Scaling features
         self.scaler = StandardScaler()
-        # Get indices for statistical features (last N features)
         n_stats = X_train_stats.shape[1]
-        stats_start_idx = X_train_combined.shape[1] - n_stats
-        
-        # Extract and scale statistical features
-        X_train_stats_dense = X_train_combined[:, stats_start_idx:].toarray()
-        X_test_stats_dense = X_test_combined[:, stats_start_idx:].toarray()
-        
-        X_train_stats_scaled = self.scaler.fit_transform(X_train_stats_dense)
-        X_test_stats_scaled = self.scaler.transform(X_test_stats_dense)
-        
-        # Recombine with scaled stats
-        X_train_final = hstack([
-            X_train_combined[:, :stats_start_idx],
-            csr_matrix(X_train_stats_scaled)
-        ])
-        X_test_final = hstack([
-            X_test_combined[:, :stats_start_idx],
-            csr_matrix(X_test_stats_scaled)
-        ])
-        
-        # Train logistic regression classifier with explicit class weights
-        class_weight = {0: 1.0, 1: float(class_weight_ratio)}
-        logger.info(f"Using class weights: {class_weight}")
-        logger.info(f"Training with C={c_regularization}, max_iter={max_iter}")
-        
+        stat_start = X_train_all.shape[1] - n_stats
+
+        X_train_scaled = self.scaler.fit_transform(X_train_all[:, stat_start:].toarray())
+        X_test_scaled = self.scaler.transform(X_test_all[:, stat_start:].toarray())
+
+        X_train_final = hstack([X_train_all[:, :stat_start], csr_matrix(X_train_scaled)])
+        X_test_final = hstack([X_test_all[:, :stat_start], csr_matrix(X_test_scaled)])
+
+        # Model Definition (logistic regression)
         self.classifier = LogisticRegression(
-            class_weight=class_weight,
+            C=c_regularization,
             max_iter=max_iter,
+            class_weight={0: 1.0, 1: class_weight_ratio},
+            solver="lbfgs",
             random_state=random_state,
-            solver='lbfgs',
-            C=c_regularization
         )
-        
-        logger.info("Training classifier...")
+
         self.classifier.fit(X_train_final, y_train)
-        
-        # Evaluate with default threshold (0.5)
-        y_pred = self.classifier.predict(X_test_final)
-        y_proba = self.classifier.predict_proba(X_test_final)[:, 1]
-        accuracy = accuracy_score(y_test, y_pred)
-        
-        logger.info(f"\nTest accuracy: {accuracy:.4f}")
-        logger.info("\nClassification Report (threshold=0.5):")
-        logger.info(classification_report(y_test, y_pred, target_names=['Not Relevant', 'Relevant']))
-        
-        # Find optimal threshold for "Relevant" class (maximize F1)
-        thresholds = np.arange(0.3, 0.8, 0.05)
-        best_f1 = 0
-        best_threshold = 0.5
-        best_precision = 0
-        best_recall = 0
-        
-        for threshold in thresholds:
-            y_pred_thresh = (y_proba >= threshold).astype(int)
-            f1 = f1_score(y_test, y_pred_thresh, pos_label=1, zero_division=0)
-            precision = precision_score(y_test, y_pred_thresh, pos_label=1, zero_division=0)
-            recall = recall_score(y_test, y_pred_thresh, pos_label=1, zero_division=0)
-            
-            if f1 > best_f1:
-                best_f1 = f1
-                best_threshold = threshold
-                best_precision = precision
-                best_recall = recall
-        
-        logger.info(f"\n📊 Optimal threshold for 'Relevant' class: {best_threshold:.2f}")
-        logger.info(f"   Precision: {best_precision:.3f}, Recall: {best_recall:.3f}, F1: {best_f1:.3f}")
-        
-        # Show metrics at different thresholds
-        logger.info("\n📈 Metrics at different thresholds:")
-        for thresh in [0.4, 0.5, 0.6, 0.7]:
-            for label in [0, 1]:
-                y_pred_thresh = (y_proba >= thresh).astype(int)
-                prec = precision_score(y_test, y_pred_thresh, pos_label=label, zero_division=0)
-                rec = recall_score(y_test, y_pred_thresh, pos_label=label, zero_division=0)
-                f1 = f1_score(y_test, y_pred_thresh, pos_label=label, zero_division=0)
-                logger.info(f"For label {label}: Threshold {thresh:.1f}: Precision={prec:.3f}, Recall={rec:.3f}, F1={f1:.3f}")
-        
         self.is_trained = True
-        
-        # Save model
+
+        # Evaluation
+        probs = self.classifier.predict_proba(X_test_final)[:, 1]
+        preds = (probs >= 0.5).astype(int)
+
+        acc = accuracy_score(y_test, preds)
+        logger.info("Accuracy: %.4f", acc)
+        logger.info("\n%s", classification_report(y_test, preds, target_names=["Not Relevant", "Relevant"]))
+
+        # Threshold sweep
+        best_f1, best_thresh = 0.0, self.threshold
+        for t in np.arange(0.3, 0.8, 0.05):
+            f1 = f1_score(y_test, (probs >= t).astype(int))
+            if f1 > best_f1:
+                best_f1, best_thresh = f1, t
+
+        logger.info("Best threshold=%.2f (F1=%.3f)", best_thresh, best_f1)
+        self.threshold = best_thresh
+
         self.save_model()
-        
+
         return {
-            'accuracy': accuracy,
-            'train_size': len(X_train),
-            'test_size': len(X_test),
-            'model_path': str(self.model_path)
+            "accuracy": acc,
+            "threshold": self.threshold,
+            "train_size": len(X_train),
+            "test_size": len(X_test),
         }
-    
+
+
+    def evaluate_on_csv(self, csv_path: str) -> Dict[str, float]:
+        df = self._load_labeled_dataframe(csv_path)
+        X = df["text"].values
+        y = df["keep"].values
+
+        preds = self.predict_batch(X)
+        y_pred = np.array([int(p["is_relevant"]) for p in preds])
+
+        return {
+            "accuracy": accuracy_score(y, y_pred),
+            "precision": precision_score(y, y_pred),
+            "recall": recall_score(y, y_pred),
+            "f1": f1_score(y, y_pred),
+        }
+
+
     def predict(self, page_text: str) -> Dict[str, Any]:
-        """
-        Predict if a page is relevant for code generation.
-        
-        Args:
-            page_text: Text content of the page
-            
-        Returns:
-            Dictionary with prediction and confidence score
-        """
-        if not self.is_trained or self.vectorizer is None or self.classifier is None:
-            raise ValueError("Classifier not trained. Call train() first or load a saved model.")
-        
-        # Handle empty text
-        if not page_text or not page_text.strip():
-            return {
-                'is_relevant': False,
-                'confidence': 0.0,
-                'probability': 0.0
-            }
-        
-        # Transform text with all feature extractors
-        page_text = page_text.replace('\n', ' ')
-        text_tfidf = self.vectorizer.transform([str(page_text)])
-        text_trigram = self.trigram_vectorizer.transform([str(page_text)])
-        text_stats = self._extract_tfidf_statistics([str(page_text)], text_tfidf)
-        
-        # Combine features
-        text_combined = hstack([text_tfidf, text_trigram, text_stats])
-        
-        # Scale statistical features
-        n_stats = text_stats.shape[1]
-        stats_start_idx = text_combined.shape[1] - n_stats
-        text_stats_dense = text_combined[:, stats_start_idx:].toarray()
-        text_stats_scaled = self.scaler.transform(text_stats_dense)
-        
-        # Recombine with scaled stats
-        text_final = hstack([
-            text_combined[:, :stats_start_idx],
-            csr_matrix(text_stats_scaled)
-        ])
-        
-        # Get probability of relevant class (class 1)
-        probabilities = self.classifier.predict_proba(text_final)[0]
-        relevant_prob = probabilities[1] if len(probabilities) > 1 else 0.0
-        
-        # Apply threshold
-        prediction = relevant_prob >= self.threshold
-        
-        return {
-            'is_relevant': bool(prediction),
-            'confidence': float(relevant_prob),
-            'probability': float(relevant_prob)
-        }
-    
-    def predict_batch(self, page_texts: List[str]) -> List[Dict[str, Any]]:
-        """
-        Predict relevance for multiple pages.
-        
-        Args:
-            page_texts: List of page text contents
-            
-        Returns:
-            List of prediction dictionaries
-        """
-        if not self.is_trained or self.vectorizer is None or self.classifier is None:
-            raise ValueError("Classifier not trained. Call train() first or load a saved model.")
-        
-        # Handle empty texts
-        page_texts = [str(text).replace('\n', ' ') if text else '' for text in page_texts]
-        
-        # Transform texts with all feature extractors
-        text_tfidf = self.vectorizer.transform(page_texts)
-        text_trigram = self.trigram_vectorizer.transform(page_texts)
-        text_stats = self._extract_tfidf_statistics(page_texts, text_tfidf)
-        
-        # Combine features
-        text_combined = hstack([text_tfidf, text_trigram, text_stats])
-        
-        # Scale statistical features
-        n_stats = text_stats.shape[1]
-        stats_start_idx = text_combined.shape[1] - n_stats
-        text_stats_dense = text_combined[:, stats_start_idx:].toarray()
-        text_stats_scaled = self.scaler.transform(text_stats_dense)
-        
-        # Recombine with scaled stats
-        text_final = hstack([
-            text_combined[:, :stats_start_idx],
-            csr_matrix(text_stats_scaled)
-        ])
-        
-        # Get probabilities
-        probabilities = self.classifier.predict_proba(text_final)
-        
-        results = []
-        for probs in probabilities:
-            relevant_prob = probs[1] if len(probs) > 1 else 0.0
-            prediction = relevant_prob >= self.threshold
-            results.append({
-                'is_relevant': bool(prediction),
-                'confidence': float(relevant_prob),
-                'probability': float(relevant_prob)
-            })
-        
-        return results
-    
-    def save_model(self, path: Optional[str] = None):
-        """Save the trained model to disk."""
         if not self.is_trained:
-            raise ValueError("No trained model to save")
-        
-        save_path = Path(path) if path else self.model_path
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        model_data = {
-            'vectorizer': self.vectorizer,
-            'trigram_vectorizer': self.trigram_vectorizer,
-            'scaler': self.scaler,
-            'classifier': self.classifier,
-            'is_trained': self.is_trained,
-            'threshold': self.threshold
+            raise RuntimeError("Model not trained")
+
+        tf = self.vectorizer.transform([page_text])
+        tri = self.trigram_vectorizer.transform([page_text])
+        stats = self._extract_tfidf_statistics([page_text], tf)
+
+        combined = hstack([tf, tri, stats])
+        stat_start = combined.shape[1] - stats.shape[1]
+
+        stats_scaled = self.scaler.transform(combined[:, stat_start:].toarray())
+        final = hstack([combined[:, :stat_start], csr_matrix(stats_scaled)])
+
+        prob = self.classifier.predict_proba(final)[0, 1]
+        return {
+            "is_relevant": prob >= self.threshold,
+            "probability": float(prob),
         }
-        
-        with open(save_path, 'wb') as f:
-            pickle.dump(model_data, f)
-        
-        logger.info(f"Saved model to {save_path}")
-    
-    def load_model(self, path: Optional[str] = None):
-        """Load a trained model from disk."""
-        load_path = Path(path) if path else self.model_path
-        
-        if not load_path.exists():
-            raise FileNotFoundError(f"Model file not found: {load_path}")
-        
-        with open(load_path, 'rb') as f:
-            model_data = pickle.load(f)
-        
-        self.vectorizer = model_data['vectorizer']
-        self.trigram_vectorizer = model_data.get('trigram_vectorizer')
-        self.scaler = model_data.get('scaler')
-        self.classifier = model_data['classifier']
-        self.is_trained = model_data.get('is_trained', True)
-        self.threshold = model_data.get('threshold', 0.4)
-        
-        # Handle backward compatibility (old models without trigram vectorizer)
-        if self.trigram_vectorizer is None:
-            logger.warning("Loaded model doesn't have trigram vectorizer. Retraining recommended.")
-            # Create a dummy trigram vectorizer that returns empty features
-            # Use a minimal vocabulary to avoid the max_features=0 error
-            self.trigram_vectorizer = TfidfVectorizer(
-                max_features=1,
-                ngram_range=(3, 3),
-                vocabulary=['dummy_token_never_appears']
-            )
-            self.trigram_vectorizer.fit(['dummy'])  # Fit on dummy to initialize
-        
-        if self.scaler is None:
-            logger.warning("Loaded model doesn't have scaler. Retraining recommended.")
-            self.scaler = StandardScaler()
-            # Fit on dummy data to initialize
-            self.scaler.fit([[0] * 16])  # 16 is the number of statistical features
-        
-        logger.info(f"Loaded model from {load_path}")
-    
+
+    def predict_batch(self, texts: List[str]) -> List[Dict[str, Any]]:
+        return [self.predict(t) for t in texts]
+
+
+    def save_model(self):
+        with open(self.model_path, "wb") as f:
+            pickle.dump(self.__dict__, f)
+
+    def load_model(self):
+        with open(self.model_path, "rb") as f:
+            self.__dict__.update(pickle.load(f))
+        logger.info("Loaded model from %s", self.model_path)
+
+
+    # Helpers
     def _load_labeled_dataframe(self, csv_path: str) -> pd.DataFrame:
-        """Load CSV, ensure required columns, and clean keep labels."""
         df = pd.read_csv(csv_path)
-        required_cols = ['text', 'keep']
-        if not all(col in df.columns for col in required_cols):
-            raise ValueError(f"CSV must have columns: {required_cols}")
-        
-        # Clean data
-        df.dropna(inplace=True)
-        df = df[(df['keep'] == 0) | (df['keep'] == 1)]
-        df['keep'] = df['keep'].astype(int)
-        df['text'] = df['text'].str.replace('\n', ' ')
-        
-        if len(df) == 0:
-            raise ValueError("No valid labeled data found")
-        
+        df = df[df["keep"].isin([0, 1])]
+        df["text"] = df["text"].fillna("").str.replace("\n", " ")
         return df
-    
+
     def _oversample_positive_pages(
-        self,
-        texts: np.ndarray,
-        labels: np.ndarray,
-        random_state: int
+        self, texts: np.ndarray, labels: np.ndarray, random_state: int
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Oversample positive class to match negatives in the training split."""
-        positives = np.where(labels == 1)[0]
-        negatives = np.where(labels == 0)[0]
-        
-        if len(positives) == 0 or len(negatives) == 0:
-            logger.warning("Skipping oversampling due to missing class in training split.")
+        pos = np.where(labels == 1)[0]
+        neg = np.where(labels == 0)[0]
+
+        if len(pos) == 0 or len(neg) == 0:
             return texts, labels
-        
-        if len(positives) >= len(negatives):
-            return texts, labels
-        
-        rng = np.random.default_rng(seed=random_state)
-        sampled_pos = rng.choice(
-            positives,
-            size=len(negatives),
-            replace=True
-        )
-        new_indices = np.concatenate([negatives, sampled_pos])
-        rng.shuffle(new_indices)
-        
-        return texts[new_indices], labels[new_indices]
-    
+
+        rng = np.random.default_rng(random_state)
+        pos_sample = rng.choice(pos, size=len(neg), replace=True)
+        idx = np.concatenate([neg, pos_sample])
+        rng.shuffle(idx)
+
+        return texts[idx], labels[idx]
+
     def _extract_tfidf_statistics(self, texts: List[str], tfidf_matrix) -> csr_matrix:
-        """
-        Extract TF-IDF-based statistical features from text.
-        
-        Args:
-            texts: List of text strings
-            tfidf_matrix: TF-IDF matrix for the texts
-            
-        Returns:
-            Sparse matrix with statistical features
-        """
-        features = []
-        
+        rows = []
         for i, text in enumerate(texts):
-            text_lower = text.lower()
-            text_words = text_lower.split()
-            
-            # Get TF-IDF vector for this document
-            doc_tfidf = tfidf_matrix[i].toarray().flatten()
-            
-            # Statistical features from TF-IDF
-            stats = [
-                np.sum(doc_tfidf),  # Sum of all TF-IDF scores
-                np.mean(doc_tfidf),  # Mean TF-IDF score
-                np.std(doc_tfidf),  # Standard deviation of TF-IDF scores
-                np.max(doc_tfidf),  # Maximum TF-IDF score
-                np.percentile(doc_tfidf, 75),  # 75th percentile
-                np.percentile(doc_tfidf, 50),  # Median
-                np.percentile(doc_tfidf, 25),  # 25th percentile
-                np.sum(doc_tfidf > 0),  # Number of non-zero TF-IDF features
-                len(text_words),  # Document length (word count)
-                len(text) / max(len(text_words), 1),  # Average word length
-            ]
-            
-            # Additional text-based features that complement TF-IDF
-            # These help capture structural information
-            stats.extend([
-                text.count('\n'),  # Number of lines
-                text.count('.'),  # Number of sentences (approximate)
-                text.count('='),  # Equations
-                text.count('('),  # Parentheses (often in formulas)
-                text.count('['),  # Brackets (often in formulas)
-                len([w for w in text_words if len(w) > 10]),  # Long words (technical terms)
+            v = tfidf_matrix[i].toarray().ravel()
+            words = text.split()
+
+            rows.append([
+                v.sum(),
+                v.mean(),
+                v.std(),
+                v.max(),
+                np.count_nonzero(v),
+                len(words),
+                len(text),
+                text.count("="),
+                text.count("("),
+                len([w for w in words if len(w) > 10]),
             ])
-            
-            features.append(stats)
-        
-        return csr_matrix(features)
+        return csr_matrix(rows)
 
 
-def _parse_args():
-    parser = argparse.ArgumentParser(
-        description="Train and evaluate the PageRelevanceClassifier."
-    )
-    default_train = str(DEFAULT_DATA_PATH) if DEFAULT_DATA_PATH.exists() else None
-    parser.add_argument(
-        "--model-path",
-        default=None,
-        help="Optional path to save/load the trained model (defaults to code_gen/page_classifier_model.pkl)."
-    )
-    parser.add_argument(
-        "--train-csv",
-        default=default_train,
-        help=(
-            "CSV of labeled pages used for training "
-            f"(defaults to {DEFAULT_DATA_PATH.name} if it exists)."
-        )
-    )
-    parser.add_argument(
-        "--evaluate-csv",
-        help="CSV of labeled pages to evaluate after training or loading a model."
-    )
-    parser.add_argument(
-        "--test-size",
-        type=float,
-        default=0.3,
-        help="Fraction of the training CSV to reserve for validation (default: 0.3)."
-    )
-    parser.add_argument(
-        "--no-oversample-positive",
-        action="store_false",
-        dest="oversample_positive",
-        help="Disable balancing the training set by oversampling pages with keep=1."
-    )
-    parser.set_defaults(oversample_positive=True)
-    parser.add_argument(
-        "--random-state",
-        type=int,
-        default=42,
-        help="Random seed used for splitting and oversampling."
-    )
-    parser.add_argument(
-        "--tfidf-max-features",
-        type=int,
-        default=5000,
-        help="Max vocabulary size for the main (1-2 gram) TF-IDF vectorizer."
-    )
-    parser.add_argument(
-        "--trigram-max-features",
-        type=int,
-        default=2000,
-        help="Max vocabulary size for the trigram TF-IDF vectorizer."
-    )
-    parser.add_argument(
-        "--c-regularization",
-        type=float,
-        default=1.0,
-        help="Regularization strength C for LogisticRegression (lower = stronger regularization). Try 0.1, 0.5, 1.0, 2.0, 5.0"
-    )
-    parser.add_argument(
-        "--class-weight-ratio",
-        type=float,
-        default=5.0,
-        help="Custom class weight ratio for Relevant class (default: 5.0)."
-    )
-    parser.add_argument(
-        "--max-iter",
-        type=int,
-        default=1000,
-        help="Maximum iterations for LogisticRegression training."
-    )
-    parser.add_argument(
-        "--threshold",
-        type=float,
-        default=0.4,
-        help="Classification threshold for relevance prediction (default: 0.4)."
-    )
-    return parser.parse_args()
 
 
 def main():
-    args = _parse_args()
-    
-    if not args.train_csv and not args.evaluate_csv:
-        raise SystemExit("Specify --train-csv, --evaluate-csv, or both.")
-    
-    classifier = PageRelevanceClassifier(model_path=args.model_path, threshold=args.threshold)
-    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train-csv")
+    parser.add_argument("--evaluate-csv")
+    parser.add_argument("--model-path")
+    args = parser.parse_args()
+
+    clf = PageRelevanceClassifier(model_path=args.model_path)
+
     if args.train_csv:
-        train_path = Path(args.train_csv)
-        if not train_path.exists():
-            raise SystemExit(f"Training CSV not found: {train_path}")
-        train_metrics = classifier.train(
-            args.train_csv,
-            test_size=args.test_size,
-            random_state=args.random_state,
-            oversample_positive=args.oversample_positive,
-            unigram_max_features=args.tfidf_max_features,
-            trigram_max_features=args.trigram_max_features,
-            c_regularization=args.c_regularization,
-            class_weight_ratio=args.class_weight_ratio,
-            max_iter=args.max_iter
-        )
-        logger.info(f"Training metrics: {train_metrics}")
-    
+        clf.train(args.train_csv)
+
     if args.evaluate_csv:
-        eval_path = Path(args.evaluate_csv)
-        if not eval_path.exists():
-            raise SystemExit(f"Evaluation CSV not found: {eval_path}")
-        eval_metrics = classifier.evaluate_on_csv(args.evaluate_csv)
-        logger.info(f"Evaluation metrics: {eval_metrics}")
+        metrics = clf.evaluate_on_csv(args.evaluate_csv)
+        logger.info("Evaluation: %s", metrics)
 
 
 if __name__ == "__main__":
