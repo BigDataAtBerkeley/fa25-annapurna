@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
+import re
 
 # Add script directory to Python path so we can import local modules
 # This is critical when running via systemd where the working directory might differ
@@ -295,7 +296,6 @@ def upload_execution_results(paper_id: str, result: Dict[str, Any], executed_on_
             try:
                 opensearch_client = OpenSearchClient()
                 
-                # Prepare execution results for OpenSearch
                 execution_data = {
                     "execution_success": result.get('success', False),
                     "executed_on_trn": True,
@@ -307,12 +307,10 @@ def upload_execution_results(paper_id: str, result: Dict[str, Any], executed_on_
                     "results_s3_location": f"s3://{RESULTS_BUCKET}/{s3_key}",
                 }
                 
-                # Add metrics if available (check both 'metrics' and 'detailed_metrics')
                 metrics = result.get('metrics') or result.get('detailed_metrics', {})
                 if metrics:
                     execution_data["execution_metrics"] = metrics
                 
-                # Add profiler info if available
                 profiler_info = result.get('profiler', {})
                 if profiler_info and profiler_info.get('profiler_enabled'):
                     execution_data["profiler_enabled"] = True
@@ -362,7 +360,6 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
             return
         
         # Check if this execution result was already sent (prevent duplicates after Flask restart)
-        # Compare execution result timestamp with what's stored in OpenSearch
         current_execution_time = execution_result.get('execution_time', 0)
         stored_execution_time = paper.get('execution_time_seconds', 0)
         stored_execution_completed_at = paper.get('execution_completed_at')
@@ -385,37 +382,24 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
             if thread_ts:
                 logger.info(f"Retrieved slack_thread_ts from OpenSearch for {paper_id}: {thread_ts}")
         
-<<<<<<< HEAD
         fields_to_exclude = {
             'embedding', 'embeddings', 'vector', 'vectors', 
             'pdf_bytes', 'pdf_content', 'raw_content',
             's3_bucket', 's3_key' 
-        }
-        
-=======
-        # Filter out embeddings, internal fields, and other large binary fields
-        fields_to_exclude = {
-            'embedding', 'embeddings', 'vector', 'vectors', 
-            'pdf_bytes', 'pdf_content', 'raw_content',
-            's3_bucket', 's3_key',  # We'll add formatted S3 link instead
-            # Internal/metadata fields that shouldn't be shown in Slack
             'slack_thread_ts', 'relevance', 'decision', 'ingested_at', 'reason',
             'executed_on_trn', 'executed_on_trn_updated_at', 'code_generated', 'code_generated_at'
         }
         
-        # Create filtered paper dict with key fields only
->>>>>>> e101b1ccf535c5e52de7648fbd4f3dde0330ad8d
         filtered_paper = {
             '_id': paper_id,
             'title': paper.get('title', 'Unknown Title'),
             'authors': paper.get('authors', []),
-            'abstract': paper.get('abstract', ''),  # Full abstract, not truncated
+            'abstract': paper.get('abstract', ''), 
             'date': paper.get('date', ''),
             'url': paper.get('url', ''),
             'arxiv_id': paper.get('arxiv_id', ''),
         }
         
-<<<<<<< HEAD
         for key, value in paper.items():
             if key not in fields_to_exclude and key not in filtered_paper:
                 if isinstance(value, str) and len(value) > 2000:
@@ -423,9 +407,6 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
                 if isinstance(value, (dict, list)) and len(str(value)) > 2000:
                     continue
                 filtered_paper[key] = value
-=======
-        # Don't add other fields - only use the explicitly defined fields above
->>>>>>> e101b1ccf535c5e52de7648fbd4f3dde0330ad8d
         
         filtered_paper['execution_success'] = execution_result.get('success', False)
         filtered_paper['execution_time_seconds'] = round(execution_result.get('execution_time', 0), 2)
@@ -461,7 +442,6 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
                 profiler_s3_prefix = f"s3://{RESULTS_BUCKET}/profiler/{paper_id}/"
                 filtered_paper['profiler_s3_location'] = profiler_s3_prefix
         
-        # Send to Slack using custom formatting (reply in thread if thread_ts provided)
         success = slack_notifier.send_execution_notification(filtered_paper, execution_result, thread_ts=thread_ts)
         if success:
             logger.info(f"✅ Sent Slack notification for {paper_id}")
@@ -641,13 +621,8 @@ sys.path.append('{exec_dir}')
         with execution_lock:
             running_executions.pop(paper_id, None)
         
-        # Check return code first
         success = result.returncode == 0
         
-        # Check stderr for critical errors even if return code is 0
-        # Some errors (like Neuron internal errors) may not set non-zero return code
-        
-        # Extract metrics
         metrics = {}
         try:
             for line in result.stdout.split('\n'):
@@ -684,8 +659,6 @@ sys.path.append('{exec_dir}')
         return execution_result
         
     except subprocess.TimeoutExpired as e:
-        # Timeout occurred - subprocess.run() with start_new_session=True ensures
-        # the process group (including child processes) is killed
         execution_time = time.time() - start_time
         logger.warning(f"Execution timeout ({timeout}s) reached for {paper_id} - process killed")
         
@@ -720,7 +693,6 @@ sys.path.append('{exec_dir}')
         }
     
     finally:
-        # Cleanup
         try:
             if os.path.exists(exec_dir):
                 shutil.rmtree(exec_dir)
@@ -728,14 +700,13 @@ sys.path.append('{exec_dir}')
             logger.warning(f"Failed to cleanup {exec_dir}: {e}")
         
         # Restart Neuron runtime to free cores after each execution
-        # This ensures cores are released even if the process didn't clean up properly
         try:
             logger.debug("Restarting Neuron runtime to free cores...")
             subprocess.run(
                 ['sudo', 'systemctl', 'restart', 'neuron-rtd'],
                 timeout=10,
                 capture_output=True,
-                check=False  # Don't fail if restart fails
+                check=False 
             )
             logger.debug("Neuron runtime restarted successfully")
         except Exception as e:
@@ -743,7 +714,6 @@ sys.path.append('{exec_dir}')
 
 
 def extract_errors_from_result(exec_result: Dict[str, Any]) -> str:
-    """Extract error message for display/logging (simplified)."""
     stderr = exec_result.get('stderr', '')
     message = exec_result.get('error_message', '')
     
@@ -761,10 +731,6 @@ def extract_errors_from_result(exec_result: Dict[str, Any]) -> str:
     return error_message
 
 def format_full_error_context(error_data: Dict[str, Any], max_stderr_lines: int = 500, max_stdout_lines: int = 200) -> str:
-    """
-    Format full error context including complete traceback, stderr, and relevant stdout.
-    Truncates intelligently to stay within context limits while preserving critical information.
-    """
     stderr = error_data.get('stderr', '')
     stdout = error_data.get('stdout', '')
     error_message = error_data.get('error_message', '')
@@ -773,19 +739,15 @@ def format_full_error_context(error_data: Dict[str, Any], max_stderr_lines: int 
     
     parts = []
     
-    # Header with basic info
     parts.append(f"Return Code: {return_code}")
     parts.append(f"Execution Time: {execution_time:.2f}s")
     if error_message:
         parts.append(f"Error Message: {error_message}")
     parts.append("")
     
-    # Full stderr (with traceback) - this is most important
     if stderr:
         stderr_lines = stderr.split('\n')
-        # Keep full traceback if present, truncate from top if too long
         if len(stderr_lines) > max_stderr_lines:
-            # Keep last N lines (most recent errors) and first 50 lines (initial errors)
             first_part = '\n'.join(stderr_lines[:50])
             last_part = '\n'.join(stderr_lines[-max_stderr_lines+50:])
             parts.append("=== FULL STDERR (truncated, showing first 50 and last ~450 lines) ===")
@@ -797,11 +759,9 @@ def format_full_error_context(error_data: Dict[str, Any], max_stderr_lines: int 
             parts.append(stderr)
         parts.append("")
     
-    # Relevant stdout (last portion, often contains useful context)
     if stdout:
         stdout_lines = stdout.split('\n')
         if len(stdout_lines) > max_stdout_lines:
-            # Keep last N lines (most recent output)
             relevant_stdout = '\n'.join(stdout_lines[-max_stdout_lines:])
             parts.append(f"=== STDOUT (last {max_stdout_lines} lines, {len(stdout_lines)} total) ===")
             parts.append(relevant_stdout)
@@ -818,23 +778,19 @@ def fix_code_with_bedrock(code: str, error_message: str, iteration: int, paper_i
         logger.error("Bedrock client not available for code fixing")
         return None
     
-    # Build error and fix history (excluding most recent error which doesn't have fixes yet)
-    # Include more context but limit to recent iterations to stay within context window
+    # Building error and fix history from previous iterations (excluding most recent error which doesn't have fixes yet)
     error_fix_history = ""
     if errors_list and len(errors_list) > 1:
         error_fix_history = "\n═══════════════════════════════════════════════════════════════════════════════\nPREVIOUS ERRORS AND FIXES (for context - learn from past mistakes):\n═══════════════════════════════════════════════════════════════════════════════\n"
-        # Show last 3-4 previous errors (most relevant) with full context
         recent_errors = errors_list[:-1][-4:]  # Last 4 previous errors
         for i, error_item in enumerate(recent_errors, max(1, len(errors_list) - len(recent_errors))):
             error_data = error_item.get('error_data', {})
             iteration_num = error_item.get('iteration', i)
             
             error_fix_history += f"\n{'='*70}\nIteration {iteration_num} Error:\n{'='*70}\n"
-            # Include full error context (stderr with traceback) but truncated intelligently
             full_error = format_full_error_context(error_data, max_stderr_lines=300, max_stdout_lines=100)
             error_fix_history += full_error
             
-            # Show what fixes were applied
             fixes_applied = error_item.get('fixes_applied')
             if fixes_applied:
                 if isinstance(fixes_applied, str):
@@ -849,7 +805,6 @@ def fix_code_with_bedrock(code: str, error_message: str, iteration: int, paper_i
                         error_fix_history += f"\n\nFixes Applied:\n  - {fixes_str}\n"
             error_fix_history += "\n"
         
-    # Build paper context section
     paper_context = ""
     if paper_summary:
         paper_context = f"""
@@ -857,14 +812,11 @@ PAPER CONTEXT (for better understanding of what the code should implement):
 {paper_summary}
 
 """
-    # Remove logger this once done debugging
-    logger.info(f"Paper context: {paper_context}")
 
-    # Build common errors context from ALL papers (most frequent patterns)
     common_errors_context = ""
     if common_errors_all_papers:
         common_errors_list = []
-        for err_info in common_errors_all_papers[:15]:  # Top 15 most common
+        for err_info in common_errors_all_papers[:15]: 
             error_text = err_info.get('error', '')
             frequency = err_info.get('frequency', 0)
             affected = err_info.get('affected_papers', 0)
@@ -914,8 +866,6 @@ The following errors occurred in similar papers. Check your code to ensure these
     if similar_paper_errors:
         logger.info(f"Similar errors context: {len(unique_errors)} unique patterns")
     
-    # Brief essential guidance for cold start (when DynamoDB is empty) and ongoing review
-    # DynamoDB error patterns will supplement this as more papers are tested
     review_guidance = """
 ═══════════════════════════════════════════════════════════════════════════════
 ESSENTIAL TRAINIUM/XLA REQUIREMENTS (verify these in the code):
@@ -1054,22 +1004,17 @@ IMPORTANT: The code block must come FIRST, followed by the fixes summary between
         response_body = json.loads(response['body'].read())
         generated_text = response_body['content'][0]['text']
         
-        # Extract code and summary separately
-        import re
         fixed_code = None
         fixes_summary = ["Code fixes applied via Bedrock"]  # Default
         
-        # Extract code block (must come first)
         code_match = re.search(r'```python\n(.*?)\n```', generated_text, re.DOTALL)
         if code_match:
             fixed_code = code_match.group(1).strip()
         else:
-            # Fallback: try to extract code without markdown
             text_before_summary = generated_text.split('---FIXES_SUMMARY_START---')[0].strip()
             if text_before_summary.startswith('import') or text_before_summary.startswith('from'):
                 fixed_code = text_before_summary
         
-        # Extract fixes summary (between markers)
         summary_match = re.search(r'---FIXES_SUMMARY_START---\s*(.*?)\s*---FIXES_SUMMARY_END---', generated_text, re.DOTALL)
         if summary_match:
             summary_text = summary_match.group(1).strip()
@@ -1107,7 +1052,6 @@ IMPORTANT: The code block must come FIRST, followed by the fixes summary between
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
@@ -1115,29 +1059,16 @@ def health_check():
         "bedrock_available": bedrock_client is not None
     })
 
+# IMPORTANT: ONLY FOR DEBUGGING DON'T LEAVE THIS IN PRODUCTION
+"""
 @app.route('/env', methods=['GET'])
 def get_env_vars():
-    """Print all environment variables"""
     return jsonify({
         "environment_variables": dict(os.environ)
     })
-
+"""
 
 def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Optional[str] = None, slack_thread_ts: Optional[str] = None, should_send_slack: bool = True, should_trigger_review: bool = True, iteration_num: Optional[int] = None) -> Dict[str, Any]:
-    """
-    Internal execute function (can be called directly or via HTTP endpoint).
-    Returns dictionary instead of Flask response.
-    
-    Args:
-        paper_id: Paper ID
-        code: Code to execute
-        timeout: Execution timeout
-        paper_title: Optional paper title
-        slack_thread_ts: Optional Slack thread timestamp for notifications
-        should_send_slack: Whether to send Slack notification (True for final execution, False for code review tests)
-        should_trigger_review: Whether to trigger code review on failure (False for final execution after max iterations)
-        iteration_num: Current code review iteration number (used when triggering next iteration)
-    """
     logger.info(f"Executing code for {paper_id} (should_send_slack={should_send_slack})")
     
     # Save code to S3 first
@@ -1149,17 +1080,11 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
     def execute_and_handle():
         exec_result = execute_code_sync(paper_id, code, timeout, paper_title)
         
-        # Only send Slack notification for final execution results (not code review tests)
-        # Check if we've already sent notification for this paper to prevent duplicates
-        # Also check OpenSearch to prevent duplicates after Flask app restart
         if should_send_slack or exec_result.get('success'):
             with notification_lock:
-                # Check in-memory set first (fast check)
                 if paper_id in execution_notifications_sent:
                     logger.info(f"Execution notification already sent for {paper_id} (in-memory check) - skipping duplicate")
                 else:
-                    # Double-check OpenSearch to prevent duplicates after Flask restart
-                    # The send_slack_notification function will also check, but we check here too for early exit
                     try:
                         opensearch_client = OpenSearchClient()
                         paper = opensearch_client.get_paper_by_id(paper_id)
@@ -1168,17 +1093,13 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
                             stored_execution_completed_at = paper.get('execution_completed_at')
                             current_execution_time = exec_result.get('execution_time', 0)
                             
-                            # If OpenSearch has execution results with same execution time AND it was completed recently (within last hour),
-                            # this notification was likely already sent. But be less aggressive - only skip if execution time matches exactly
-                            # and it was completed more than 5 minutes ago (to allow retries for recent failures)
                             if stored_execution_completed_at and abs(current_execution_time - stored_execution_time) < 0.1:
                                 try:
                                     completed_time = datetime.fromisoformat(stored_execution_completed_at.replace('Z', '+00:00'))
                                     time_since_completion = (datetime.now(completed_time.tzinfo) - completed_time).total_seconds()
-                                    # Only skip if completed more than 5 minutes ago (allows retries for recent failures)
                                     if time_since_completion > 300:
                                         logger.info(f"Execution notification likely already sent for {paper_id} (OpenSearch check - execution_time: {current_execution_time}s, completed {time_since_completion:.0f}s ago) - skipping duplicate")
-                                        execution_notifications_sent.add(paper_id)  # Add to set to prevent future checks
+                                        execution_notifications_sent.add(paper_id) 
                                         return
                                     else:
                                         logger.info(f"Execution results found in OpenSearch but completed recently ({time_since_completion:.0f}s ago) - sending notification anyway (may be retry)")
@@ -1202,7 +1123,6 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
         if exec_result.get('success'):
             logger.info(f"Execution succeeded for {paper_id}")
             
-            # Collect profiler artifacts first (if available) so we can include info in execution_result
             profiler_output_path = exec_result.get("profiler_output_path")
             if profiler_output_path:
                 profiler_info = collect_profiler_artifacts(paper_id, profiler_output_path)
@@ -1210,15 +1130,11 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
                     # Add profiler info to execution_result before uploading
                     exec_result['profiler'] = profiler_info
             
-            # Upload execution results (now includes profiler info if available)
             upload_execution_results(paper_id, exec_result)
             
-            # Success - keep errors in DynamoDB for debugging and learning (never clear them)
             logger.info(f"Execution succeeded for {paper_id} - keeping all errors in DynamoDB for debugging")
         else:
-            # Failure - handle based on whether we should trigger review
             if should_trigger_review:
-                # Normal execution failure - save error and trigger code review
                 logger.warning(f"Execution failed for {paper_id}, saving error and triggering review")
                 error_data = {
                     "stderr": exec_result.get('stderr', ''),
@@ -1230,17 +1146,14 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
                 }
                 save_error(paper_id, error_data)
                 
-                # Call code_review endpoint with error_data as fallback
-                # If iteration_num is provided, increment it for next iteration
-                # Otherwise start with iteration 1 (first code review iteration)
                 next_iteration = (iteration_num + 1) if iteration_num is not None else 1
                 try:
                     review_payload = {
                         "paper_id": paper_id, 
                         "paper_title": paper_title,
-                        "slack_thread_ts": slack_thread_ts,  # Pass thread_ts for Slack threading
-                        "iteration_num": next_iteration,  # Pass incremented iteration number
-                        "error_data": error_data  # Pass error directly in case DynamoDB fails
+                        "slack_thread_ts": slack_thread_ts, 
+                        "iteration_num": next_iteration, 
+                        "error_data": error_data 
                     }
                     review_response = requests.post(
                         f"http://localhost:8000/code_review",
@@ -1251,17 +1164,14 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
                 except Exception as e:
                     logger.error(f"Failed to trigger code review: {e}")
             else:
-                # Final execution failure (after max iterations or after successful code review)
-                # Don't trigger another review - just log the failure
                 logger.warning(f"Final execution failed for {paper_id} (not triggering code review - already at max iterations or post-review)")
-                # Still upload results even on failure (for debugging)
                 upload_execution_results(paper_id, exec_result, executed_on_trn=True)
     
     # Start execution in background
     thread = threading.Thread(target=execute_and_handle, daemon=True)
     thread.start()
     
-    # Return status
+    # Return status for Code Review
     return {
         "success": True,
         "status": "running",
@@ -1284,12 +1194,6 @@ def execute():
         "paper_title": "Paper Title",
         "slack_thread_ts": "1234567890.123456"  # Optional: Slack thread timestamp
     }
-    
-    Behavior:
-    - Executes code
-    - If fails: saves error to DB, calls /code_review
-    - If runs > 5 minutes: assumes success, returns job_id for ECS to track
-    - If succeeds quickly: returns results immediately
     """
     try:
         data = request.get_json()
@@ -1306,10 +1210,6 @@ def execute():
                 "error": "paper_id and code are required"
             }), 400
         
-        # Call internal execute function
-        # NOTE: Initial execution from Lambda should NOT send Slack notifications
-        # because this is not the final code - it will trigger code review if it fails.
-        # Only the final execution (after code review) should send execution results.
         logger.info(f"Beginning internal execution (initial - will not send Slack notifications).")
         result = execute_internal(
             paper_id=paper_id,
@@ -1317,7 +1217,7 @@ def execute():
             timeout=timeout,
             paper_title=paper_title,
             slack_thread_ts=slack_thread_ts,
-            should_send_slack=False  # Initial execution is not final - don't send results yet
+            should_send_slack=False 
         )
         return jsonify(result), 202
         
@@ -1334,21 +1234,10 @@ def code_review():
     """
     Review and fix code based on errors in database.
     
-    NEW STRATEGY: Keep running until code executes for 2 minutes without errors.
-    This replaces the fixed 4-iteration limit.
-    
     Request body:
     {
         "paper_id": "paper_123"
     }
-    
-    Behavior:
-    - Reads errors from database for paper_id
-    - Gets current code from S3
-    - Uses Bedrock to fix code
-    - Tests fixed code with 2-minute timeout
-    - If code runs 2 minutes without errors, consider it stable and stop reviewing
-    - Otherwise, save error and continue fixing
     """
     try:
         data = request.get_json()
@@ -1378,7 +1267,6 @@ def code_review():
         if iteration_num >= MAX_REVIEW_ITERATIONS:
             logger.warning(f"Max code review depth reached for {paper_id} (iteration {iteration_num}). Sending final code and execution results...")
             
-            # Get final code from S3
             final_code = get_code(paper_id)
             if not final_code:
                 logger.error(f"No code found in S3 for {paper_id} - cannot send final notifications")
@@ -1389,10 +1277,8 @@ def code_review():
                     "iteration_num": iteration_num
                 }), 400
             
-            # Get code S3 key
             code_s3_key = f"code/{paper_id}.py"
             
-            # Get paper title if available
             paper_title = data.get('paper_title')
             if not paper_title and OPENSEARCH_AVAILABLE:
                 try:
@@ -1403,8 +1289,6 @@ def code_review():
                 except Exception as e:
                     logger.warning(f"Could not get paper title from OpenSearch: {e}")
             
-            # Send final code notification (second follow-up) - even though max iterations reached
-            # IMPORTANT: Send this BEFORE triggering final execution to ensure correct order in Slack
             if SLACK_AVAILABLE:
                 # Get slack_thread_ts from request or OpenSearch
                 slack_thread_ts = data.get('slack_thread_ts')
@@ -1447,7 +1331,6 @@ def code_review():
                     logger.warning(f"⚠️ No slack_thread_ts available - skipping final code notification")
             
             # Trigger final execution with the final code (this will send execution results as third follow-up)
-            # This happens AFTER the final code notification is sent to ensure correct order
             try:
                 logger.info(f"Triggering final execution for {paper_id} (max iterations reached - using final code)")
                 execute_internal(
@@ -1456,16 +1339,14 @@ def code_review():
                     timeout=MAX_EXECUTION_TIME,
                     paper_title=paper_title,
                     slack_thread_ts=data.get('slack_thread_ts'),
-                    should_send_slack=True,  # This is the final execution - send notification
-                    should_trigger_review=False  # Don't trigger review - already at max iterations
+                    should_send_slack=True, 
+                    should_trigger_review=False  
                 )
                 logger.info(f"Final execution triggered for {paper_id}")
             except Exception as e:
                 logger.error(f"Failed to trigger final execution: {e}")
             
-            # Keep errors in DynamoDB for debugging and learning (never clear them)
-            logger.info(f"Keeping all errors in DynamoDB for {paper_id} (for debugging and learning)")
-            
+
             return jsonify({
                 "success": True,
                 "message": f"Max review iterations ({MAX_REVIEW_ITERATIONS}) reached. Final code and execution results sent.",
@@ -1475,15 +1356,13 @@ def code_review():
                 "final_execution_triggered": True
             }), 200
             
-        # Extract full error context from most recent error (includes full stderr/stdout)
+        # Extract final error message.    
         error_message = ""
         full_error_context = ""
         if errors_list:
             latest_error = errors_list[-1]
             error_data = latest_error.get('error_data', {})
-            # Get simplified message for logging
             error_message = extract_errors_from_result(error_data)
-            # Get full context with traceback for the prompt
             full_error_context = format_full_error_context(error_data, max_stderr_lines=500, max_stdout_lines=200)
             if not error_message and not full_error_context:
                 logger.warning(f"No extractable error found for {paper_id}")
@@ -1496,26 +1375,23 @@ def code_review():
                 "error": f"No code found in S3 for {paper_id}"
             }), 404
         
-        # Get paper summary and similar paper errors from OpenSearch
         paper_summary = None
         similar_paper_errors = []
         common_errors_all_papers = []
         
-        # Get common errors from ALL papers in DynamoDB (proactive learning)
+        # Get common errors ffrom other papers in the database
         try:
             from error_db import get_all_errors
-            all_errors = get_all_errors(limit=100)  # Get recent errors from all papers
+            all_errors = get_all_errors(limit=100)  
             if all_errors:
-                # Extract unique error patterns
                 error_patterns = {}
                 for err in all_errors:
                     error_data = err.get('error_data', {})
                     error_msg = error_data.get('error_message', '') or error_data.get('stderr', '')
                     if error_msg:
-                        # Extract first line as pattern key
                         first_line = error_msg.split('\n')[0].strip()
-                        if first_line and len(first_line) > 20:  # Filter out very short errors
-                            pattern_key = first_line[:150]  # Use first 150 chars as pattern
+                        if first_line and len(first_line) > 20:  
+                            pattern_key = first_line[:150] 
                             if pattern_key not in error_patterns:
                                 error_patterns[pattern_key] = {
                                     'error': first_line[:200],
@@ -1525,7 +1401,6 @@ def code_review():
                             error_patterns[pattern_key]['count'] += 1
                             error_patterns[pattern_key]['papers'].add(err.get('paper_id', 'unknown'))
                 
-                # Sort by frequency and get top patterns
                 sorted_patterns = sorted(error_patterns.items(), key=lambda x: x[1]['count'], reverse=True)
                 common_errors_all_papers = [
                     {
@@ -1533,7 +1408,7 @@ def code_review():
                         'frequency': pattern_info['count'],
                         'affected_papers': len(pattern_info['papers'])
                     }
-                    for _, pattern_info in sorted_patterns[:20]  # Top 20 most common errors
+                    for _, pattern_info in sorted_patterns[:20]
                 ]
                 logger.info(f"Extracted {len(common_errors_all_papers)} common error patterns from all papers")
         except Exception as e:
@@ -1551,7 +1426,6 @@ def code_review():
                     similar_paper_ids = [p.get('_id') for p in similar_papers if p.get('_id')]
                     logger.info(f"Found {len(similar_paper_ids)} similar papers: {', '.join(similar_paper_ids)}")
                     
-                    # Get errors from similar papers
                     similar_paper_errors = get_errors_for_paper_ids(similar_paper_ids)
                     if similar_paper_errors:
                         logger.info(f"Retrieved {len(similar_paper_errors)} errors from similar papers")
@@ -1563,7 +1437,6 @@ def code_review():
         # If we have errors, fix the code with Bedrock
         if error_message or full_error_context:
             logger.info(f"Fixing code with Bedrock (iteration {iteration_num})...")
-            # Pass full error context instead of just the message
             fix_result = fix_code_with_bedrock(code, full_error_context or error_message, iteration_num, paper_id, errors_list, paper_summary, similar_paper_errors, common_errors_all_papers)
             
             if not fix_result or not fix_result.get("code"):
@@ -1587,7 +1460,7 @@ def code_review():
             
             # Update most recent error with fixes_applied
             fixes_applied = {
-                'iteration': iteration_num,  # Use iteration_num, not error_count
+                'iteration': iteration_num, 
                 'issues_found': [error_message[:200]],
                 'fixes': fixes_summary if isinstance(fixes_summary, list) else [fixes_summary],
                 'code_length_before': len(code),
@@ -1596,20 +1469,19 @@ def code_review():
             update_error_fixes(paper_id, fixes_applied)
             logger.info(f"Updated error record with fixes_applied for iteration {iteration_num}")
             
-            code = fixed_code  # Use fixed code for testing
+            code = fixed_code 
         else:
             logger.info(f"No errors to fix. Testing execution.")
         
 
         logger.info(f"Executing code with {MAX_EXECUTION_TIME}s for code review test (process will continue if no errors).")
-        # Pass iteration_num so execute_internal can pass it to /code_review when execution fails
         test_result = execute_internal(
             paper_id=paper_id,
             code=code,
             timeout=MAX_EXECUTION_TIME,
             should_send_slack=False,  
             should_trigger_review=True,
-            iteration_num=iteration_num  # Pass current iteration number
+            iteration_num=iteration_num 
         )
         
         if test_result.get('success') and test_result.get('status') == 'running':
@@ -1639,7 +1511,6 @@ def code_review():
 
 @app.route('/status/<paper_id>', methods=['GET'])
 def get_status(paper_id: str):
-    """Get execution status for a paper_id."""
     with execution_lock:
         if paper_id in running_executions:
             exec_info = running_executions[paper_id]
@@ -1651,7 +1522,6 @@ def get_status(paper_id: str):
                 "assumed_success": elapsed > SUCCESS_ASSUMPTION_TIME
             })
     
-    # Check if code exists in S3 (indicates execution completed)
     if code_exists(paper_id):
         errors = get_errors(paper_id)
         if errors:
@@ -1673,13 +1543,9 @@ def get_status(paper_id: str):
         "status": "not_found"
     }), 404
 
-
+# This is also mostly used for debugging purposes.
 @app.route('/notify/<paper_id>', methods=['POST'])
 def trigger_slack_notification(paper_id: str):
-    """
-    Manually trigger Slack notification for a paper.
-    Useful if notification was missed during execution.
-    """
     try:
         logger.info(f"Manually triggering Slack notification for {paper_id}")
         logger.info(f"OPENSEARCH_AVAILABLE: {OPENSEARCH_AVAILABLE}, SLACK_AVAILABLE: {SLACK_AVAILABLE}")
@@ -1693,8 +1559,6 @@ def trigger_slack_notification(paper_id: str):
                 "paper_id": paper_id
             }), 503
         
-        # Try to get execution result from S3 or reconstruct from status
-        # For now, create a basic success result
         execution_result = {
             "success": True,
             "execution_time": 0,
@@ -1704,7 +1568,6 @@ def trigger_slack_notification(paper_id: str):
             "error_message": ""
         }
         
-        # Use the module-level classes
         send_slack_notification(paper_id, execution_result)
         
         return jsonify({
@@ -1723,12 +1586,6 @@ def trigger_slack_notification(paper_id: str):
 
 
 def is_trainium_available() -> bool:
-    """
-    Check if Trainium is available (not currently executing papers).
-    
-    Returns:
-        True if Trainium is available (no running executions), False otherwise
-    """
     with execution_lock:
         current_executions = len(running_executions)
         is_available = current_executions < MAX_TRAINIUM_CONCURRENT
@@ -1737,16 +1594,11 @@ def is_trainium_available() -> bool:
 
 
 def poll_and_process_queue():
-    """
-    Poll the trainium-execution queue and process papers in batches.
-    Only processes if Trainium is available.
-    """
     if not sqs_client or not TRAINIUM_EXECUTION_QUEUE_URL:
         logger.warning("SQS client or queue URL not configured - queue polling disabled")
         return
     
     try:
-        # Check if Trainium is available
         if not is_trainium_available():
             logger.info("Trainium is busy - skipping queue poll")
             return
@@ -1757,8 +1609,8 @@ def poll_and_process_queue():
         response = sqs_client.receive_message(
             QueueUrl=TRAINIUM_EXECUTION_QUEUE_URL,
             MaxNumberOfMessages=batch_size,
-            WaitTimeSeconds=0,  # Short polling (no long polling to avoid blocking)
-            VisibilityTimeout=900  # 15 minutes (messages become visible again if not deleted)
+            WaitTimeSeconds=0, 
+            VisibilityTimeout=900
         )
         
         messages = response.get('Messages', [])
@@ -1771,7 +1623,6 @@ def poll_and_process_queue():
         # Process each paper sequentially
         for message in messages:
             try:
-                # Parse message body
                 body = json.loads(message['Body'])
                 paper_id = body.get('paper_id')
                 code = body.get('code')
@@ -1780,23 +1631,22 @@ def poll_and_process_queue():
                 
                 if not paper_id or not code:
                     logger.warning(f"Invalid message: missing paper_id or code")
-                    # Delete invalid message
                     sqs_client.delete_message(
                         QueueUrl=TRAINIUM_EXECUTION_QUEUE_URL,
                         ReceiptHandle=message['ReceiptHandle']
                     )
                     continue
                 
-                # Check Trainium availability before processing
                 if not is_trainium_available():
                     logger.info(f"Trainium became busy - stopping batch processing. Will retry {paper_id} later.")
-                    # Don't delete message - let it become visible again for retry
+                    # Don't delete message - let it become visible again for retry.
+                    # This shouldn't happen in practice due to the earlier is_trainium_available check, but this is just a cautionary measure..
                     break  # Stop processing remaining papers in this batch
                 
                 logger.info(f"Processing paper {paper_id} from queue")
                 
-                # Execute paper (this will handle code review internally if needed)
-                # NOTE: Do NOT clear errors here - we need to preserve iteration history
+                # This is mostly for testing purposes so if we test the same paper multiple times, the model doesn't become unnarturally good due to context from previous runs.
+                # In pracice, this doesn't do anything because the same paper is not enqueued multiple times.
                 clear_errors(paper_id)
 
                 result = execute_internal(
@@ -1805,12 +1655,11 @@ def poll_and_process_queue():
                     timeout=MAX_EXECUTION_TIME,
                     paper_title=paper_title,
                     slack_thread_ts=slack_thread_ts,
-                    should_send_slack=False,  # Initial execution - code review will handle final notification
+                    should_send_slack=False,
                     should_trigger_review=True
                 )
                 
                 # Delete message from queue after successful processing
-                # execute_internal returns status: "running" when execution starts successfully
                 if result.get('success') and result.get('status') == 'running':
                     sqs_client.delete_message(
                         QueueUrl=TRAINIUM_EXECUTION_QUEUE_URL,
@@ -1818,13 +1667,13 @@ def poll_and_process_queue():
                     )
                     logger.info(f"✅ Paper {paper_id} accepted for execution, message deleted from queue")
                 else:
+                    # Don't delete the message - let it retry. 
                     logger.warning(f"Paper {paper_id} execution not accepted: {result}")
-                    # Don't delete message - let it retry
+                    
                     
             except Exception as e:
                 logger.error(f"Error processing message from queue: {e}")
                 logger.error(traceback.format_exc())
-                # Don't delete message on error - let it retry
         
     except ClientError as e:
         logger.error(f"AWS error polling queue: {e}")
@@ -1835,10 +1684,6 @@ def poll_and_process_queue():
 
 @app.route('/poll-queue', methods=['POST'])
 def poll_queue_endpoint():
-    """
-    Endpoint to manually trigger queue polling.
-    Useful for testing or external triggers.
-    """
     try:
         poll_and_process_queue()
         return jsonify({
@@ -1855,9 +1700,6 @@ def poll_queue_endpoint():
 
 @app.route('/queue-status', methods=['GET'])
 def queue_status():
-    """
-    Get status of the execution queue.
-    """
     if not sqs_client or not TRAINIUM_EXECUTION_QUEUE_URL:
         return jsonify({
             "success": False,
@@ -1921,13 +1763,13 @@ if __name__ == '__main__':
             logger.error(f"❌ Cannot create log directory: {log_dir} - {e}")
             sys.exit(1)
         
-        # Print all environment variables (but not sensitive ones)
+        # Print all non-sensitive environment variables.
         logger.info("=" * 80)
         logger.info("Environment Variables:")
         logger.info("=" * 80)
         for key, value in sorted(os.environ.items()):
             # Mask sensitive values
-            if any(sensitive in key.lower() for sensitive in ['key', 'secret', 'token', 'password', 'credential']):
+            if any(sensitive in key.lower() for sensitive in ['key', 'secret', 'token', 'password', 'credential', 'arn']):
                 logger.info(f"{key}=***MASKED***")
             else:
                 logger.info(f"{key}={value}")
