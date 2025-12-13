@@ -33,47 +33,31 @@ class ChunkedPyTorchGenerator:
 
     def __init__(
         self,
-        batch_size: int = 8,
-        pages_per_pdf_chunk: int = 4,
-        use_smart_pdf_chunking: bool = True,
-        max_pdf_chunks: int = 15,
+        batch_size: int = 8,  # Number of chunk summaries to combine in each batch when recursively merging
+        pages_per_pdf_chunk: int = 4,  # Number of PDF pages per chunk when splitting the PDF
+        max_pdf_chunks: int = 15,  # Max number of PDF chunks to process
     ):
-        """
-        Initialize PDF chunked code generator
-        Currently uses claude 3 haiku
 
-        Args:
-            batch_size: Number of chunk summaries to combine in each batch for hierarchical summarization (default: 8)
-            pages_per_pdf_chunk: Number of pages per PDF chunk when processing PDFs (default: 2)
-            max_pdf_chunks: Maximum number of PDF chunks to process when using smart chunking (default: 15)
-        """
-
-        self.opensearch_client = OpenSearchClient()
+        self.opensearch_client = OpenSearchClient() 
         self.chunked_bedrock_client = ChunkedBedrockClient()
-        # Don't need bedrock for dataset rec
-        self.dataset_recommender = DatasetRecommender(bedrock_client=None)
+        self.dataset_recommender = DatasetRecommender(bedrock_client=self.chunked_bedrock_client)
 
         self.batch_size = batch_size
         self.pages_per_pdf_chunk = pages_per_pdf_chunk
-        self.use_smart_pdf_chunking = use_smart_pdf_chunking
         self.max_pdf_chunks = max_pdf_chunks
 
-        # Initialize PDF processor with classifier
         self.pdf_processor = PDFProcessor(
             aws_region=self.opensearch_client.aws_region,
-            use_classifier=True
+            use_classifier=True # classifier for page relevance
         )
         logger.info("PDF processor initialized - PDF document processing with classifier enabled")
 
         # Results directory for saving chunk results locally (gitignored)
         self.results_base_dir = Path(__file__).parent.parent / "results"
 
-        logger.info("Chunked PyTorch Code Generator initialized (PDF-only):")
-        logger.info("  - Model: Claude 3 Haiku (for all operations)")
-        logger.info(f"  - Batch size for hierarchical summarization: {batch_size}")
+        logger.info("Chunked PyTorch Code Generator initialized: ")
+        logger.info(f"  - Batch size for recursive merging: {batch_size}")
         logger.info(f"  - Pages per PDF chunk: {pages_per_pdf_chunk}")
-        logger.info(f"  - Smart PDF chunking: {use_smart_pdf_chunking} (max {max_pdf_chunks} chunks)")
-        logger.info("  - PDF vision processing: enabled")
 
     def _process_pdf_chunk(
         self,
@@ -86,24 +70,10 @@ class ChunkedPyTorchGenerator:
     ) -> Dict[str, Any]:
         """
         Process a single PDF chunk using PDF document input.
-
-        Args:
-            pdf_bytes: PDF file as bytes
-            page_start: Starting page number (0-indexed)
-            page_end: Ending page number (exclusive, 0-indexed)
-            chunk_number: Chunk number (1-indexed)
-            total_chunks: Total number of chunks
-            paper_summary: Paper summary
-
-        Returns:
-            Dictionary with chunk result
         """
         chunk_start = time.time()
         try:
-            # Extract PDF pages as a new PDF (containing only relevant pages)
-            base64_pdf = self.pdf_processor.process_pdf_chunk(
-                pdf_bytes, page_start, page_end
-            )
+            base64_pdf = self.pdf_processor.process_pdf_chunk(pdf_bytes, page_start, page_end)
 
             if not base64_pdf:
                 return {
@@ -113,7 +83,6 @@ class ChunkedPyTorchGenerator:
                     "processing_time": time.time() - chunk_start,
                 }
 
-            # Summarize using PDF document input
             result = self.chunked_bedrock_client.summarize_pdf_chunk(
                 base64_pdf=base64_pdf,
                 chunk_number=chunk_number,
@@ -155,18 +124,12 @@ class ChunkedPyTorchGenerator:
 
     def generate_code_for_paper(self, paper_id: str) -> Dict[str, Any]:
         """
-        Generate PyTorch code for a paper using chunked approach.
-
-        Args:
-            paper_id: OpenSearch document ID
-
-        Returns:
-            Dictionary containing generated code and metadata
+        Generate PyTorch code for a paper using chunked approach
         """
         start_time = time.time()
 
         try:
-            logger.info(f"Generating code for paper ID: {paper_id} (chunked approach)")
+            logger.info(f"Generating code for paper ID: {paper_id}")
 
             # Step 1: Retrieve paper from OpenSearch
             paper = self.opensearch_client.get_paper_by_id(paper_id)
@@ -177,16 +140,7 @@ class ChunkedPyTorchGenerator:
                     "paper_id": paper_id,
                 }
 
-            paper_summary = self.opensearch_client.get_paper_summary(paper)
-
-            # Check if paper is a PDF (required)
-            is_pdf = self.opensearch_client.is_pdf_paper(paper)
-            if not is_pdf:
-                return {
-                    "success": False,
-                    "error": f"Paper {paper_id} is not a PDF. PDF processing is required.",
-                    "paper_id": paper_id,
-                }
+            paper_summary = self.opensearch_client.get_paper_summary(paper) # summary of paper alrdy indexed in OpenSearch
 
             # Get PDF bytes
             pdf_bytes = self.opensearch_client.get_paper_pdf_bytes(paper)
@@ -197,8 +151,7 @@ class ChunkedPyTorchGenerator:
                     "paper_id": paper_id,
                 }
 
-            # Step 2: Split PDF into page chunks (using smart chunking to prioritize relevant sections)
-            # Smart chunking works by:
+            # Step 2: Split PDF into page chunks
             # 1. Analyzing each page for relevance (formulas, diagrams, key terms, section headers)
             # 2. Scoring pages (methodology=8pts, architecture=10pts, implementation=9pts, references=0pts)
             # 3. Selecting top N most relevant pages
@@ -206,7 +159,7 @@ class ChunkedPyTorchGenerator:
             pdf_chunks = self.pdf_processor.split_pdf_into_chunks(
                 pdf_bytes,
                 pages_per_chunk=self.pages_per_pdf_chunk,
-                use_smart_chunking=self.use_smart_pdf_chunking,
+                use_smart_chunking=True,
                 max_chunks=self.max_pdf_chunks,
             )
 
@@ -222,17 +175,14 @@ class ChunkedPyTorchGenerator:
                 f"({self.pages_per_pdf_chunk} pages per chunk)"
             )
 
-            # Step 3: Generate summaries for each PDF chunk using vision
+            # Step 3: Generate summaries for each PDF chunk
             chunk_summaries: List[str] = []
             chunk_results: List[Dict[str, Any]] = []
             num_chunks = len(pdf_chunks)
 
             if num_chunks > 0:
                 initial_delay = self.chunked_bedrock_client.chunk_delay
-                logger.info(
-                    f"Waiting {initial_delay}s before starting PDF chunk processing "
-                    "(throttling mitigation)..."
-                )
+                logger.info(f"Waiting {initial_delay}s before starting PDF chunk processing")
                 time.sleep(initial_delay)
 
             for i, (page_start, page_end) in enumerate(pdf_chunks, 1):
@@ -248,12 +198,11 @@ class ChunkedPyTorchGenerator:
                 if result.get("success"):
                     chunk_summaries.append(result["summary"])
                     logger.info(
-                        f"✅ PDF Chunk {i} summarized ({result['summary_length']:,} chars, "
-                        f"pages {result.get('pages', 'N/A')})"
+                        f"PDF Chunk {i} summarized ({result['summary_length']:,} chars "
                     )
                 else:
                     logger.error(
-                        f"❌ PDF Chunk {i} summarization failed: {result.get('error')}"
+                        f"PDF Chunk {i} summarization failed: {result.get('error')}"
                     )
 
                 chunk_results.append(result)
@@ -280,26 +229,21 @@ class ChunkedPyTorchGenerator:
                 }
 
             logger.info(
-                f"✅ Generated {successful_chunks}/{num_chunks} chunk summaries"
+                f"Generated {successful_chunks}/{num_chunks} chunk summaries"
             )
 
             # Save chunk results locally to results folder (gitignored)
             self._save_chunk_results(paper_id, chunk_results, chunk_summaries)
 
-            # Get dataset recommendations using chunk summaries for better context
-            # Combine first few chunk summaries (usually contain abstract, intro, methods)
             context_for_dataset = paper_summary
             if chunk_summaries:
-                # Use first 3-5 chunk summaries (typically contain methods, datasets, domain info)
                 early_chunks = "\n\n".join(
                     chunk_summaries[: min(5, len(chunk_summaries))]
                 )
-                context_for_dataset = (
-                    f"{paper_summary}\n\nAdditional Context from Paper:\n{early_chunks}"
-                )
+                context_for_dataset = (f"{paper_summary}\n\nAdditional Context from Paper:\n{early_chunks}")
 
             dataset_recommendations = self.dataset_recommender.recommend_datasets(
-                paper, context_for_dataset, use_llm=False
+                paper, context_for_dataset, use_llm=True
             )
             logger.info(
                 "Recommended datasets: "
@@ -322,13 +266,10 @@ class ChunkedPyTorchGenerator:
                     "chunk_results": chunk_results,
                 }
 
-            logger.info(
-                f"✅ Generated {len(batch_summaries)} batch summaries from "
-                f"{len(chunk_summaries)} chunk summaries"
-            )
+            logger.info(f"Generated {len(batch_summaries)} batch summaries")
 
             # Step 5b: Generate final code from batch summaries
-            logger.info("Stage 5b: Generating final PyTorch code from batch summaries...")
+            logger.info("Stage 5b: Generating final PyTorch code")
             final_start = time.time()
 
             try:
@@ -346,9 +287,7 @@ class ChunkedPyTorchGenerator:
                         "chunk_results": chunk_results,
                     }
 
-                logger.info(
-                    f"✅ Final code generated ({len(final_result['code']):,} chars)"
-                )
+                logger.info(f"✅ Final code generated ({len(final_result['code']):,} chars)")
 
                 # Combine results - code review happens separately in pipeline/lambda handler
                 result: Dict[str, Any] = {
@@ -378,10 +317,7 @@ class ChunkedPyTorchGenerator:
                     "final_generation_time": time.time() - final_start,
                 }
 
-                logger.info(
-                    "✅ Successfully generated code using chunked approach "
-                    f"(total time: {result['total_generation_time']:.1f}s)"
-                )
+                logger.info(f"Successfully generated code in {result['total_generation_time']:.1f}s")
                 return result
 
             except Exception as e:
@@ -405,14 +341,7 @@ class ChunkedPyTorchGenerator:
         self, chunk_summaries: List[str], paper_summary: str
     ) -> List[str]:
         """
-        Summarize chunk summaries into batches (hierarchical summarization stage 2).
-
-        Args:
-            chunk_summaries: List of individual chunk summaries
-            paper_summary: Overall paper summary
-
-        Returns:
-            List of batch summaries
+        Summarize chunk summaries into batches. Returns: List of batch summaries
         """
         if not chunk_summaries:
             return []
@@ -424,14 +353,11 @@ class ChunkedPyTorchGenerator:
             batches.append(batch)
 
         total_batches = len(batches)
-        logger.info(
-            f"Grouped {len(chunk_summaries)} chunk summaries into {total_batches} batches"
-        )
 
         batch_summaries: List[str] = []
         for i, batch in enumerate(batches, 1):
             logger.info(
-                f"Summarizing batch {i}/{total_batches} ({len(batch)} chunk summaries)..."
+                f"Summarizing batch {i}/{total_batches} ({len(batch)} chunk summaries)"
             )
             batch_start = time.time()
 
@@ -446,19 +372,18 @@ class ChunkedPyTorchGenerator:
                 if result.get("success"):
                     batch_summaries.append(result["summary"])
                     logger.info(
-                        f"✅ Batch {i} summarized "
+                        f"Batch {i} summarized "
                         f"({len(result['summary']):,} chars, {time.time() - batch_start:.1f}s)"
                     )
                 else:
                     logger.error(
-                        f"❌ Batch {i} summarization failed: {result.get('error')}"
+                        f"Batch {i} summarization failed: {result.get('error')}"
                     )
-                    # Continue with other batches even if one fails
 
             except Exception as e:
                 logger.error(f"Error summarizing batch {i}: {e}")
 
-            # Add delay between batches to avoid throttling
+            # delay between batches to avoid throttling
             if i < total_batches:
                 delay = self.chunked_bedrock_client.chunk_delay
                 logger.info(
@@ -469,26 +394,19 @@ class ChunkedPyTorchGenerator:
 
         return batch_summaries
 
+    # IGNORE (Only used locally and for testing)
     def _save_chunk_results(
         self, paper_id: str, chunk_results: List[Dict[str, Any]], chunk_summaries: List[str]
     ) -> None:
         """
         Save chunk results to results directory locally (gitignored).
-
-        Args:
-            paper_id: Paper ID
-            chunk_results: List of chunk result dictionaries
-            chunk_summaries: List of chunk summary texts
         """
         try:
-            # Create chunk-results directory
             chunk_results_dir = self.results_base_dir / paper_id / "chunk-results"
             chunk_results_dir.mkdir(parents=True, exist_ok=True)
 
-            # Save individual chunk results with summaries
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-            # Save all chunk results in one file
             all_chunks_file = chunk_results_dir / f"{paper_id}_all_chunks_{timestamp}.json"
             chunk_data: Dict[str, Any] = {
                 "paper_id": paper_id,
@@ -500,7 +418,6 @@ class ChunkedPyTorchGenerator:
                 "chunks": [],
             }
 
-            # Combine chunk results with their summaries
             summary_idx = 0
             for chunk_result in chunk_results:
                 chunk_data_entry = chunk_result.copy()
@@ -514,7 +431,6 @@ class ChunkedPyTorchGenerator:
 
             logger.info(f"Saved chunk results to {all_chunks_file}")
 
-            # Also save individual chunk files for easier inspection
             for i, chunk_result in enumerate(chunk_results, 1):
                 if chunk_result.get("success") and i <= len(chunk_summaries):
                     chunk_file = (
@@ -532,167 +448,4 @@ class ChunkedPyTorchGenerator:
 
         except Exception as e:
             logger.warning(f"Failed to save chunk results: {e}")
-            # Don't fail the whole process if saving fails
-
-    def generate_code_for_papers(self, paper_ids: List[str]) -> Dict[str, Any]:
-        """
-        Generate PyTorch code for multiple papers using chunked approach.
-
-        Args:
-            paper_ids: List of OpenSearch document IDs
-
-        Returns:
-            Dictionary containing results for all papers
-        """
-        results: Dict[str, Any] = {
-            "success": True,
-            "total_papers": len(paper_ids),
-            "successful_generations": 0,
-            "failed_generations": 0,
-            "results": [],
-            "generated_at": datetime.now().isoformat(),
-        }
-
-        for paper_id in paper_ids:
-            result = self.generate_code_for_paper(paper_id)
-            results["results"].append(result)
-
-            if result.get("success"):
-                results["successful_generations"] += 1
-            else:
-                results["failed_generations"] += 1
-
-        logger.info(
-            "Generated code for "
-            f"{results['successful_generations']}/{results['total_papers']} papers"
-        )
-        return results
-
-    def search_and_generate_code(
-        self, search_query: Dict[str, Any], max_papers: int = 5, include_full_content: bool = True
-    ) -> Dict[str, Any]:
-        """
-        Search for papers and generate code for the results using chunked approach.
-
-        Args:
-            search_query: OpenSearch query DSL
-            max_papers: Maximum number of papers to process
-            include_full_content: Ignored (chunked approach always processes full content when available)
-
-        Returns:
-            Dictionary containing search results and generated code
-        """
-        try:
-            logger.info(f"Searching for papers with query: {search_query}")
-
-            # Search for papers
-            papers = self.opensearch_client.search_papers(search_query, max_papers)
-
-            if not papers:
-                return {
-                    "success": False,
-                    "error": "No papers found matching the search criteria",
-                    "search_query": search_query,
-                }
-
-            # Extract paper IDs
-            paper_ids = [paper.get("_id") for paper in papers if paper.get("_id")]
-
-            # Generate code for found papers
-            results = self.generate_code_for_papers(paper_ids)
-
-            # Add search metadata
-            results.update(
-                {
-                    "search_query": search_query,
-                    "papers_found": len(papers),
-                    "papers_processed": len(paper_ids),
-                }
-            )
-
-            return results
-
-        except Exception as e:
-            logger.error(f"Error in search and generate: {e}")
-            return {
-                "success": False,
-                "error": f"Error: {str(e)}",
-                "search_query": search_query,
-            }
-
-    def generate_code_by_title(
-        self, title: str, max_papers: int = 3, include_full_content: bool = True
-    ) -> Dict[str, Any]:
-        """
-        Generate code for papers matching a title using chunked approach.
-
-        Args:
-            title: Paper title to search for
-            max_papers: Maximum number of papers to process
-            include_full_content: Ignored (chunked approach always processes full content when available)
-
-        Returns:
-            Dictionary containing generated code and metadata
-        """
-        search_query = {"match": {"title": title}}
-        return self.search_and_generate_code(search_query, max_papers, include_full_content)
-
-    def generate_code_by_author(
-        self, author: str, max_papers: int = 5, include_full_content: bool = True
-    ) -> Dict[str, Any]:
-        """
-        Generate code for papers by a specific author using chunked approach.
-
-        Args:
-            author: Author name to search for
-            max_papers: Maximum number of papers to process
-            include_full_content: Ignored (chunked approach always processes full content when available)
-
-        Returns:
-            Dictionary containing generated code and metadata
-        """
-        search_query = {"match": {"authors": author}}
-        return self.search_and_generate_code(search_query, max_papers, include_full_content)
-
-    def generate_code_by_keywords(
-        self, keywords: str, max_papers: int = 5, include_full_content: bool = True
-    ) -> Dict[str, Any]:
-        """
-        Generate code for papers matching abstract keywords using chunked approach.
-
-        Args:
-            keywords: Keywords to search in abstract
-            max_papers: Maximum number of papers to process
-            include_full_content: Ignored (chunked approach always processes full content when available)
-
-        Returns:
-            Dictionary containing generated code and metadata
-        """
-        search_query = {"match": {"abstract": keywords}}
-        return self.search_and_generate_code(search_query, max_papers, include_full_content)
-
-    def generate_code_for_recent_papers(
-        self, days: int = 30, max_papers: int = 10, include_full_content: bool = True
-    ) -> Dict[str, Any]:
-        """
-        Generate code for recently ingested papers using chunked approach.
-
-        Args:
-            days: Number of days to look back
-            max_papers: Maximum number of papers to process
-            include_full_content: Ignored (chunked approach always processes full content when available)
-
-        Returns:
-            Dictionary containing generated code and metadata
-        """
-        search_query = {
-            "range": {
-                "ingested_at": {
-                    "gte": f"now-{days}d",
-                }
-            }
-        }
-        return self.search_and_generate_code(search_query, max_papers, include_full_content)
-
-
 

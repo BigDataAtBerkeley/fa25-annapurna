@@ -774,7 +774,6 @@ def main():
     logger.info("Initializing Chunked PyTorch Code Generator (PDF-only with smart chunking)...")
     generator = ChunkedPyTorchGenerator(
         batch_size=8,  # Group 8 chunk summaries into each batch for hierarchical summarization
-        use_smart_pdf_chunking=True,  # Enable smart chunking to prioritize relevant sections (filters appendix)
         max_pdf_chunks=15,  # Maximum number of PDF chunks to process (prioritizes abstract, formulas, diagrams)
         pages_per_pdf_chunk=2  # 2 pages per PDF chunk
     )
