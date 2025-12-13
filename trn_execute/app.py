@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""
-Trainium Executor Service v2
-
-New architecture:
-- /execute: Executes code, saves errors to DB on failure, calls /code_review
-- /code_review: Reads errors from DB, fixes code, saves to S3, re-calls /execute
-- Errors stored in database (not in-memory)
-- Code stored in S3 bucket papers-code-artifacts
-"""
-
 import sys
 import os
 
@@ -54,11 +44,9 @@ from s3_code_storage import save_code, get_code, code_exists
 
 app = Flask(__name__)
 
-# Configure logging with fallback if log directory can't be created
 log_dir = os.path.join(os.path.expanduser('~'), 'trainium-executor', 'logs')
 log_file = os.path.join(log_dir, 'trainium-executor.log')
 
-# Try to create log directory, but don't fail if it doesn't work
 try:
     os.makedirs(log_dir, exist_ok=True)
     handlers = [
@@ -78,8 +66,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import Slack, OpenSearch, and SageMaker metrics modules
-
+# Attempt to Configure Slack, OpenSearch, and SageMaker metrics modules
 try:
     from slack_notifier import SlackNotifier
     SLACK_AVAILABLE = True
@@ -136,13 +123,12 @@ os.makedirs(WORKING_DIR, exist_ok=True)
 os.makedirs(DATASET_CACHE_DIR, exist_ok=True)
 os.makedirs(PROFILER_OUTPUT_DIR, exist_ok=True)
 
-# Track running executions (for 5-minute success assumption)
+# Track running executions
 running_executions = {}
 execution_lock = threading.Lock()
 
-# Track papers that have already sent final execution notifications (prevent duplicates)
+# Track papers that have already had slack notifications sent
 execution_notifications_sent = set()
-# Track papers that have already sent final code review notifications (prevent duplicates)
 final_code_notifications_sent = set()
 notification_lock = threading.Lock()
 
@@ -150,19 +136,6 @@ notification_lock = threading.Lock()
 sqs_client = boto3.client('sqs', region_name=AWS_REGION) if TRAINIUM_EXECUTION_QUEUE_URL else None
 
 def convert_to_perfetto_format(profiler_path: str) -> bool:
-    """
-    Convert neuron-profile trace files to Perfetto format (.pftrace).
-    
-    The profiler generates .pb files (like ntrace.pb), which need to be converted
-    to .pftrace format for Perfetto UI. This function runs neuron-profile view
-    to perform the conversion.
-    
-    Args:
-        profiler_path: Path to the profiler output directory
-        
-    Returns:
-        True if conversion succeeded, False otherwise
-    """
     if not os.path.exists(profiler_path):
         logger.warning(f"Profiler path does not exist: {profiler_path}")
         return False
@@ -240,13 +213,6 @@ def convert_to_perfetto_format(profiler_path: str) -> bool:
 
 
 def collect_profiler_artifacts(paper_id: str, profiler_path: str) -> Dict[str, Any]:
-    """
-    Collect and upload profiler artifacts to S3.
-    Converts trace files to Perfetto format before uploading.
-    
-    Returns:
-        Dictionary with profiler information including uploaded files and S3 location
-    """
     if not os.path.exists(profiler_path):
         return {}
     
@@ -258,13 +224,12 @@ def collect_profiler_artifacts(paper_id: str, profiler_path: str) -> Dict[str, A
     }
     
     try:
-        # Convert trace files to Perfetto format first
         convert_to_perfetto_format(profiler_path)
         
         s3_client = boto3.client('s3')
         uploaded_files = []
         
-        # Collect all files and prioritize .pftrace files for Perfetto
+        # Collect all files and prioritize .pftrace files
         pftrace_file = None
         for root, dirs, files in os.walk(profiler_path):
             for file in files:
@@ -273,17 +238,13 @@ def collect_profiler_artifacts(paper_id: str, profiler_path: str) -> Dict[str, A
                 s3_client.upload_file(local_path, RESULTS_BUCKET, s3_key)
                 uploaded_files.append(file)
                 
-                # Prioritize .pftrace files (converted Perfetto format)
-                # Fall back to .pb files if conversion didn't produce .pftrace
                 if file.endswith('.pftrace'):
                     pftrace_file = file
                 elif not pftrace_file and (file.endswith('.perfetto') or 'perfetto' in file.lower()):
                     pftrace_file = file
                 elif not pftrace_file and file == 'ntrace.pb':
-                    # ntrace.pb might be usable in Perfetto, but prefer converted .pftrace
                     pftrace_file = file
         
-        # Set the perfetto file (prefer .pftrace, fall back to others)
         if pftrace_file:
             profiler_info['perfetto_file'] = pftrace_file
             logger.info(f"Found Perfetto-compatible file: {pftrace_file}")
@@ -312,7 +273,6 @@ def collect_profiler_artifacts(paper_id: str, profiler_path: str) -> Dict[str, A
         return {}
 
 def upload_execution_results(paper_id: str, result: Dict[str, Any], executed_on_trn: bool = False):
-    """Upload execution results to S3 and update OpenSearch."""
     try:
         # Upload to S3
         s3_client = boto3.client('s3')
@@ -374,15 +334,6 @@ def upload_execution_results(paper_id: str, result: Dict[str, Any], executed_on_
         
 
 def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thread_ts: Optional[str] = None):
-    """
-    Send Slack notification with paper info, execution results, and code links.
-    Excludes embeddings and other large binary fields.
-    
-    Args:
-        paper_id: Paper/document ID
-        execution_result: Execution result dictionary
-        thread_ts: Optional Slack thread timestamp to reply in thread
-    """
     if not SLACK_AVAILABLE or not OPENSEARCH_AVAILABLE:
         logger.warning(f"Slack/OpenSearch not available - skipping notification for {paper_id}")
         logger.warning(f"SLACK_AVAILABLE: {SLACK_AVAILABLE}, OPENSEARCH_AVAILABLE: {OPENSEARCH_AVAILABLE}")
@@ -410,9 +361,6 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
         stored_execution_time = paper.get('execution_time_seconds', 0)
         stored_execution_completed_at = paper.get('execution_completed_at')
         
-        # If OpenSearch has execution results with same execution time and completion timestamp,
-        # check if it was completed recently. Only skip if it was completed more than 5 minutes ago
-        # (allows retries for recent notification failures)
         if stored_execution_completed_at and abs(current_execution_time - stored_execution_time) < 0.1:
             try:
                 completed_time = datetime.fromisoformat(stored_execution_completed_at.replace('Z', '+00:00'))
@@ -426,20 +374,17 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
             except Exception as e:
                 logger.warning(f"Could not parse completion time, sending notification anyway: {e}")
         
-        # If thread_ts not provided, try to get it from OpenSearch
         if not thread_ts:
             thread_ts = paper.get('slack_thread_ts')
             if thread_ts:
                 logger.info(f"Retrieved slack_thread_ts from OpenSearch for {paper_id}: {thread_ts}")
         
-        # Filter out embeddings and other large binary fields
         fields_to_exclude = {
             'embedding', 'embeddings', 'vector', 'vectors', 
             'pdf_bytes', 'pdf_content', 'raw_content',
-            's3_bucket', 's3_key'  # We'll add formatted S3 link instead
+            's3_bucket', 's3_key' 
         }
         
-        # Create filtered paper dict with key fields
         filtered_paper = {
             '_id': paper_id,
             'title': paper.get('title', 'Unknown Title'),
@@ -451,22 +396,18 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
             'arxiv_id': paper.get('arxiv_id', ''),
         }
         
-        # Add other non-excluded fields
         for key, value in paper.items():
             if key not in fields_to_exclude and key not in filtered_paper:
-                # Skip very large fields
                 if isinstance(value, str) and len(value) > 2000:
                     continue
                 if isinstance(value, (dict, list)) and len(str(value)) > 2000:
                     continue
                 filtered_paper[key] = value
         
-        # Add execution result info
         filtered_paper['execution_success'] = execution_result.get('success', False)
         filtered_paper['execution_time_seconds'] = round(execution_result.get('execution_time', 0), 2)
         filtered_paper['execution_return_code'] = execution_result.get('return_code', -1)
         
-        # Add execution details
         if execution_result.get('success'):
             filtered_paper['execution_status'] = '✅ SUCCESS'
             if execution_result.get('stdout'):
@@ -479,16 +420,14 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
                 stderr_preview = execution_result.get('stderr', '')[:1000]
                 filtered_paper['execution_stderr_preview'] = stderr_preview + ('...' if len(execution_result.get('stderr', '')) > 1000 else '')
         
-        # Add S3 code link
+        
         code_s3_key = f"code/{paper_id}.py"
         filtered_paper['code_s3_location'] = f"s3://papers-code-artifacts/{code_s3_key}"
         filtered_paper['code_s3_url'] = f"https://s3.console.aws.amazon.com/s3/object/papers-code-artifacts?prefix={code_s3_key}"
         
-        # Add execution results S3 link if available
         if execution_result.get('s3_results_key'):
             filtered_paper['results_s3_location'] = execution_result.get('s3_results_key')
         
-        # Add profiler information if available
         profiler_info = execution_result.get('profiler', {})
         if profiler_info and profiler_info.get('profiler_enabled'):
             filtered_paper['profiler_enabled'] = True
@@ -496,7 +435,6 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
             filtered_paper['profiler_files'] = profiler_info.get('profiler_files', [])
             if profiler_info.get('perfetto_file'):
                 filtered_paper['profiler_perfetto_file'] = profiler_info.get('perfetto_file')
-                # Add S3 link for profiler files
                 profiler_s3_prefix = f"s3://{RESULTS_BUCKET}/profiler/{paper_id}/"
                 filtered_paper['profiler_s3_location'] = profiler_s3_prefix
         
@@ -513,12 +451,7 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
 
     
 def cleanup_stale_neuron_processes():
-    """
-    Kill stale Python processes that might be holding Neuron cores.
-    This prevents "Logical Neuron Core(s) not available" errors.
-    """
     try:
-        # Find Python processes using Neuron
         result = subprocess.run(
             ['ps', 'aux'],
             capture_output=True,
@@ -534,7 +467,6 @@ def cleanup_stale_neuron_processes():
         neuron_processes = []
         
         for line in lines:
-            # Look for Python processes that might be using Neuron
             if 'python' in line.lower() and ('neuron' in line.lower() or '/tmp/trainium_exec_' in line):
                 parts = line.split()
                 if len(parts) >= 2:
@@ -567,24 +499,8 @@ def execute_code_sync(paper_id: str, code: str, timeout: int, paper_title: Optio
     """
     Execute code synchronously (blocking).
     This is the core execution function used by both /execute and /code_review.
-    
-    Process Management:
-    - Cleans up stale Neuron processes before execution
-    - Uses start_new_session=True to create a new process group
-    - When timeout is reached, subprocess.run() kills the entire process group
-    - This ensures all child processes are properly terminated
-    - Only ONE execution runs at a time per paper_id (synchronous/blocking)
-    
-    Args:
-        paper_id: Paper/document ID (code review tests use {paper_id}_review_test)
-        code: Python code to execute
-        timeout: Maximum execution time (process is killed if exceeded)
-        paper_title: Paper title (optional)
-        
-    Returns:
-        Execution result dictionary
     """
-    # Clean up stale processes before execution to free Neuron cores
+    # Clean up old processes before execution to free Neuron cores
     cleanup_stale_neuron_processes()
     
     exec_dir = tempfile.mkdtemp(prefix=f'trainium_exec_{paper_id}_', dir='/tmp')
@@ -657,14 +573,11 @@ sys.path.append('{exec_dir}')
             'DATASET_CACHE_DIR': DATASET_CACHE_DIR,
             'PYTHONDONTWRITEBYTECODE': '1',
             'NEURON_RT_LOG_LEVEL': 'ERROR',
-            'NEURON_RETRY_FAILED_COMPILATION': '1',  # Retry failed compilations instead of using cached failures
-            # Explicitly prevent multiple core requests - only 1 core available
-            'NEURON_RT_NUM_CORES': '1',  # Force single-core allocation
-            # HuggingFace token (optional - only needed for private models or rate limit issues)
-            'HUGGINGFACE_HUB_TOKEN': os.getenv('HUGGINGFACE_HUB_TOKEN', '')  # Allow HF downloads for fine-tuning
+            'NEURON_RETRY_FAILED_COMPILATION': '1',  
+            'NEURON_RT_NUM_CORES': '1', 
+            'HUGGINGFACE_HUB_TOKEN': os.getenv('HUGGINGFACE_HUB_TOKEN', '')  
         }
         
-        # Build command
         if NEURON_PROFILER_ENABLED and profiler_output_path:
             neuron_profile_cmd = '/opt/aws/neuron/bin/neuron-profile'
             if os.path.exists(neuron_profile_cmd):
@@ -689,9 +602,6 @@ sys.path.append('{exec_dir}')
         
         logger.info(f"Executing code for {paper_id} (timeout: {timeout}s)")
         
-        # Execute with process group to ensure child processes are killed on timeout
-        # Use start_new_session=True to create a new process group
-        # This ensures all child processes are killed when the parent is killed
         result = subprocess.run(
             cmd,
             cwd='/tmp',
@@ -1327,18 +1237,6 @@ def execute_internal(paper_id: str, code: str, timeout: int, paper_title: Option
     # Start execution in background
     thread = threading.Thread(target=execute_and_handle, daemon=True)
     thread.start()
-    
-    # Check if execution is still running after SUCCESS_ASSUMPTION_TIME
-    def check_success_assumption():
-        time.sleep(SUCCESS_ASSUMPTION_TIME)
-        with execution_lock:
-            if paper_id in running_executions:
-                # Still running after 5 minutes - assume success
-                logger.info(f"Execution for {paper_id} running > {SUCCESS_ASSUMPTION_TIME}s, assuming success")
-    
-    # Start success assumption check in background
-    check_thread = threading.Thread(target=check_success_assumption, daemon=True)
-    check_thread.start()
     
     # Return status
     return {
