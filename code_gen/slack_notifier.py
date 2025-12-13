@@ -103,69 +103,30 @@ class SlackNotifier:
                 ]
             })
         
-        # Abstract (truncated)
+        # Abstract (full, not truncated)
         abstract = paper.get('abstract', '')
         if abstract:
-            abstract_preview = abstract[:500] + "..." if len(abstract) > 500 else abstract
             blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*Abstract:*\n{abstract_preview}"
+                    "text": f"*Abstract:*\n{abstract}"
                 }
             })
         
-        # Exclude error fields from old runs (only show current/clean metadata)
-        other_fields = {}
-        known_fields = {'title', 'authors', 'abstract', '_id', 's3_bucket', 's3_key', 
-                       'abstract_embedding', 'sha_abstract', 'title_normalized'}
-        # Exclude error-related fields from initial message
-        error_fields = {'has_errors', 'error_message', 'error_type', 'errors', 'tested', 
-                       'code_generated', 'code_s3_key', 'code_s3_bucket', 'code_generated_at'}
         
-        for key, value in paper.items():
-            if key not in known_fields and key not in error_fields:
-                # Format the value
-                if isinstance(value, (dict, list)):
-                    value_str = json.dumps(value, indent=2)[:200]
-                    if len(json.dumps(value, indent=2)) > 200:
-                        value_str += "..."
-                elif isinstance(value, str) and len(value) > 200:
-                    value_str = value[:200] + "..."
-                else:
-                    value_str = str(value)
-                
-                other_fields[key] = value_str
-        
-        if other_fields:
-
-            fields_list = []
-            for key, value in other_fields.items():
-                fields_list.append({
-                    "type": "mrkdwn",
-                    "text": f"*{key}:*\n{value}"
-                })
-            
-            # Split into sections of 2 fields each (Slack limit per section)
-            for i in range(0, len(fields_list), 2):
-                section_fields = fields_list[i:i+2]
-                blocks.append({
-                    "type": "section",
-                    "fields": section_fields
-                })
-        
-        # S3 information if available
+        # S3 information if available - make it clickable like other S3 links
         s3_bucket = paper.get('s3_bucket')
         s3_key = paper.get('s3_key')
         if s3_bucket and s3_key:
+            # Create clickable S3 console URL (correct format for specific object)
+            s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{s3_bucket}/{s3_key}"
             blocks.append({
                 "type": "section",
-                "fields": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*S3 Location:*\n`s3://{s3_bucket}/{s3_key}`"
-                    }
-                ]
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*📄 Paper PDF:*\n<{s3_console_url}|View in S3 Console>"
+                }
             })
         
         return blocks
@@ -277,17 +238,14 @@ class SlackNotifier:
             
             blocks.append({"type": "divider"})
             
-            # Code generation details
-            fields = [
-                {
+            # Code generation details (no Paper ID)
+            fields = []
+            
+            if recommended_dataset:
+                fields.append({
                     "type": "mrkdwn",
-                    "text": f"*Paper ID:*\n`{paper_id}`"
-                },
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Code Length:*\n{code_length:,} characters"
-                }
-            ]
+                    "text": f"*Recommended Dataset:*\n{recommended_dataset}"
+                })
             
             if model_used:
                 fields.append({
@@ -295,11 +253,10 @@ class SlackNotifier:
                     "text": f"*Model:*\n{model_used}"
                 })
             
-            if recommended_dataset:
-                fields.append({
-                    "type": "mrkdwn",
-                    "text": f"*Recommended Dataset:*\n{recommended_dataset}"
-                })
+            fields.append({
+                "type": "mrkdwn",
+                "text": f"*Code Length:*\n{code_length:,} characters"
+            })
             
             # Split into sections of 2 fields each
             for i in range(0, len(fields), 2):
@@ -312,16 +269,13 @@ class SlackNotifier:
             # S3 link if available
             if code_s3_key:
                 code_s3_bucket = os.getenv('CODE_BUCKET', 'papers-code-artifacts')
-                aws_region = os.getenv('AWS_REGION', 'us-east-1')
-                # Create clickable S3 console URL
-                s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{code_s3_bucket}?prefix={code_s3_key}"
-                # Also show the s3:// path for reference
-                s3_path = f"s3://{code_s3_bucket}/{code_s3_key}"
+                # Create clickable S3 console URL (correct format for specific object)
+                s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{code_s3_bucket}/{code_s3_key}"
                 blocks.append({
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*Code Location:*\n<{s3_console_url}|View in S3 Console>\n`{s3_path}`"
+                        "text": f"*📄 Code Location:*\n<{s3_console_url}|View in S3 Console>"
                     }
                 })
             
@@ -410,22 +364,6 @@ class SlackNotifier:
             
             blocks.append({"type": "divider"})
             
-            # Paper ID
-            paper_id = paper.get('_id', 'Unknown ID')
-            blocks.append({
-                "type": "section",
-                "fields": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*Paper ID:*\n`{paper_id}`"
-                    },
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*Status:*\n{execution_status}"
-                    }
-                ]
-            })
-            
             # Execution details
             exec_time = paper.get('execution_time_seconds', 0)
             return_code = paper.get('execution_return_code', -1)
@@ -443,31 +381,6 @@ class SlackNotifier:
                 ]
             })
             
-            # Authors
-            authors = paper.get('authors', [])
-            if authors:
-                authors_text = ", ".join(authors[:3])  # Limit to first 3 authors
-                if len(authors) > 3:
-                    authors_text += f" (+{len(authors) - 3} more)"
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*Authors:* {authors_text}"
-                    }
-                })
-            
-            # Abstract (truncated)
-            abstract = paper.get('abstract', '')
-            if abstract:
-                abstract_preview = abstract[:300] + "..." if len(abstract) > 300 else abstract
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*Abstract:*\n{abstract_preview}"
-                    }
-                })
             
             # Execution error details (if failed)
             if not execution_result.get('success'):
@@ -499,16 +412,30 @@ class SlackNotifier:
                         }
                     })
             
-            # Code S3 link
+            # Code S3 link - construct from code_s3_key or code_s3_location
+            code_s3_key = paper.get('code_s3_key', '')
             code_s3_location = paper.get('code_s3_location', '')
-            if code_s3_location:
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*📄 Code Location:*\n<{paper.get('code_s3_url', '')}|{code_s3_location}>"
-                    }
-                })
+            if code_s3_key or code_s3_location:
+                # Extract bucket and key from code_s3_location if available, otherwise use code_s3_key
+                if code_s3_location and code_s3_location.startswith('s3://'):
+                    s3_path = code_s3_location[5:]  # Remove 's3://'
+                    bucket, key = s3_path.split('/', 1) if '/' in s3_path else (s3_path, '')
+                elif code_s3_key:
+                    bucket = os.getenv('CODE_BUCKET', 'papers-code-artifacts')
+                    key = code_s3_key
+                else:
+                    bucket = None
+                    key = None
+                
+                if bucket and key:
+                    s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{bucket}/{key}"
+                    blocks.append({
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*📄 Code Location:*\n<{s3_console_url}|View in S3 Console>"
+                        }
+                    })
             
             # Results S3 link (if available)
             if paper.get('results_s3_location'):
@@ -518,18 +445,6 @@ class SlackNotifier:
                         "type": "mrkdwn",
                         "text": f"*📊 Results Location:*\n`{paper['results_s3_location']}`"
                     }
-                })
-            
-            # Additional paper metadata
-            if paper.get('venue'):
-                blocks.append({
-                    "type": "section",
-                    "fields": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"*Venue:*\n{paper['venue']}"
-                        }
-                    ]
                 })
             
             if paper.get('url'):

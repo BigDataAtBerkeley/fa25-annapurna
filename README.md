@@ -484,6 +484,78 @@ aws ec2 describe-instances \
 - `"Failed to"` or `"Error"` - Issues to investigate
 - `METRICS:` lines - Training metrics being extracted
 
+### Viewing Profiler Trace Files in Perfetto
+
+When code executes successfully on Trainium, profiler artifacts (trace files) are automatically collected and uploaded to S3. These can be viewed in the Perfetto UI for performance analysis.
+
+**Location of Trace Files:**
+- **S3**: `s3://trainium-execution-results/profiler/{paper_id}/`
+- **Local (temporary)**: `/tmp/neuron_profiler/{paper_id}_{timestamp}/` (may be cleaned up)
+
+**Files Generated:**
+- `ntrace.pb` - Main neuron trace file (large, ~100MB+)
+- `cpu_util.pb` - CPU utilization trace
+- `host_mem.pb` - Host memory trace
+- `trace_info.pb` - Trace metadata
+- `system_profile.pftrace` - Converted Perfetto format (created after conversion)
+
+**Step 1: Download Trace Files from S3**
+
+```bash
+# Download all profiler artifacts for a paper
+aws s3 sync s3://trainium-execution-results/profiler/{paper_id}/ ~/Downloads/trace_files_{paper_id}/
+
+# Or download just the main trace file
+aws s3 cp s3://trainium-execution-results/profiler/{paper_id}/ntrace.pb ~/Downloads/ntrace.pb
+```
+
+**Step 2: Convert .pb Files to Perfetto Format (if needed)**
+
+If you only have `.pb` files, convert them to `.pftrace` format for Perfetto:
+
+```bash
+# SSH into Trainium instance
+ssh -i ~/.ssh/trainium-deploy-key.pem ec2-user@<TRAINIUM_IP>
+
+# Download trace files to Trainium
+aws s3 sync s3://trainium-execution-results/profiler/{paper_id}/ ~/trace_files_{paper_id}/
+
+# Convert to Perfetto format (outputs to current directory)
+cd ~/trace_files_{paper_id}
+/opt/aws/neuron/bin/neuron-profile view -d . --output-format=perfetto
+
+# Check if .pftrace file was created (usually named system_profile.pftrace)
+ls -lah ~/*.pftrace
+
+# Upload converted file back to S3
+aws s3 cp ~/system_profile.pftrace s3://trainium-execution-results/profiler/{paper_id}/system_profile.pftrace
+
+# Download to local machine
+# From your local machine:
+aws s3 cp s3://trainium-execution-results/profiler/{paper_id}/system_profile.pftrace ~/Downloads/system_profile.pftrace
+```
+
+**Step 3: View in Perfetto UI**
+
+1. Go to https://ui.perfetto.dev/
+2. Click "Open trace file" or drag and drop
+3. Upload the `.pftrace` file 
+4. Wait for upload and processing (large files may take a minute)
+
+**What You'll See in Perfetto:**
+- Timeline of execution showing all operations
+- Neuron device operations and compute kernels
+- CPU and memory usage over time
+- Performance bottlenecks and idle time
+- Detailed execution flow and dependencies
+
+**Note:** The conversion command (`neuron-profile view`) creates `.pftrace` files in the **current working directory**, not in the input directory. After conversion, check your home directory (`~`) for `system_profile.pftrace` and `device_profile_model_*.pftrace` files.
+
+**Accessing from Execution Results JSON:**
+The execution results JSON (at `s3://trainium-execution-results/results/{paper_id}/execution_result.json`) includes:
+- `profiler_s3_location`: S3 path to profiler artifacts
+- `profiler_s3_console_url`: Direct link to view files in S3 console
+
 ### SageMaker Metrics Tracking
 
 Training metrics from Trainium executions are automatically logged to **CloudWatch Metrics** (SageMaker-compatible). This enables:

@@ -102,8 +102,8 @@ MAX_REVIEW_ITERATIONS = int(os.getenv('MAX_REVIEW_ITERATIONS', '6'))
 ERROR_DB_TABLE_NAME = os.getenv('ERROR_DB_TABLE_NAME', 'docRunErrors') # Table structure: Partition key = DOC#<docId>, Sort key = ITER#<iteration>#ERR#<errorId>
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
 BEDROCK_MODEL_ID = os.getenv('BEDROCK_MODEL_ID', 'anthropic.claude-3-sonnet-20240229-v1:0')
-SLACK_BOT_TOKEN = os.getenv('SLACK_BOT_TOKEN', 'xoxb-552112250854-10031003801584-OFAzmiCTvAsECqlzIKmy9Ck1')
-SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', 'apl-research-papers')
+SLACK_BOT_TOKEN = os.getenv('SLACK_BOT_TOKEN', 'xoxb-552112250854-10119594925537-sqOfzVPjWTgcEswIWTRbKbax')
+SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', 'ext-bdab-apl-research-papers')
 TRAINIUM_EXECUTION_QUEUE_URL = os.getenv('TRAINIUM_EXECUTION_QUEUE_URL', 'https://sqs.us-east-1.amazonaws.com/478852001205/trainium-execution.fifo')
 MAX_TRAINIUM_CONCURRENT = int(os.getenv('MAX_TRAINIUM_CONCURRENT', '1'))  # Max concurrent executions
 QUEUE_POLL_INTERVAL = int(os.getenv('QUEUE_POLL_INTERVAL', '30'))  # Seconds between queue polls
@@ -274,6 +274,12 @@ def collect_profiler_artifacts(paper_id: str, profiler_path: str) -> Dict[str, A
 
 def upload_execution_results(paper_id: str, result: Dict[str, Any], executed_on_trn: bool = False):
     try:
+        # Add profiler S3 location to result if profiler was enabled
+        profiler_info = result.get('profiler', {})
+        if profiler_info and profiler_info.get('profiler_enabled'):
+            result['profiler_s3_location'] = profiler_info.get('profiler_s3_location', f"s3://{RESULTS_BUCKET}/profiler/{paper_id}/")
+            result['profiler_s3_console_url'] = f"https://s3.console.aws.amazon.com/s3/buckets/{RESULTS_BUCKET}?prefix=profiler/{paper_id}/"
+        
         # Upload to S3
         s3_client = boto3.client('s3')
         s3_key = f"results/{paper_id}/execution_result.json"
@@ -379,23 +385,37 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
             if thread_ts:
                 logger.info(f"Retrieved slack_thread_ts from OpenSearch for {paper_id}: {thread_ts}")
         
+<<<<<<< HEAD
         fields_to_exclude = {
             'embedding', 'embeddings', 'vector', 'vectors', 
             'pdf_bytes', 'pdf_content', 'raw_content',
             's3_bucket', 's3_key' 
         }
         
+=======
+        # Filter out embeddings, internal fields, and other large binary fields
+        fields_to_exclude = {
+            'embedding', 'embeddings', 'vector', 'vectors', 
+            'pdf_bytes', 'pdf_content', 'raw_content',
+            's3_bucket', 's3_key',  # We'll add formatted S3 link instead
+            # Internal/metadata fields that shouldn't be shown in Slack
+            'slack_thread_ts', 'relevance', 'decision', 'ingested_at', 'reason',
+            'executed_on_trn', 'executed_on_trn_updated_at', 'code_generated', 'code_generated_at'
+        }
+        
+        # Create filtered paper dict with key fields only
+>>>>>>> e101b1ccf535c5e52de7648fbd4f3dde0330ad8d
         filtered_paper = {
             '_id': paper_id,
             'title': paper.get('title', 'Unknown Title'),
             'authors': paper.get('authors', []),
-            'abstract': paper.get('abstract', ''),
+            'abstract': paper.get('abstract', ''),  # Full abstract, not truncated
             'date': paper.get('date', ''),
-            'venue': paper.get('venue', ''),
             'url': paper.get('url', ''),
             'arxiv_id': paper.get('arxiv_id', ''),
         }
         
+<<<<<<< HEAD
         for key, value in paper.items():
             if key not in fields_to_exclude and key not in filtered_paper:
                 if isinstance(value, str) and len(value) > 2000:
@@ -403,6 +423,9 @@ def send_slack_notification(paper_id: str, execution_result: Dict[str, Any], thr
                 if isinstance(value, (dict, list)) and len(str(value)) > 2000:
                     continue
                 filtered_paper[key] = value
+=======
+        # Don't add other fields - only use the explicitly defined fields above
+>>>>>>> e101b1ccf535c5e52de7648fbd4f3dde0330ad8d
         
         filtered_paper['execution_success'] = execution_result.get('success', False)
         filtered_paper['execution_time_seconds'] = round(execution_result.get('execution_time', 0), 2)
