@@ -1,7 +1,5 @@
 """
-Bedrock client for chunked code generation.
-Handles individual chunk summarization and final code generation.
-
+Bedrock client for hierarchical, chunked code generation from research PDFs.
 """
 
 import os
@@ -19,46 +17,34 @@ MODEL_ID = "anthropic.claude-3-5-sonnet-20240620-v1:0"
 load_dotenv()
 
 import logging
-
-import logging
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
 )
-
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
-
-
 class ChunkedBedrockClient:
-    """Client for chunked code generation with throttling mitigation."""
-
     def __init__(self):
-        """
-        Initialize Bedrock client for chunked generation.
-        """
         self.aws_region = os.getenv("AWS_REGION", "us-east-1")
         self.chunk_model_id = MODEL_ID
         self.final_model_id = MODEL_ID
-        self.model_id = MODEL_ID
 
         from botocore.config import Config
-
         config = Config(
             read_timeout=150,
             retries={"max_attempts": 0},
         )
-        self.client = boto3.client("bedrock-runtime", region_name=self.aws_region, config=config)
+        self.client = boto3.client(
+            "bedrock-runtime",
+            region_name=self.aws_region,
+            config=config,
+        )
 
-        self.chunk_delay = float(os.getenv("CHUNK_PROCESSING_DELAY", "3.0"))  # 3 seconds between chunk processing
+        self.chunk_delay = float(os.getenv("CHUNK_PROCESSING_DELAY", "3.0"))
 
-        logger.info("Chunked Bedrock client initialized:")
-        logger.info(f"  - Chunk model: {self.chunk_model_id}")
-        logger.info(f"  - Final model: {self.final_model_id}")
-        logger.info(f"  - Chunk delay: {self.chunk_delay}s")
+        logger.info("Chunked Bedrock client initialized")
 
     def summarize_pdf_chunk(
         self,
@@ -70,69 +56,50 @@ class ChunkedBedrockClient:
         page_end: int,
     ) -> Dict[str, Any]:
         """
-        Generate a detailed summary of a PDF chunk using PDF document input.
-        Extracts formulas and diagrams from PDF pages.
-
-        Args:
-            base64_pdf: Base64-encoded PDF string (containing the relevant pages)
-            chunk_number: Current chunk number (1-indexed)
-            total_chunks: Total number of chunks
-            paper_summary: Overall paper summary (title, authors, abstract)
-            page_start: Starting page number (0-indexed, for display)
-            page_end: Ending page number (exclusive, 0-indexed, for display)
-
-        Returns:
-            Dictionary with summary and metadata
+        Generate an implementation-focused summary for a subset of PDF pages.
         """
-        prompt = f"""
-You are analyzing a research paper PDF that has been split into {total_chunks} parts. You are analyzing part {chunk_number} of {total_chunks}, which contains pages {page_start + 1} through {page_end}.
 
-Paper Overview:
+        prompt = f"""
+You are analyzing part {chunk_number} of {total_chunks} from a research paper.
+
+Paper overview:
 {paper_summary}
 
-Your task is to analyze the provided PDF pages and provide a DETAILED SUMMARY that will be used to generate PyTorch code. Focus on extracting:
+Pages covered: {page_start + 1} to {page_end}
 
-1. MATHEMATICAL FORMULAS and equations - transcribe them exactly as they appear, including all notation
-2. DIAGRAMS and figures - describe the architecture, data flow, network structures, and visual elements in detail
-3. KEY ALGORITHMS AND METHODS described in these pages
-4. ARCHITECTURAL DETAILS (neural network structures, layer types, connections, etc.)
-5. TRAINING PROCEDURES (loss functions, optimization methods, training steps)
-6. KEY IMPLEMENTATION DETAILS (data preprocessing, specific operations, etc.)
-7. IMPORTANT CONSTANTS, HYPERPARAMETERS, or configuration details
-8. DATASET INFORMATION (dataset names, data types, task types mentioned)
-9. ANY CODE-RELEVANT INFORMATION that would be needed to implement this
+Produce a detailed, implementation-oriented summary intended to support
+a PyTorch reimplementation. Focus on:
 
-CRITICAL: Pay special attention to formulas and diagrams that may not be fully captured in text. 
-- For formulas: Write them out in LaTeX notation or clear mathematical notation
-- For diagrams: Describe the structure, connections, and flow in detail
-- For tables: Extract all numerical values and relationships
-- For datasets: Note any dataset names, data types (images, text, etc.), or task types (classification, regression, etc.)
+- Mathematical definitions and equations (use clear math notation)
+- Model architecture details (layers, dimensions, data flow)
+- Algorithms and training procedures
+- Loss functions, optimizers, schedules
+- Hyperparameters and constants
+- Dataset details (names, task type, data modality)
+- Any explicit implementation details described in the text
 
-PRIORITY: Focus on content that can be directly implemented in code. If the pages contain only:
-- Theoretical proofs without implementation details → Note this but focus on any implementable aspects
-- Examples or qualitative discussions → Extract any concrete details that could inform implementation
-- Evaluation results → Note key metrics but prioritize implementation details
+Notes:
+- Diagrams should be described textually if referenced
+- Proof-only sections should be briefly noted but deprioritized
+- Evaluation metrics may be summarized concisely
 
-Be extremely detailed and specific. Include all mathematical notation, formulas, and technical details.
-This summary will be combined with summaries from other chunks to generate complete PyTorch code.
-
-Format your response as a structured summary with clear sections.
+Structure the output with clear section headers.
 """
 
         import base64 as b64
         pdf_bytes = b64.b64decode(base64_pdf)
-        
+
         try:
             import fitz
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             clean_pdf_bytes = doc.tobytes(garbage=4, deflate=True)
             doc.close()
         except Exception as e:
-            logger.warning(f"Could not clean PDF, using original: {e}")
+            logger.warning(f"PDF cleanup failed, using raw bytes: {e}")
             clean_pdf_bytes = pdf_bytes
-        
+
         pdf_b64 = b64.b64encode(clean_pdf_bytes).decode("utf-8")
-        
+
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "messages": [
@@ -144,18 +111,18 @@ Format your response as a structured summary with clear sections.
                             "source": {
                                 "type": "base64",
                                 "media_type": "application/pdf",
-                                "data": pdf_b64
-                            }
+                                "data": pdf_b64,
+                            },
                         },
                         {
                             "type": "text",
-                            "text": prompt
-                        }
-                    ]
+                            "text": prompt,
+                        },
+                    ],
                 }
             ],
             "max_tokens": 4096,
-            "temperature": 0.2
+            "temperature": 0.2,
         }
 
         max_retries = 8
@@ -163,63 +130,44 @@ Format your response as a structured summary with clear sections.
 
         for attempt in range(max_retries):
             try:
-                # Messages API 
                 response = self.client.invoke_model(
                     modelId=self.chunk_model_id,
                     body=json.dumps(body),
-                    contentType="application/json"
+                    contentType="application/json",
                 )
                 break
             except ClientError as e:
                 error_code = e.response.get("Error", {}).get("Code", "")
-                error_msg = str(e)
+                error_msg = str(e).lower()
 
-                logger.debug(
-                    f"PDF Chunk {chunk_number} error: Code={error_code}, Message={error_msg[:200]}"
+                is_retryable = (
+                    error_code in {
+                        "ThrottlingException",
+                        "ServiceUnavailableException",
+                        "TooManyRequestsException",
+                    }
+                    or "throttl" in error_msg
+                    or "rate" in error_msg
                 )
 
-                retryable_errors = [
-                    "ThrottlingException",
-                    "ServiceUnavailableException",
-                    "TooManyRequestsException",
-                ]
-                is_throttling = (
-                    error_code in retryable_errors
-                    or "throttl" in error_msg.lower()
-                    or "too many requests" in error_msg.lower()
-                    or "rate limit" in error_msg.lower()
-                    or "rate exceeded" in error_msg.lower()
-                )
-
-                if is_throttling and attempt < max_retries - 1:
-                    delay = min(base_delay * (2**attempt), 60)  # Cap at 60s for chunks
-                    jitter = random.uniform(0, 1)
-                    total_delay = delay + jitter
+                if is_retryable and attempt < max_retries - 1:
+                    delay = min(base_delay * (2 ** attempt), 60)
+                    delay += random.uniform(0, 1)
                     logger.warning(
-                        f"PDF Chunk {chunk_number} throttling detected (Code: {error_code}), "
-                        f"retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                        f"Chunk {chunk_number} throttled, retrying in {delay:.1f}s"
                     )
-                    time.sleep(total_delay)
-                    continue
+                    time.sleep(delay)
                 else:
-                    if not is_throttling:
-                        logger.error(
-                            f"PDF Chunk {chunk_number} non-retryable error: "
-                            f"Code={error_code}, Message={error_msg[:200]}"
-                        )
                     raise
 
-        # Extract text from Messages API response
         response_body = json.loads(response["body"].read())
         summary_text = response_body["content"][0]["text"]
 
         return {
             "success": True,
-            "chunk_number": chunk_number,
             "summary": summary_text,
             "model_used": self.chunk_model_id,
             "pages": f"{page_start + 1}-{page_end}",
-            "num_pages": page_end - page_start,
         }
 
     def summarize_batch(
@@ -230,46 +178,34 @@ Format your response as a structured summary with clear sections.
         paper_summary: str,
     ) -> Dict[str, Any]:
         """
-        Summarize a batch of chunk summaries into an intermediate summary (Stage 2 of hierarchical summarization).
-
-        Args:
-            batch_summaries: List of summaries from a batch of chunks
-            batch_number: Current batch number (1-indexed)
-            total_batches: Total number of batches
-            paper_summary: Overall paper summary
-
-        Returns:
-            Dictionary with intermediate summary and metadata
+        Consolidate a group of chunk summaries into a single intermediate summary.
         """
-        # Combine batch summaries
+
         combined_batch = "\n\n".join(
-            [f"--- Chunk Summary {i+1} ---\n{summary}" for i, summary in enumerate(batch_summaries)]
+            f"--- Chunk {i + 1} ---\n{s}"
+            for i, s in enumerate(batch_summaries)
         )
 
         prompt = f"""
-You are analyzing intermediate summaries from a research paper. These summaries come from batch {batch_number} of {total_batches} batches.
+You are consolidating summaries from batch {batch_number} of {total_batches}.
 
-Paper Overview:
+Paper overview:
 {paper_summary}
 
-Batch {batch_number} Summaries:
+Chunk summaries:
 {combined_batch}
 
-Your task is to create a CONSOLIDATED SUMMARY of this batch that:
-1. Combines and synthesizes the key information from all chunk summaries in this batch
-2. Removes redundancy and focuses on unique, important details
-3. Preserves all mathematical formulas, algorithms, and implementation details
-4. Maintains architectural and training procedure information
-5. Is comprehensive but concise
+Create a concise but complete consolidated summary that:
+- Removes redundancy
+- Preserves all implementation-relevant details
+- Keeps equations, architecture, and training logic intact
 
-This consolidated summary will be combined with other batch summaries to generate final PyTorch code.
-
-Format your response as a structured, comprehensive summary.
+Structure the output clearly.
 """
 
         body = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 8192,  # Increased from 4096 to handle consolidating 8 chunk summaries
+            "max_tokens": 8192,
             "temperature": 0.2,
             "messages": [
                 {
@@ -291,52 +227,21 @@ Format your response as a structured, comprehensive summary.
                 )
                 break
             except ClientError as e:
-                error_code = e.response.get("Error", {}).get("Code", "")
-                error_msg = str(e)
-
-                retryable_errors = [
-                    "ThrottlingException",
-                    "ServiceUnavailableException",
-                    "TooManyRequestsException",
-                ]
-                is_throttling = (
-                    error_code in retryable_errors
-                    or "throttl" in error_msg.lower()
-                    or "too many requests" in error_msg.lower()
-                    or "rate" in error_msg.lower()
-                )
-
-                if is_throttling and attempt < max_retries - 1:
-                    delay = min(base_delay * (2**attempt), 60)
-                    jitter = random.uniform(0, 1)
-                    total_delay = delay + jitter
-                    logger.warning(
-                        f"Batch {batch_number} throttling detected, "
-                        f"retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})"
-                    )
-                    time.sleep(total_delay)
-                    continue
+                error_msg = str(e).lower()
+                if "rate" in error_msg or "throttl" in error_msg:
+                    delay = min(base_delay * (2 ** attempt), 60)
+                    delay += random.uniform(0, 1)
+                    time.sleep(delay)
                 else:
                     raise
 
         response_body = json.loads(response["body"].read())
         summary_text = response_body["content"][0]["text"]
 
-        # Check for truncation
-        stop_reason = response_body.get("stop_reason")
-        truncated = stop_reason == "max_tokens"
-        if truncated:
-            logger.warning(
-                f"⚠️ Batch {batch_number} summary was truncated due to max_tokens limit (8192). "
-                "Some details may be missing."
-            )
-
         return {
             "success": True,
-            "batch_number": batch_number,
             "summary": summary_text,
             "model_used": self.chunk_model_id,
-            "truncated": truncated,
         }
 
     def generate_final_code(
@@ -346,178 +251,39 @@ Format your response as a structured, comprehensive summary.
         dataset_recommendations: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Generate final PyTorch code from combined chunk summaries.
-
-        Args:
-            paper_summary: Overall paper summary
-            chunk_summaries: List of detailed summaries from each chunk
-            dataset_recommendations: Optional dataset recommendations
-
-        Returns:
-            Dictionary with generated code and metadata
+        Generate a runnable PyTorch implementation from consolidated summaries.
         """
-        # Combine all chunk summaries
+
         combined_summaries = "\n\n".join(
-            [f"=== CHUNK {i+1} SUMMARY ===\n{summary}" for i, summary in enumerate(chunk_summaries)]
+            f"=== CHUNK {i + 1} ===\n{s}"
+            for i, s in enumerate(chunk_summaries)
         )
 
-        # Get primary dataset
-        primary_dataset = "mnist"
-        if dataset_recommendations:
-            primary_dataset = dataset_recommendations.get("primary_dataset", "mnist")
+        primary_dataset = (
+            dataset_recommendations.get("primary_dataset", "mnist")
+            if dataset_recommendations
+            else "mnist"
+        )
 
         prompt = f"""
-You are an expert PyTorch developer and machine learning researcher. I will provide you with detailed summaries from different parts of a research paper, and I need you to generate a complete PyTorch implementation that demonstrates the key concepts and algorithms described in the paper.
+You are generating a PyTorch implementation based on the following paper.
 
-Paper Information:
+Paper summary:
 {paper_summary}
 
-Detailed Chunk Summaries:
+Detailed technical summaries:
 {combined_summaries}
 
-"""
+Generate a complete, runnable PyTorch script that demonstrates the core
+model, training procedure, and evaluation described in the paper.
 
-        # Add dataset recommendations if available
-        if dataset_recommendations:
-            recommended_datasets = dataset_recommendations.get("recommended_datasets", [])
-            domain = dataset_recommendations.get("domain", "general")
-            explicitly_mentioned = dataset_recommendations.get("explicitly_mentioned", [])
-            reasoning = dataset_recommendations.get("llm_reasoning") or dataset_recommendations.get(
-                "reasoning", ""
-            )
+Constraints:
+- Use dataset '{primary_dataset}' via dataset_loader.load_dataset
+- Target AWS Trainium using torch_xla
+- Follow standard PyTorch structure
+- Avoid unnecessary complexity
 
-            prompt += f"""
-Generate a complete, production-ready PyTorch implementation that demonstrates the paper's key concepts.
-
-CRITICAL REQUIREMENTS:
-1. Use dataset '{primary_dataset}' via: `from dataset_loader import load_dataset` (DO NOT use torchvision.datasets)
-   - load_dataset() returns EXACTLY 2 DataLoaders: (train_loader, test_loader)
-   - NEVER unpack 3 values like "train_loader, val_loader, test_loader = load_dataset(...)"
-   - If validation is needed, split train_loader or re-use test_loader
-   - Dataset is automatically downloaded from S3 if missing
-
-   DATASET FORMATS (CRITICAL):
-   - Image datasets (mnist, cifar10, cifar100, fashion_mnist, synthetic):
-     * Returns (image_tensor, label_tensor)
-     * Labels are SCALAR integers
-     * Image shapes: 
-         - Color: [batch, channels, height, width]
-         - Grayscale: [batch, height, width] or [batch, 1, height, width]
-   - Text classification (imdb):
-     * Returns (text_string, label_tensor)
-     * Text is raw STRING (tokenize inside your code)
-   - Language modeling (wikitext2):
-     * Returns (input_ids_tensor, labels_tensor)
-     * Shapes: [batch, seq_length]
-     * Labels are FULL SEQUENCES (NOT scalars)
-     * Loss example:
-       loss = criterion(logits.view(-1, vocab_size), labels.view(-1))
-
-2. Trainium/XLA device setup:
-   - Use: 
-       import torch_xla.core.xla_model as xm
-       device = xm.xla_device()
-   - Move ALL tensors & model to this device before use.
-
-3. Optimizer stepping (Trainium requirement):
-   - Use `xm.optimizer_step(optimizer)` instead of `optimizer.step()`.
-
-4. Synchronization (IMPORTANT - correct Trainium behavior):
-   - DO NOT use xm.mark_step() (deprecated)
-   - DO NOT use torch_xla.sync() (THIS FUNCTION DOES NOT EXIST)
-   - You usually DO NOT manually synchronize in a training step.
-   - XLA will implicitly sync when:
-       * reading a tensor value (.item())
-       * logging metrics
-   - ONLY use:
-       xm.wait_device_ops()
-     at *epoch boundaries or before profiling* if you need explicit synchronization.
-
-5. Import ALL modules you use.
-
-6. DEVICE PLACEMENT (CRITICAL to avoid bridge::IsXlaTensor errors):
-   - Move ALL inputs, labels, model components to XLA device:
-       data = data.to(device)
-       labels = labels.to(device)
-       model.to(device)
-   - If indexing tensors, ensure BOTH index and array are on device.
-
-7. MODEL INPUT SHAPES (prevents CNN reshape errors):
-   - Ensure network expects the batch shape your dataset returns.
-   - For CNNs: (batch, channels, height, width)
-   - For FC models: flatten via x.view(x.size(0), -1)
-   - If data is grayscale without channel dimension, add one:
-       x = x.unsqueeze(1)
-
-8. CLASSIFIER DIMENSION CHECK (prevents XLA DOT shape crashes):
-   - Compute flattened feature size EXACTLY based on model architecture.
-   - Example:
-       x = features(x)
-       print(x.shape)  # debug
-       x = x.view(x.size(0), -1)
-       flattened_size = channels * height * width
-       self.fc = nn.Linear(flattened_size, num_classes)
-   - Error "f32[1,128] <dot> f32[16,10]" ALWAYS means:
-       feature_dim != classifier_input_dim
-
-9. Do NOT use torchvision.transforms or PIL.
-   - Use pure PyTorch ops for normalize, reshape, permute, etc.
-
-═══════════════════════════════════════════════════════════════════════════════
-PACKAGES & ENVIRONMENT (Neuron SDK)
-═══════════════════════════════════════════════════════════════════════════════
-
-AVAILABLE:
-- torch, torch_xla (Neuron SDK PyTorch 2.1)
-- torch.nn, torch.optim
-- numpy, math, random, json, collections, os, sys
-- dataset_loader (custom module)
-
-HUGGINGFACE MODEL USAGE:
-- Allowed: AutoTokenizer.from_pretrained(), AutoModel.from_pretrained()
-- Use ONLY publicly available models unless token is provided
-- Internet access may be restricted → handle HTTP errors gracefully
-
-Trainium Hardware Notes:
-- Only 1 NeuronCore available → keep model sizes moderate
-- Large Transformers may exceed memory
-- No need to set NEURON_RT_NUM_CORES
-
-COMMON ERRORS TO AVOID:
-1. Device mismatch: always move tensors & indices to XLA device
-2. Incorrect sync API − NEVER call torch_xla.sync()
-3. Wrong classifier dimensions → compute flattened_size correctly
-4. Wrong dataset unpacking → load_dataset() returns ONLY 2 loaders
-5. Invalid transforms → NO torchvision.transforms or PIL
-6. Wrong tokenizer usage → No XLATokenizer, no transformers_xla
-
-NOT AVAILABLE:
-- torchvision.datasets
-- torchvision.transforms
-- PIL/Pillow
-- pandas, scipy, sklearn
-- transformers_xla, XLATokenizer
-
-═══════════════════════════════════════════════════════════════════════════════
-OUTPUT FORMAT (CODE ONLY)
-═══════════════════════════════════════════════════════════════════════════════
-
-Output MUST be:
-
-```python
-[COMPLETE RUNNABLE PYTORCH CODE]
-# Includes:
-# imports
-# model definition
-# dataset loading
-# training loop
-# evaluation
-# brief inline comments
-
-NO explanations or text outside the code block.
-
-CRITICAL: Keep the entire output below 8192 tokens.
-
+Output ONLY valid Python code inside a single code block.
 """
 
         body = {
@@ -544,65 +310,34 @@ CRITICAL: Keep the entire output below 8192 tokens.
                 )
                 break
             except ClientError as e:
-                error_code = e.response.get("Error", {}).get("Code", "")
-                error_msg = str(e)
-
-                retryable_errors = [
-                    "ThrottlingException",
-                    "ServiceUnavailableException",
-                    "TooManyRequestsException",
-                ]
-                is_throttling = (
-                    error_code in retryable_errors
-                    or "throttl" in error_msg.lower()
-                    or "too many requests" in error_msg.lower()
-                    or "rate" in error_msg.lower()
-                )
-
-                if is_throttling and attempt < max_retries - 1:
-                    delay = min(base_delay * (2**attempt), 120)
-                    jitter = random.uniform(0, 2)
-                    total_delay = delay + jitter
-                    logger.warning(
-                        "Final code generation throttling detected, "
-                        f"retrying in {total_delay:.1f}s (attempt {attempt + 1}/{max_retries})"
-                    )
-                    time.sleep(total_delay)
-                    continue
+                error_msg = str(e).lower()
+                if "rate" in error_msg or "throttl" in error_msg:
+                    delay = min(base_delay * (2 ** attempt), 120)
+                    delay += random.uniform(0, 2)
+                    time.sleep(delay)
                 else:
                     raise
 
         response_body = json.loads(response["body"].read())
         generated_text = response_body["content"][0]["text"]
 
-        # Extract code from response
         code_blocks: List[str] = []
-        lines = generated_text.split("\n")
-        in_code_block = False
-        current_code: List[str] = []
+        lines = generated_text.splitlines()
+        in_block = False
+        buffer: List[str] = []
 
         for line in lines:
             if line.strip().startswith("```python"):
-                in_code_block = True
-                current_code = []
-                continue
-            elif line.strip().startswith("```") and in_code_block:
-                in_code_block = False
-                if current_code:
-                    code_blocks.append("\n".join(current_code))
-                current_code = []
-                continue
-            elif in_code_block:
-                current_code.append(line)
-
-        full_code = "\n\n".join(code_blocks) if code_blocks else ""
+                in_block = True
+                buffer = []
+            elif line.strip().startswith("```") and in_block:
+                in_block = False
+                code_blocks.append("\n".join(buffer))
+            elif in_block:
+                buffer.append(line)
 
         return {
             "success": True,
-            "code": full_code,
-            "full_response": generated_text,
+            "code": "\n\n".join(code_blocks),
             "model_used": self.final_model_id,
         }
-
-
-

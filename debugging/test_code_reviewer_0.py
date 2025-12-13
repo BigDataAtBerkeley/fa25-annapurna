@@ -92,7 +92,6 @@ def generate_code_for_paper(paper_id: str) -> Tuple[Optional[str], Optional[str]
         logger.info("🔧 Initializing ChunkedPyTorchGenerator...")
         generator = ChunkedPyTorchGenerator(
             batch_size=8,
-            use_smart_pdf_chunking=True,
             max_pdf_chunks=15,
             pages_per_pdf_chunk=2
         )

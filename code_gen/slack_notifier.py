@@ -1,8 +1,6 @@
 """
 Slack Notifier for Research Papers
-
-Sends paper information from OpenSearch to a Slack channel.
-Uses Slack Web API (chat.postMessage) to send formatted messages.
+Sends paper information from OpenSearch to a Slack channel
 """
 
 import os
@@ -29,13 +27,7 @@ class SlackNotifier:
     """Send paper information to Slack channels."""
     
     def __init__(self, bot_token: Optional[str] = None, channel: Optional[str] = None):
-        """
-        Initialize Slack notifier.
-        
-        Args:
-            bot_token: Slack bot token (default: from SLACK_BOT_TOKEN env var)
-            channel: Default Slack channel ID or name (default: from SLACK_CHANNEL env var)
-        """
+
         self.bot_token = bot_token or os.getenv("SLACK_BOT_TOKEN")
         self.default_channel = channel or os.getenv("SLACK_CHANNEL")
         
@@ -52,12 +44,6 @@ class SlackNotifier:
     def _format_paper_fields(self, paper: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Format paper fields from OpenSearch into Slack Block Kit format.
-        
-        Args:
-            paper: Paper document from OpenSearch
-            
-        Returns:
-            List of Slack Block Kit blocks
         """
         blocks = []
         
@@ -73,7 +59,7 @@ class SlackNotifier:
             }
         })
         
-        # Divider
+
         blocks.append({"type": "divider"})
         
         # Paper ID
@@ -103,7 +89,6 @@ class SlackNotifier:
                 ]
             })
         
-        # Abstract (full, not truncated)
         abstract = paper.get('abstract', '')
         if abstract:
             blocks.append({
@@ -115,11 +100,10 @@ class SlackNotifier:
             })
         
         
-        # S3 information if available - make it clickable like other S3 links
         s3_bucket = paper.get('s3_bucket')
         s3_key = paper.get('s3_key')
         if s3_bucket and s3_key:
-            # Create clickable S3 console URL (correct format for specific object)
+
             s3_console_url = f"https://s3.console.aws.amazon.com/s3/object/{s3_bucket}/{s3_key}"
             blocks.append({
                 "type": "section",
@@ -133,15 +117,8 @@ class SlackNotifier:
     
     def send_paper_info(self, paper: Dict[str, Any], channel: Optional[str] = None) -> Optional[str]:
         """
-        Send paper information to Slack channel.
-        
-        Args:
-            paper: Paper document from OpenSearch
-            channel: Slack channel ID or name (default: use default_channel)
-            
-        Returns:
-            Thread timestamp (ts) if message sent successfully, None otherwise
-            This can be used to reply in the same thread later
+        Send paper information to Slack channel
+        Returns: Thread timestamp (ts) if message sent successfully, None otherwise
         """
         if not self.enabled:
             logger.warning("Slack notifier is disabled (no bot token)")
@@ -153,7 +130,6 @@ class SlackNotifier:
             return False
         
         try:
-            # Format paper into Slack blocks
             blocks = self._format_paper_fields(paper)
             
             # Send message to Slack
@@ -175,12 +151,12 @@ class SlackNotifier:
             result = response.json()
             
             if result.get("ok"):
-                thread_ts = result.get("ts")  # Get message timestamp for threading
-                logger.info(f"✅ Sent paper info to Slack channel {target_channel} (thread_ts: {thread_ts})")
+                thread_ts = result.get("ts")
+                logger.info(f"Sent paper info to Slack channel {target_channel} (thread_ts: {thread_ts})")
                 return thread_ts
             else:
                 error = result.get("error", "Unknown error")
-                logger.error(f"❌ Failed to send to Slack: {error}")
+                logger.error(f"Failed to send to Slack: {error}")
                 return None
                 
         except requests.exceptions.RequestException as e:
@@ -197,19 +173,8 @@ class SlackNotifier:
                                          channel: Optional[str] = None, 
                                          thread_ts: Optional[str] = None) -> bool:
         """
-        Send initial code generation notification as follow-up in thread.
-        
-        Args:
-            paper_id: Paper ID
-            code_length: Length of generated code
-            model_used: Model used for generation (optional)
-            recommended_dataset: Recommended dataset (optional)
-            code_s3_key: S3 key for code file (optional)
-            channel: Slack channel ID or name (default: use default_channel)
-            thread_ts: Thread timestamp to reply in thread (required)
-            
-        Returns:
-            True if message sent successfully, False otherwise
+        Send initial code generation notification as follow-up in thread
+        Returns: True if message sent successfully, False otherwise
         """
         if not self.enabled:
             logger.warning("Slack notifier is disabled (no bot token)")
@@ -238,7 +203,6 @@ class SlackNotifier:
             
             blocks.append({"type": "divider"})
             
-            # Code generation details (no Paper ID)
             fields = []
             
             if recommended_dataset:
@@ -258,7 +222,7 @@ class SlackNotifier:
                 "text": f"*Code Length:*\n{code_length:,} characters"
             })
             
-            # Split into sections of 2 fields each
+
             for i in range(0, len(fields), 2):
                 section_fields = fields[i:i+2]
                 blocks.append({
@@ -266,7 +230,7 @@ class SlackNotifier:
                     "fields": section_fields
                 })
             
-            # S3 link if available
+            # S3 link 
             if code_s3_key:
                 code_s3_bucket = os.getenv('CODE_BUCKET', 'papers-code-artifacts')
                 # Create clickable S3 console URL (correct format for specific object)
@@ -309,11 +273,11 @@ class SlackNotifier:
             result = response.json()
             
             if result.get("ok"):
-                logger.info(f"✅ Sent code generation notification to Slack (thread: {thread_ts})")
+                logger.info(f"Sent code generation notification to Slack (thread: {thread_ts})")
                 return True
             else:
                 error = result.get("error", "Unknown error")
-                logger.error(f"❌ Failed to send to Slack: {error}")
+                logger.error(f"Failed to send to Slack: {error}")
                 return False
                 
         except requests.exceptions.RequestException as e:
@@ -327,15 +291,7 @@ class SlackNotifier:
                                     channel: Optional[str] = None, thread_ts: Optional[str] = None) -> bool:
         """
         Send execution notification with paper info, execution results, and code links.
-        
-        Args:
-            paper: Paper document (filtered, no embeddings)
-            execution_result: Execution result dictionary
-            channel: Slack channel ID or name (default: use default_channel)
-            thread_ts: Thread timestamp to reply in thread (optional)
-            
-        Returns:
-            True if message sent successfully, False otherwise
+        Returns:True if message sent successfully, False otherwise
         """
         if not self.enabled:
             logger.warning("Slack notifier is disabled (no bot token)")
@@ -416,7 +372,7 @@ class SlackNotifier:
             code_s3_key = paper.get('code_s3_key', '')
             code_s3_location = paper.get('code_s3_location', '')
             if code_s3_key or code_s3_location:
-                # Extract bucket and key from code_s3_location if available, otherwise use code_s3_key
+
                 if code_s3_location and code_s3_location.startswith('s3://'):
                     s3_path = code_s3_location[5:]  # Remove 's3://'
                     bucket, key = s3_path.split('/', 1) if '/' in s3_path else (s3_path, '')
@@ -437,7 +393,7 @@ class SlackNotifier:
                         }
                     })
             
-            # Results S3 link (if available)
+            # Results S3 link 
             if paper.get('results_s3_location'):
                 blocks.append({
                     "type": "section",
@@ -468,8 +424,7 @@ class SlackNotifier:
                 "blocks": blocks,
                 "text": f"Execution {execution_status}: {title}"  # Fallback text
             }
-            
-            # Add thread_ts if provided to reply in thread
+        
             if thread_ts:
                 payload["thread_ts"] = thread_ts
             
@@ -479,11 +434,11 @@ class SlackNotifier:
             result = response.json()
             
             if result.get("ok"):
-                logger.info(f"✅ Sent execution notification to Slack channel {target_channel}")
+                logger.info(f"Sent execution notification to Slack channel {target_channel}")
                 return True
             else:
                 error = result.get("error", "Unknown error")
-                logger.error(f"❌ Failed to send to Slack: {error}")
+                logger.error(f"Failed to send to Slack: {error}")
                 return False
                 
         except requests.exceptions.RequestException as e:
@@ -531,11 +486,11 @@ class SlackNotifier:
             result = response.json()
             
             if result.get("ok"):
-                logger.info(f"✅ Sent message to Slack channel {target_channel}")
+                logger.info(f"Sent message to Slack channel {target_channel}")
                 return True
             else:
                 error = result.get("error", "Unknown error")
-                logger.error(f"❌ Failed to send to Slack: {error}")
+                logger.error(f"Failed to send to Slack: {error}")
                 return None
                 
         except requests.exceptions.RequestException as e:

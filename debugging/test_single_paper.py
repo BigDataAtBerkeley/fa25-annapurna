@@ -158,7 +158,6 @@ def main():
         generator = ChunkedPyTorchGenerator(
             batch_size=8,
             pages_per_pdf_chunk=2,
-            use_smart_pdf_chunking=True,
             max_pdf_chunks=15
         )
         print("✅ Components initialized\n")
