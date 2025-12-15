@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
-"""
-SageMaker Metrics Logger
-
-This module provides functionality to log training metrics to CloudWatch Metrics,
-which can be viewed in SageMaker Studio and CloudWatch console.
-
-Metrics are logged with the namespace "Trainium/Training" and can be filtered
-by paper_id, training_job_name, etc.
-"""
-
 import boto3
 import logging
 import time
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +34,7 @@ class SageMakerMetricsLogger:
         namespace: str = "Trainium/Training",
         region: str = "us-east-1"
     ):
-        """
-        Initialize SageMaker metrics logger.
-        
-        Args:
-            training_job_name: Unique identifier for this training run
-            paper_id: Paper ID (optional, for filtering)
-            instance_type: Instance type used (e.g., "trn1.2xlarge")
-            namespace: CloudWatch namespace (default: "Trainium/Training")
-            region: AWS region
-        """
+
         self.training_job_name = training_job_name
         self.paper_id = paper_id or training_job_name
         self.instance_type = instance_type
@@ -72,16 +54,7 @@ class SageMakerMetricsLogger:
         timestamp: Optional[datetime] = None,
         unit: str = "None"
     ):
-        """
-        Log a single metric to CloudWatch.
-        
-        Args:
-            metric_name: Name of the metric (e.g., "training_loss", "accuracy")
-            value: Metric value
-            step: Training step/epoch (optional)
-            timestamp: Timestamp (defaults to now)
-            unit: CloudWatch metric unit (default: "None")
-        """
+
         if timestamp is None:
             timestamp = datetime.utcnow()
         
@@ -114,7 +87,6 @@ class SageMakerMetricsLogger:
         
         self.metrics_buffer.append(metric_data)
         
-        # Flush if buffer is large enough (CloudWatch allows up to 20 metrics per request)
         if len(self.metrics_buffer) >= 20:
             self.flush()
     
@@ -124,14 +96,7 @@ class SageMakerMetricsLogger:
         step: Optional[int] = None,
         timestamp: Optional[datetime] = None
     ):
-        """
-        Log multiple metrics at once.
-        
-        Args:
-            metrics: Dictionary of metric_name -> value
-            step: Training step/epoch (optional)
-            timestamp: Timestamp (defaults to now)
-        """
+
         for metric_name, value in metrics.items():
             self.log_metric(metric_name, value, step=step, timestamp=timestamp)
     
@@ -142,15 +107,7 @@ class SageMakerMetricsLogger:
         peak_memory_mb: Optional[float] = None,
         additional_metrics: Optional[Dict[str, float]] = None
     ):
-        """
-        Log execution-level metrics (not per-epoch, but per-run).
-        
-        Args:
-            execution_time: Total execution time in seconds
-            success: Whether execution succeeded
-            peak_memory_mb: Peak memory usage in MB
-            additional_metrics: Any additional metrics to log
-        """
+
         # Log execution metrics
         self.log_metric("execution_time_seconds", execution_time, unit="Seconds")
         self.log_metric("execution_success", 1.0 if success else 0.0, unit="Count")
@@ -173,7 +130,6 @@ class SageMakerMetricsLogger:
         self.flush()
     
     def flush(self):
-        """Flush buffered metrics to CloudWatch"""
         if not self.metrics_buffer:
             return
         
@@ -195,16 +151,6 @@ class SageMakerMetricsLogger:
             # Don't raise - metrics logging failure shouldn't break training
     
     def extract_and_log_metrics_from_output(self, stdout: str):
-        """
-        Extract metrics from stdout (METRICS: lines) and log them.
-        
-        This parses the METRICS: format used by generated code:
-        print(f"METRICS: {json.dumps({'training_loss': 0.023, 'accuracy': 0.95})}")
-        
-        Args:
-            stdout: Standard output from code execution
-        """
-        import json
         
         try:
             step = 0
@@ -244,18 +190,7 @@ def create_metrics_logger(
     instance_type: str = "trn1.2xlarge",
     namespace: str = "Trainium/Training"
 ) -> SageMakerMetricsLogger:
-    """
-    Convenience function to create a metrics logger.
-    
-    Args:
-        paper_id: Paper ID
-        paper_title: Paper title (optional, for logging)
-        instance_type: Instance type
-        namespace: CloudWatch namespace
-        
-    Returns:
-        SageMakerMetricsLogger instance
-    """
+
     training_job_name = f"{paper_id}_{int(time.time())}"
     
     logger_obj = SageMakerMetricsLogger(
