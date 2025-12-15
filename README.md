@@ -74,6 +74,10 @@ chmod +x deployment/*.sh
 
 # 2. Deploy all Lambda functions
 ./deployment/deploy_all.sh
+
+# 3. To enable MapState, edit to include the ARNs of the conferenceWrapper and the PaperScraperConferences where specified in conferenceScraper.asl.json
+# Then set up a Step Function with the conferenceScraper.asl.json as the config.
+     
 ```
 
 ### Deploy All Functions (After Initial Setup)
@@ -112,7 +116,7 @@ chmod +x deployment/*.sh
 # Execute Scraping of Conference Papers via MapState. This should be used in production.
 # If it's failing above 10 batches, check concurenncy limit. It's currently set to 100 but can be maxed at 1000.
 aws stepfunctions start-execution \
-  --state-machine-arn arn:aws:states:us-east-1:478852001205:stateMachine:conferenceScraper \
+  --state-machine-arn [INSERT THE STATE MACHINE ARN] \
   --name "test-60-papers-$(date +%s)" \
   --input '{"source": "iclr", "year": 2025, "search_term": "LLM", "batch_size": 30, "test_count": 300}'
 
