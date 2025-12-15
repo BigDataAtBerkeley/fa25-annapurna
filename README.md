@@ -64,21 +64,7 @@ S3 (papers-test-outputs) + OpenSearch (test results) --> execution results from 
 ## Quick Start
 
 ### Initial Setup (First Time)
-```bash
-# Make all scripts executable
-chmod +x deployment/*.sh
-
-# 1. Setup infrastructure (SQS queues, S3 buckets, IAM policies)
-./deployment/setup_sqs_queues.sh
-./deployment/setup_pipeline.sh
-
-# 2. Deploy all Lambda functions
-./deployment/deploy_all.sh
-
-# 3. To enable MapState, edit to include the ARNs of the conferenceWrapper and the PaperScraperConferences where specified in conferenceScraper.asl.json
-# Then set up a Step Function with the conferenceScraper.asl.json as the config.
-     
-```
+Go into the setup folder and follow the README.md instructions. 
 
 ### Deploy All Functions (After Initial Setup)
 ```bash
@@ -88,7 +74,7 @@ chmod +x deployment/*.sh
 ### Deploy Individual Components
 ```bash
 # Scrapers
-./deployment/build_scraper.sh PaperScraper_Conferences
+./deployment/build_scraper.sh PaperScraperConferences
 ./deployment/build_scraper.sh PaperScraper_arxiv
 ./deployment/build_conference_wrapper.sh
 
@@ -96,6 +82,9 @@ chmod +x deployment/*.sh
 ./deployment/build_judge.sh
 
 # Code Generator
+# Train page classifier model
+python code_gen/page_classifier.py --train-csv data/synthetic_labeled_data.csv
+# Make sure this model is in the code_gen folder. 
 ./deployment/build_code_gen_lambda.sh
 
 # Code Tester
@@ -268,6 +257,8 @@ python -m code_gen.main_handler generate_by_title \
 
 # Generate code for 5 most recent papers
 python -m code_gen.main_handler generate_recent --max-papers 5
+
+
 ```
 
 ---

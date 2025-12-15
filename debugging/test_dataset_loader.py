@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for dataset_loader.py
-Tests all datasets to confirm they can be loaded correctly on Trn1.2 instance.
-Includes visual confirmations from 1-2 samples of each dataset.
+Move this script to the Trn instance and run it to confirm that the dataset loader is working correctly.
 """
 
 import sys

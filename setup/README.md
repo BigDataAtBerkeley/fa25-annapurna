@@ -172,7 +172,7 @@ aws lambda create-function \
   --memory-size 1024 \
   --ephemeral-storage Size=1024 \
   --region ${REGION} \
-  --environment "Variables={BUCKET_NAME=llm-research-papers-57185732,LOG_LEVEL=INFO,MAX_PAPERS=75,QUEUE_URL=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/researchQueue.fifo,SOURCE=iclr,YEAR=2025}" \
+  --environment "Variables={BUCKET_NAME=llm-research-papers-57185732,LOG_LEVEL=INFO,MAX_PAPERS=75,QUEUE_URL=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/researchQueue.fifo,SOURCE=iclr,SCRAPE_YEAR=2025}" \
   --description "Scrapes conference papers (ICLR, ICML, NeurIPS, MLSys)"
 ```
 
@@ -205,7 +205,7 @@ aws lambda create-function \
   --memory-size 1024 \
   --ephemeral-storage Size=1024 \
   --region ${REGION} \
-  --environment "Variables={BUCKET_NAME=llm-research-papers-57185732,LOG_LEVEL=INFO,MAX_PAPERS=6,QUEUE_URL=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/researchQueue.fifo,SOURCE=arxiv,YEAR=2025}" \
+  --environment "Variables={BUCKET_NAME=llm-research-papers-57185732,LOG_LEVEL=INFO,MAX_PAPERS=6,QUEUE_URL=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/researchQueue.fifo,SOURCE=arxiv,SCRAPE_YEAR=2025}" \
   --description "Scrapes ArXiv papers daily"
 ```
 
