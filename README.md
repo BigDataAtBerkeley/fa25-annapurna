@@ -35,11 +35,9 @@ S3 (papers-test-outputs) + OpenSearch (test results) --> execution results from 
 ## Components
 
 ### **Lambda Functions**
-1. **PaperScraper_ICLR** - Scrapes ICLR papers
-2. **PaperScraper_ICML** - Scrapes ICML papers
+1. **PaperScraperConferences** - Scrapes ICLR, ICML, NeurIPS, MLSYS papers
+2. **conferenceWrapper** - Wrapper function to enable MapState for PaperScraperConferences.
 3. **PaperScraper_arxiv** - Scrapes ArXiv papers
-4. **PaperScraper_NEURIPS** - Scrapes NeurIPS papers
-5. **PaperScraper_MLSYS** - Scrapes MLSys papers
 6. **PapersJudge** - Evaluates paper relevance
 7. **PapersCodeGenerator** - Generates PyTorch code from papers
 8. **PapersCodeTester** - Batches code (10 at a time) and dispatches to Trainium instance for execution
@@ -86,11 +84,9 @@ chmod +x deployment/*.sh
 ### Deploy Individual Components
 ```bash
 # Scrapers
-./deployment/build_scraper.sh PaperScraper_ICLR
-./deployment/build_scraper.sh PaperScraper_ICML
+./deployment/build_scraper.sh PaperScraper_Conferences
 ./deployment/build_scraper.sh PaperScraper_arxiv
-./deployment/build_scraper.sh PaperScraper_NEURIPS
-./deployment/build_scraper.sh PaperScraper_MLSYS
+./deployment/build_conference_wrapper.sh
 
 # Judge
 ./deployment/build_judge.sh
@@ -114,11 +110,13 @@ chmod +x deployment/*.sh
 ```bash
 
 # Execute Scraping of Conference Papers via MapState. This should be used in production.
-# If it's failing above 10 batches, check concurenncy limit. It's currently set to 10 but can be maxed at 1000.
+# If it's failing above 10 batches, check concurenncy limit. It's currently set to 100 but can be maxed at 1000.
 aws stepfunctions start-execution \
   --state-machine-arn arn:aws:states:us-east-1:478852001205:stateMachine:conferenceScraper \
   --name "test-60-papers-$(date +%s)" \
   --input '{"source": "iclr", "year": 2025, "search_term": "LLM", "batch_size": 30, "test_count": 300}'
+
+# If you want to scrape everything, just don't add the test_count value.
 
 # Retrive Batch Sizes for conferences
 aws lambda invoke \
@@ -135,31 +133,12 @@ aws lambda invoke \
   --cli-binary-format raw-in-base64-out \
   scraper_output.json
 
-# OLD INVOCATION FUNCTIONS - these are still deployed, but we highley reccomend using the command above.
-aws lambda invoke \
-  --function-name PaperScraper_ICML \
-  --payload '{"MAX_PAPERS": "5"}' \
-  --cli-binary-format raw-in-base64-out \
-  scraper_output.json
-
+# For ArXiv
 aws lambda invoke \
   --function-name PaperScraper_arxiv \
   --payload '{"MAX_PAPERS": "5"}' \
   --cli-binary-format raw-in-base64-out \
   scraper_output.json
-
-aws lambda invoke \
-  --function-name PaperScraper_NEURIPS \
-  --payload '{"MAX_PAPERS": "5"}' \
-  --cli-binary-format raw-in-base64-out \
-  scraper_output.json
-
-aws lambda invoke \
-  --function-name PaperScraper_MLSYS \
-  --payload '{"MAX_PAPERS": "5"}' \
-  --cli-binary-format raw-in-base64-out \
-  scraper_output.json
-```
 
 ### Generate Code for Papers
 
@@ -295,11 +274,8 @@ python -m code_gen.main_handler generate_recent --max-papers 5
 
 ```bash
 # Scraper logs
-aws logs tail /aws/lambda/PaperScraper_ICLR --since 5m --follow
-aws logs tail /aws/lambda/PaperScraper_ICML --since 5m --follow
+aws logs tail /aws/lambda/PaperScraperConferences --since 5m --follow
 aws logs tail /aws/lambda/PaperScraper_arxiv --since 5m --follow
-aws logs tail /aws/lambda/PaperScraper_NEURIPS --since 5m --follow
-aws logs tail /aws/lambda/PaperScraper_MLSYS --since 5m --follow
 
 # Judge logs
 aws logs tail /aws/lambda/PapersJudge --since 15m --follow
