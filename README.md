@@ -561,6 +561,87 @@ Training metrics from Trainium executions are automatically logged to **CloudWat
 
 ---
 
+## Slack Bot Setup
+
+### Step 1: Create a Slack App
+
+1. Go to https://api.slack.com/apps
+2. Click **"Create New App"** → **"From scratch"**
+3. Enter app name (e.g., "Annapurna Pipeline") and select your workspace
+4. Click **"Create App"**
+
+### Step 2: Configure Bot Token Scopes
+
+1. In your app settings, go to **"OAuth & Permissions"** (left sidebar)
+2. Scroll to **"Scopes"** → **"Bot Token Scopes"**
+3. Add the following scopes:
+   - `chat:write` - Send messages to channels
+   - `chat:write.public` - Send messages to public channels (if needed)
+   - `channels:read` - View basic information about public channels (optional)
+4. Scroll up and click **"Install to Workspace"**
+5. Authorize the app and copy the **"Bot User OAuth Token"** (starts with `xoxb-`)
+
+### Step 3: Add Bot to Channel
+
+1. In Slack, go to the channel where you want notifications
+2. Type `/invite @YourBotName` or add the bot through channel settings
+3. Note the channel name or ID (e.g., `#research-papers` or `C1234567890`)
+
+### Step 4: Configure Environment Variables
+
+Set these environment variables in your Lambda functions (should be auto-created after setup):
+
+**For PapersCodeGenerator-container Lambda:**
+```bash
+SLACK_BOT_TOKEN=xoxb-your-bot-token-here
+SLACK_CHANNEL=your-channel-name-or-id
+```
+
+**Update Lambda environment variables:**
+```bash
+aws lambda update-function-configuration \
+  --function-name PapersCodeGenerator-container \
+  --environment "Variables={...,SLACK_BOT_TOKEN=xoxb-your-token,SLACK_CHANNEL=your-channel}" \
+  --region us-east-1
+```
+
+**For Trainium executor (if using):**
+Add to your `.env` file or environment:
+```bash
+SLACK_BOT_TOKEN=xoxb-your-bot-token-here
+SLACK_CHANNEL=your-channel-name-or-id
+```
+
+### What Gets Notified
+
+The Slack bot sends notifications for:
+- **New papers processed** - Initial paper information (title, authors, abstract)
+- **Code generation** - When code is generated for a paper (with code length, model used, dataset)
+- **Code execution** - When code is executed on Trainium (success/failure, execution time)
+- **Execution results** - Training metrics and execution outcomes
+
+All notifications for the same paper are threaded together for easy tracking.
+
+### Testing
+
+To test if the Slack bot is configured correctly:
+```bash
+# Test from PapersCodeGenerator Lambda
+aws lambda invoke \
+  --function-name PapersCodeGenerator-container \
+  --payload '{"action":"generate_by_id","paper_id":"test-paper-id"}' \
+  --cli-binary-format raw-in-base64-out \
+  response.json
+```
+
+Check your Slack channel for notifications. If you don't see messages, verify:
+- Bot token is correct (starts with `xoxb-`)
+- Bot is added to the channel
+- Channel name/ID is correct
+- Lambda environment variables are set correctly
+
+---
+
 ## Cost Estimate (per 100 papers)
 
 - **Scraping**: ~$0.10 (Lambda + S3)
