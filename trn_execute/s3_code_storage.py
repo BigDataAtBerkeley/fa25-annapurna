@@ -1,10 +1,3 @@
-"""
-S3 Code Storage Module
-
-Manages code storage in S3 bucket papers-code-artifacts.
-Each paper_id has one code file that gets replaced on updates.
-"""
-
 import os
 import json
 import logging
@@ -27,16 +20,6 @@ except Exception as e:
 
 
 def save_code(paper_id: str, code: str) -> str:
-    """
-    Save code to S3, replacing any existing code for this paper_id.
-    
-    Args:
-        paper_id: Paper/document ID
-        code: Python code to save
-        
-    Returns:
-        S3 key of saved file
-    """
     if not s3_client:
         logger.error("S3 client not initialized")
         return None
@@ -59,15 +42,6 @@ def save_code(paper_id: str, code: str) -> str:
 
 
 def get_code(paper_id: str) -> Optional[str]:
-    """
-    Get code from S3 for a paper_id.
-    
-    Args:
-        paper_id: Paper/document ID
-        
-    Returns:
-        Code string or None if not found
-    """
     if not s3_client:
         logger.error("S3 client not initialized")
         return None
@@ -91,7 +65,6 @@ def get_code(paper_id: str) -> Optional[str]:
 
 
 def code_exists(paper_id: str) -> bool:
-    """Check if code exists in S3 for a paper_id."""
     if not s3_client:
         return False
     
@@ -105,4 +78,3 @@ def code_exists(paper_id: str) -> bool:
             return False
         logger.error(f"Failed to check code existence: {e}")
         return False
-
