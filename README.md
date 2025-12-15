@@ -5,7 +5,7 @@ Automated pipeline for scraping, evaluating, and generating code from ML researc
 ---
 
 ## Architecture Overview
-
+![Alt text](./Diagram.png)
 ```
 Papers Scrapers (separate lambda functions for ICLR, ICML, arXiv,NEURIPS)
     ↓
