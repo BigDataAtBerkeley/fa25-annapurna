@@ -92,45 +92,82 @@ fi
 
 STEP_FUNCTION_DEFINITION=$(cat <<EOF
 {
-  "Comment": "Conference Scraper Step Function",
-  "StartAt": "GetBatches",
+  "Comment": "Conference Paper Scraper with Parallel Batches",
+  "StartAt": "CountPapers",
   "States": {
-    "GetBatches": {
+    "CountPapers": {
       "Type": "Task",
-      "Resource": "${CONFERENCE_WRAPPER_ARN}",
-      "Retry": [
+      "Resource": "${CONFERENCE_WRAPPER_ARN}r",
+      "ResultPath": "$.counter_result",
+      "Next": "ProcessBatches",
+      "Catch": [
         {
-          "ErrorEquals": ["States.TaskFailed"],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "CountFailed"
         }
-      ],
-      "Next": "ScrapeBatches"
+      ]
     },
-    "ScrapeBatches": {
+    "ProcessBatches": {
       "Type": "Map",
-      "ItemsPath": "\$.batches",
-      "MaxConcurrency": 10,
+      "ItemsPath": "$.counter_result.batches",
+      "MaxConcurrency": 100,
+      "ResultPath": "$.batch_results",
       "Iterator": {
         "StartAt": "ScrapeBatch",
         "States": {
           "ScrapeBatch": {
             "Type": "Task",
             "Resource": "${PAPER_SCRAPER_ARN}",
+            "TimeoutSeconds": 900,
             "Retry": [
               {
-                "ErrorEquals": ["States.TaskFailed"],
-                "IntervalSeconds": 2,
-                "MaxAttempts": 3,
-                "BackoffRate": 2.0
+                "ErrorEquals": [
+                  "States.TaskFailed",
+                  "States.Timeout"
+                ],
+                "IntervalSeconds": 30,
+                "MaxAttempts": 2,
+                "BackoffRate": 2
               }
             ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "ResultPath": "$.batch_error",
+                "Next": "BatchFailed"
+              }
+            ],
+            "End": true
+          },
+          "BatchFailed": {
+            "Type": "Pass",
+            "Result": {
+              "status": "failed"
+            },
             "End": true
           }
         }
       },
+      "Next": "AggregateResults"
+    },
+    "AggregateResults": {
+      "Type": "Pass",
+      "Parameters": {
+        "total_papers.$": "$.counter_result.total_papers",
+        "num_batches.$": "$.counter_result.num_batches",
+        "batch_results.$": "$.batch_results"
+      },
       "End": true
+    },
+    "CountFailed": {
+      "Type": "Fail",
+      "Error": "CountPapersFailed",
+      "Cause": "Failed to count papers from the source"
     }
   }
 }
