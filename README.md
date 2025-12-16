@@ -66,12 +66,7 @@ S3 (papers-test-outputs) + OpenSearch (test results) --> execution results from 
 ### Initial Setup (First Time)
 Go into the setup folder and follow the README.md instructions. 
 
-### Deploy All Functions (After Initial Setup)
-```bash
-./deployment/deploy_all.sh
-```
-
-### Deploy Individual Components
+### Deploy all Functions (After Initial Setup)
 ```bash
 # Scrapers
 ./deployment/build_scraper.sh PaperScraperConferences
@@ -97,6 +92,21 @@ python code_gen/page_classifier.py --train-csv data/synthetic_labeled_data.csv
 ---
 
 ## Testing & Usage
+
+When editing the prompt for judge_lambda, we reccomend first edtiing judge_lambda_test and then running 
+
+```bash
+python debugging/judge_lambda_test.py
+```
+This will randomly sample papers already in OpenSearch and test against how your new classifier evaluates them. 
+(There is an anti-self comparison mechanism in the test not included in judge_lambda).
+
+```bash
+python check_opensearch.py 
+```
+This returns all the papers that have been scraped. 
+
+The remaining files you are free to explore and have descriptions for the use case in each, but these two are the most frequently referenced. 
 
 ### Trigger Scrapers Manually
 
@@ -159,88 +169,6 @@ aws lambda invoke \
 
 ```
 
-### Test Generated Code on Trainium
-
-Test a specific paper's generated code directly on Trainium (bypasses full pipeline):
-
-```bash
-# Test by paper ID (downloads code from S3)
-python test_code_on_trainium.py --paper-id <PAPER_ID>
-
-# Test local code file
-python test_code_on_trainium.py --file generated_code/my_code.py --paper-id <PAPER_ID>
-
-# Test with custom timeout (default is 600s)
-python test_code_on_trainium.py --paper-id <PAPER_ID> --timeout 900
-
-# Test without saving results (for debugging)
-python test_code_on_trainium.py --paper-id <PAPER_ID> --no-save
-
-# Example with actual paper ID:
-python test_code_on_trainium.py --paper-id 6-j63JkBP8oloYi_8CJH
-```
-
-**What it does:**
-- Downloads code from S3 (or uses local file)
-- Sends to Trainium for execution
-- Saves stdout/stderr/metrics to S3
-- Updates OpenSearch with test results
-- Displays execution results and metrics
-
-**Requirements:**
-- Trainium instance running (script will auto-start if stopped)
-- Flask app deployed on Trainium (`./deployment/deploy_trainium.sh`)
-- `TRAINIUM_ENDPOINT` in `.env` (and optionally `TRAINIUM_INSTANCE_ID` for auto-start)
-
-### Test Code and View SageMaker Metrics
-
-Test code on Trainium and automatically view metrics logged to CloudWatch:
-
-```bash
-# Test code and view metrics (by paper ID from S3)
-python test_and_view_metrics.py --paper-id 6-j63JkBP8oloYi_8CJH
-
-# Test local code file and view metrics
-python test_and_view_metrics.py --file generated_code/TurboAttention_MODIFIED_with_dataset_loader.py --paper-id 6-j63JkBP8oloYi_8CJH
-
-# View existing metrics without re-running (skip execution)
-python test_and_view_metrics.py --paper-id 6-j63JkBP8oloYi_8CJH --skip-execution
-```
-
-**What it does:**
-- Executes code on Trainium (same as `test_code_on_trainium.py`)
-- Automatically logs training metrics to CloudWatch (namespace: `Trainium/Training`)
-- Waits for metrics to appear and displays summary
-- Shows CloudWatch console link and CLI commands
-
-**View metrics in CloudWatch:**
-```bash
-# List all metrics for a paper
-aws cloudwatch list-metrics --namespace "Trainium/Training" --dimensions Name=PaperId,Value=<PAPER_ID>
-
-# Get statistics for a metric
-aws cloudwatch get-metric-statistics \
-  --namespace "Trainium/Training" \
-  --metric-name training_loss \
-  --dimensions Name=PaperId,Value=<PAPER_ID> \
-  --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S) \
-  --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
-  --period 300 \
-  --statistics Average,Maximum,Minimum
-```
-
-**CloudWatch Console:** Navigate to Metrics → `Trainium/Training` → Filter by PaperId
-
-### Grabbing code locally from S3
-
-```bash
-1. python download_s3_code.py
---> this will ask you which code files to download from S3 (choose which you want)
-2. Check generated_code/
----> this should contain (a) pyTorch code that was generated and (b) metadata about the paper & its code 
-
-```
-
 ### CLI Usage (Local)
 
 ```bash
@@ -257,7 +185,6 @@ python -m code_gen.main_handler generate_by_title \
 
 # Generate code for 5 most recent papers
 python -m code_gen.main_handler generate_recent --max-papers 5
-
 
 ```
 
@@ -296,43 +223,6 @@ aws sqs get-queue-attributes \
   --attribute-names ApproximateNumberOfMessages
 ```
 
-### Check OpenSearch 
-
-```bash
-# View all papers and their status
-python debugging/check_opensearch.py
-
-# Clear OpenSearch (DO NOT RUN UNLESS ASKING DAN FIRST (anyways this file is gitignored))
-python clear_opensearch.py
-```
-
-### Setup Queues (First Time Only)
-
-```bash
-# Create all SQS queues and configure Lambda triggers
-chmod +x deployment/setup_sqs_queues.sh
-./deployment/setup_sqs_queues.sh
-```
-
-### Initial Setup
-
-```bash
-# 1. Setup SQS queues and infrastructure
-./deployment/setup_sqs_queues.sh
-
-# 2. Setup pipeline (S3 buckets, IAM policies)
-./deployment/setup_pipeline.sh
-
-# 3. Deploy all Lambda functions
-./deployment/deploy_all.sh
-
-#4. Deploy indiviudal lambda
-./deployment/build_judge.sh
-
-# 4. Setup Trainium instance (if needed)
-./deployment/deploy_trainium.sh /path/to/your-key.pem
-```
-
 ### Check Pipeline Status
 
 ```bash
@@ -366,8 +256,8 @@ python debugging/check_opensearch_mapping.py
 ## Environment Variables
 
 ### Scraper Lambda
-- `CONFERENCE` - Conference to scrape ("ICLR", "ICML", "BOTH")
-- `CONFERENCE_YEAR` - Year (default: "2025")
+- `SOURCE` - Conference to scrape ("ICLR", "ICML", "BOTH")
+- `SCRAPER_YEAR` - Year (default: "2025")
 - `MAX_PAPERS` - Max papers to process (default: "3")
 - `BUCKET_NAME` - S3 bucket for PDFs
 - `QUEUE_URL` - SQS queue URL
