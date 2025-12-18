@@ -103,9 +103,9 @@ MAX_REVIEW_ITERATIONS = int(os.getenv('MAX_REVIEW_ITERATIONS', '6'))
 ERROR_DB_TABLE_NAME = os.getenv('ERROR_DB_TABLE_NAME', 'docRunErrors') # Table structure: Partition key = DOC#<docId>, Sort key = ITER#<iteration>#ERR#<errorId>
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
 BEDROCK_MODEL_ID = os.getenv('BEDROCK_MODEL_ID', 'anthropic.claude-3-sonnet-20240229-v1:0')
-SLACK_BOT_TOKEN = os.getenv('SLACK_BOT_TOKEN', 'xoxb-552112250854-10119594925537-sqOfzVPjWTgcEswIWTRbKbax')
+SLACK_BOT_TOKEN = os.getenv('SLACK_BOT_TOKEN')
 SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', 'ext-bdab-apl-research-papers')
-TRAINIUM_EXECUTION_QUEUE_URL = os.getenv('TRAINIUM_EXECUTION_QUEUE_URL', 'https://sqs.us-east-1.amazonaws.com/478852001205/trainium-execution.fifo')
+TRAINIUM_EXECUTION_QUEUE_URL = os.getenv('TRAINIUM_EXECUTION_QUEUE_URL')
 MAX_TRAINIUM_CONCURRENT = int(os.getenv('MAX_TRAINIUM_CONCURRENT', '1'))  # Max concurrent executions
 QUEUE_POLL_INTERVAL = int(os.getenv('QUEUE_POLL_INTERVAL', '30'))  # Seconds between queue polls
 ENABLE_AUTO_QUEUE_POLLING = os.getenv('ENABLE_AUTO_QUEUE_POLLING', 'true').lower() == 'true'  # Enable automatic queue polling
