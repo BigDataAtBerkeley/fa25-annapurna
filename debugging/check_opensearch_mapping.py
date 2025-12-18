@@ -14,7 +14,7 @@ load_dotenv()
 # Configuration
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 OPENSEARCH_ENDPOINT = os.getenv("OPENSEARCH_ENDPOINT")
-OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "research-papers-v2")
+OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "research-papers-v3")
 
 if not OPENSEARCH_ENDPOINT:
     raise EnvironmentError("OPENSEARCH_ENDPOINT environment variable is required")

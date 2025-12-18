@@ -63,7 +63,8 @@ cat <<'EOF'
       "rejected_by": {"type": "keyword"},
       "reason": {"type": "text"},
       "relevance": {"type": "keyword"},
-      "ingested_at": {"type": "date"}
+      "ingested_at": {"type": "date"},
+      "executed_on_trn": {"type": "boolean"}
     }
   }
 }

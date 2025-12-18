@@ -80,7 +80,8 @@ def ensure_index():
                 "rejected_by": {"type": "keyword"},
                 "reason": {"type": "text"},
                 "relevance": {"type": "keyword"},
-                "ingested_at": {"type": "date"}
+                "ingested_at": {"type": "date"},
+                "executed_on_trn": {"type": "boolean"},
             }}
         }
         os_client.indices.create(index=OPENSEARCH_INDEX, body=body)
@@ -614,7 +615,8 @@ def lambda_handler(event, context):
                     "decision": "accept",
                     "reason": reason,
                     "relevance": relevance,
-                    "ingested_at": int(time.time() * 1000)
+                    "ingested_at": int(time.time() * 1000),
+                    "executed_on_trn": False
                 }
                 # Add embedding for accepted docs
                 if precomputed_embedding:
