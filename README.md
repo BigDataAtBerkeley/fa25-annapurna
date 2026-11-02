@@ -299,7 +299,7 @@ aws ec2 run-instances \
   --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=PapersCodeTester-Trainium},{Key=Purpose,Value=PapersCodeTester}]'
 ```
 
-### Deploy Trainium Executor (Ask Dan how to do this)
+### Deploy Trainium Executor
 
 ```bash
 # Deploy Flask app to Trainium instance (from local machine)
@@ -316,7 +316,7 @@ aws ec2 run-instances \
 ASK DAN 
 ```
 
-**To find our instance ID (can also just check console or ask Dan, but if needed...):**
+**To find our instance ID
 ```bash
 aws ec2 describe-instances \
   --region us-east-2 \
